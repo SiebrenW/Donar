@@ -49,6 +49,12 @@ impl<'b> BitWriter<'b> {
         }
     }
 
+    /// EXI integer: sign bit, then the magnitude (minus one if negative) as an unsigned integer.
+    pub fn int(&mut self, v: i32) -> Result<(), EncodeError> {
+        self.bit(v < 0)?;
+        self.uint(if v < 0 { !v as u32 } else { v as u32 })
+    }
+
     /// Pads with zero bits to a byte boundary and returns the stream length in bytes.
     pub fn finish(mut self) -> Result<usize, EncodeError> {
         while !self.pos.is_multiple_of(8) {
@@ -87,6 +93,12 @@ impl<'b> BitReader<'b> {
     pub fn uint(&mut self) -> Result<u32, DecodeError> {
         u32::try_from(self.uint64()?)
             .map_err(|_| DecodeError::InvalidValue("unsigned integer exceeds 32 bits"))
+    }
+
+    pub fn int(&mut self) -> Result<i32, DecodeError> {
+        let negative = self.bit()?;
+        let magnitude = i32::try_from(self.uint()?).map_err(|_| DecodeError::InvalidValue("integer exceeds 32 bits"))?;
+        Ok(if negative { !magnitude } else { magnitude })
     }
 
     pub fn uint64(&mut self) -> Result<u64, DecodeError> {

@@ -13,6 +13,7 @@ pub mod app_protocol;
 pub mod arena;
 pub mod bits;
 pub mod common;
+pub mod services;
 
 pub use arena::{Arena, ArenaFull};
 

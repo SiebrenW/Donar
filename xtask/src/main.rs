@@ -113,19 +113,35 @@ fn vectors() -> Result<(), String> {
     for line in manifest.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
         let mut it = line.split_whitespace();
         let (name, xsd) = (it.next().unwrap(), it.next().ok_or("manifest: missing xsd")?);
-        let out = Command::new(jdk_tool("java"))
-            .args(["-cp", &format!("{}:{cp}", classes.display())])
-            .arg("EncodeVector")
-            .arg(root.join("schemas/iso15118-20").join(xsd))
-            .args(["lax", "noheader"])
-            .arg(root.join(format!("xtask/vectors/{name}.xml")))
-            .output()
-            .map_err(|e| e.to_string())?;
+        let xml = root.join(format!("xtask/vectors/{name}.xml"));
+        let dest = root.join(format!("vectors/{name}.hex"));
+        let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        if mtime(&dest).is_some_and(|h| mtime(&xml).is_some_and(|x| h >= x)) {
+            continue; // up to date; delete vectors/*.hex to regenerate everything
+        }
+        // Xerces fetches the XMLSchema DTD that xmldsig-core-schema.xsd names from w3.org,
+        // which rate-limits; retry a few times.
+        let mut attempt = 0;
+        let out = loop {
+            let out = Command::new(jdk_tool("java"))
+                .args(["-cp", &format!("{}:{cp}", classes.display())])
+                .arg("EncodeVector")
+                .arg(root.join("schemas/iso15118-20").join(xsd))
+                .args(["lax", "noheader"])
+                .arg(&xml)
+                .output()
+                .map_err(|e| e.to_string())?;
+            attempt += 1;
+            if out.status.success() || attempt == 5 {
+                break out;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        };
         if !out.status.success() {
             return Err(format!("{name}: {}", String::from_utf8_lossy(&out.stderr)));
         }
         let hex = String::from_utf8_lossy(&out.stdout);
-        std::fs::write(root.join(format!("vectors/{name}.hex")), hex.trim().to_string() + "\n")
+        std::fs::write(&dest, hex.trim().to_string() + "\n")
             .map_err(|e| e.to_string())?;
         println!("wrote vectors/{name}.hex");
     }

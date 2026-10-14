@@ -8,18 +8,25 @@
 use crate::app_protocol::decode_string;
 use crate::arena::Arena;
 use crate::bits::{BitReader, BitWriter};
+use crate::services::*;
 use crate::{DecodeError, EncodeError};
 
 pub const MAX_IDENTIFIER_CHARS: usize = 255;
 
-const HEADER: u8 = 0x80;
-const ROOT_BITS: u32 = 6;
+pub(crate) const HEADER: u8 = 0x80;
+pub(crate) const ROOT_BITS: u32 = 6;
 const ROOT_AUTHORIZATION_REQ: u32 = 0;
 const ROOT_AUTHORIZATION_RES: u32 = 1;
 const ROOT_AUTHORIZATION_SETUP_REQ: u32 = 2;
 const ROOT_AUTHORIZATION_SETUP_RES: u32 = 3;
 const ROOT_SESSION_SETUP_REQ: u32 = 35;
 const ROOT_SESSION_SETUP_RES: u32 = 36;
+pub(crate) const ROOT_SERVICE_DETAIL_REQ: u32 = 29;
+pub(crate) const ROOT_SERVICE_DETAIL_RES: u32 = 30;
+pub(crate) const ROOT_SERVICE_DISCOVERY_REQ: u32 = 31;
+pub(crate) const ROOT_SERVICE_DISCOVERY_RES: u32 = 32;
+pub(crate) const ROOT_SERVICE_SELECTION_REQ: u32 = 33;
+pub(crate) const ROOT_SERVICE_SELECTION_RES: u32 = 34;
 
 /// `responseCodeType`; the discriminant is the 6-bit EXI code (schema declaration order).
 /// Ref: ISO 15118-20:2022 Annex A (response codes; page cited by EcoG, unchecked).
@@ -201,6 +208,12 @@ pub enum Message<'a> {
     AuthorizationSetupRes(AuthorizationSetupRes),
     AuthorizationReq(AuthorizationReq),
     AuthorizationRes(AuthorizationRes),
+    ServiceDiscoveryReq(ServiceDiscoveryReq<'a>),
+    ServiceDiscoveryRes(ServiceDiscoveryRes<'a>),
+    ServiceDetailReq(ServiceDetailReq),
+    ServiceDetailRes(ServiceDetailRes<'a>),
+    ServiceSelectionReq(ServiceSelectionReq<'a>),
+    ServiceSelectionRes(ServiceSelectionRes),
 }
 
 // ---------------------------------------------------------------- encode
@@ -290,19 +303,19 @@ pub fn encode_authorization_res(msg: &AuthorizationRes, out: &mut [u8]) -> Resul
 }
 
 /// SE(ResponseCode), CH, 6-bit enum, EE.
-fn encode_response_code(w: &mut BitWriter<'_>, code: ResponseCode) -> Result<(), EncodeError> {
+pub(crate) fn encode_response_code(w: &mut BitWriter<'_>, code: ResponseCode) -> Result<(), EncodeError> {
     w.bits(0, 2)?;
     w.bits(code as u32, 6)?;
     w.bits(0, 1)
 }
 
-fn start(out: &mut [u8]) -> Result<BitWriter<'_>, EncodeError> {
+pub(crate) fn start(out: &mut [u8]) -> Result<BitWriter<'_>, EncodeError> {
     let (first, rest) = out.split_first_mut().ok_or(EncodeError::BufferTooSmall)?;
     *first = HEADER;
     Ok(BitWriter::new(rest))
 }
 
-fn encode_header(w: &mut BitWriter<'_>, h: &MessageHeader) -> Result<(), EncodeError> {
+pub(crate) fn encode_header(w: &mut BitWriter<'_>, h: &MessageHeader) -> Result<(), EncodeError> {
     w.bits(0, 1)?; // SE(Header)
     w.bits(0, 2)?; // SE(SessionID), CH
     w.uint(8)?; // hexBinary length
@@ -434,12 +447,18 @@ pub fn decode<'s>(buf: &[u8], arena: &'s Arena<'_>) -> Result<Message<'s>, Decod
             expect_zero(&mut r, 2)?; // EE(EVSEProcessing), EE(AuthorizationRes)
             Ok(Message::AuthorizationRes(AuthorizationRes { header, response_code, evse_processing }))
         }
+        ROOT_SERVICE_DISCOVERY_REQ => decode_service_discovery_req(&mut r, arena).map(Message::ServiceDiscoveryReq),
+        ROOT_SERVICE_DISCOVERY_RES => decode_service_discovery_res(&mut r, arena).map(Message::ServiceDiscoveryRes),
+        ROOT_SERVICE_DETAIL_REQ => decode_service_detail_req(&mut r).map(Message::ServiceDetailReq),
+        ROOT_SERVICE_DETAIL_RES => decode_service_detail_res(&mut r, arena).map(Message::ServiceDetailRes),
+        ROOT_SERVICE_SELECTION_REQ => decode_service_selection_req(&mut r, arena).map(Message::ServiceSelectionReq),
+        ROOT_SERVICE_SELECTION_RES => decode_service_selection_res(&mut r).map(Message::ServiceSelectionRes),
         _ => Err(DecodeError::Unsupported("message not implemented")),
     }
 }
 
 /// SE(ResponseCode), CH, 6-bit enum, EE.
-fn decode_response_code(r: &mut BitReader<'_>) -> Result<ResponseCode, DecodeError> {
+pub(crate) fn decode_response_code(r: &mut BitReader<'_>) -> Result<ResponseCode, DecodeError> {
     expect_zero(r, 2)?;
     let code = *RESPONSE_CODES
         .get(r.bits(6)? as usize)
@@ -452,14 +471,14 @@ fn decode_authorization(r: &mut BitReader<'_>) -> Result<Authorization, DecodeEr
     Ok(if r.bit()? { Authorization::Pnc } else { Authorization::Eim })
 }
 
-fn expect_zero(r: &mut BitReader<'_>, n: u32) -> Result<(), DecodeError> {
+pub(crate) fn expect_zero(r: &mut BitReader<'_>, n: u32) -> Result<(), DecodeError> {
     match r.bits(n)? {
         0 => Ok(()),
         _ => Err(DecodeError::Unsupported("unexpected event code")),
     }
 }
 
-fn decode_header(r: &mut BitReader<'_>) -> Result<MessageHeader, DecodeError> {
+pub(crate) fn decode_header(r: &mut BitReader<'_>) -> Result<MessageHeader, DecodeError> {
     expect_zero(r, 1)?; // SE(Header)
     expect_zero(r, 2)?; // SE(SessionID), CH
     if r.uint()? != 8 {
