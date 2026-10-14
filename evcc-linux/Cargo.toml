@@ -1,0 +1,12 @@
+[package]
+name = "evcc-linux"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+evcc-core = { path = "../evcc-core" }
+
+[dev-dependencies]
+evse-sim = { path = "../evse-sim" }
+iso15118-20 = { path = "../codecs/iso15118-20" }

@@ -11,6 +11,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "evcc-linux"
+version = "0.1.0"
+dependencies = [
+ "evcc-core",
+ "evse-sim",
+ "iso15118-20",
+]
+
+[[package]]
+name = "evse-sim"
+version = "0.1.0"
+dependencies = [
+ "iso15118-20",
+ "v2gtp",
+]
+
+[[package]]
 name = "iso15118-20"
 version = "0.1.0"
 

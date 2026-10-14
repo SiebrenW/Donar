@@ -139,3 +139,9 @@ Steps 1 to 4 are interleaved per slice rather than finished in sequence.
 - **Session machine shape** (`evcc-core::session`): host reads from the socket straight into `Session::rx_space()` (host-provided RX buffer) and reports `Event::Received(n)`; V2GTP reassembly happens in the core. Each call returns a `Step { send, timer, notice, end }`; `send` is a fully framed message in the host-provided TX buffer. Decoded messages live in the per-frame arena; only small fixed state (session id) persists. Typed `log::Record`s go to a `LogSink` and may borrow from the message.
 - **Timeouts**: only the 2 s SupportedAppProtocol value is sourced (EcoG); the same 2 s is used for SessionSetup as a placeholder. Other values EcoG lists (communication setup 20 s, sequence/ongoing 60 s) and the per-message -20 values still have to be checked against the standard when those slices arrive.
 - **`Ev` trait so far**: `evcc_id()` and `unix_time()`.
+
+## Status
+
+Done: workspace + `xtask setup/vectors`; EXIficient oracle; hand-written `iso15118-20` codecs for `app_protocol` and `common::SessionSetup`; `v2gtp`; SDP client machine; session machine through `SessionSetup`; `evse-sim` and the `evcc-linux` TCP adapter with an end-to-end loopback test (EV session machine vs the simulated EVSE over real TCP).
+
+Next slices (each end to end, codec first, checked against vectors): `AuthorizationSetup`/`Authorization` (EIM), service discovery/detail/selection, `DC_ChargeParameterDiscovery`, `ScheduleExchange`, `DC_CableCheck`/`DC_PreCharge`, `PowerDelivery`, `DC_ChargeLoop`, stop, `SessionStop`. Then TLS in `evcc-linux`, the SDP socket loop, SLAC with the `unshare` harness, and `exi-gen` replacing the hand-written codecs.
