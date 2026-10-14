@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ap:supportedAppProtocolRes xmlns:ap="urn:iso:15118:2:2010:AppProtocol">
+  <ResponseCode>Failed_NoNegotiation</ResponseCode>
+</ap:supportedAppProtocolRes>

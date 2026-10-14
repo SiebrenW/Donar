@@ -1,0 +1,9 @@
+[package]
+name = "iso15118-20"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+default = []
+alloc = []

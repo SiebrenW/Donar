@@ -127,3 +127,6 @@ Steps 1 to 4 are interleaved per slice rather than finished in sequence.
 - **Schema source:** `https://standards.iso.org/iso/15118/-20/ed-1/en/` (same as cbExiGen's auto-download).
 - **Reference vectors:** `xtask/java/EncodeVector.java` plus the EXIficient jars (downloaded into the gitignored `vectors/lib`). Inputs live in `xtask/vectors/*.xml`. Needs a JDK; on this Mac Homebrew's `openjdk` is at `/opt/homebrew/opt/openjdk/bin`.
 - The AppProtocol XSD has no `elementFormDefault="qualified"`, so its child elements are in no namespace; only the root carries `urn:iso:15118:2:2010:AppProtocol`.
+- **Event codes** (default fidelity, verified): a state with one production plus the escape takes 1 bit; the document root and repeat states take 2; every typed value has a 1-bit CH before it and a 1-bit EE after. Finite `maxOccurs` is **unrolled** (after the 20th `AppProtocol` only EE remains, coded in 1 bit). The generator must reproduce this.
+- **String table:** a repeated string value is a hit (`uint 0`, then ⌈log2(table size)⌉ bits); the table grows only on misses. Needed in both directions.
+- **Strings** are a length+2 unsigned int followed by one unsigned int per code point; `unsignedInt` is an EXI unsigned int, `unsignedByte` 8 bits, a bounded int is offset-from-minimum in ⌈log2(range)⌉ bits, enums are ⌈log2(n)⌉ bits.

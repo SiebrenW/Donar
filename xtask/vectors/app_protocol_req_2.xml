@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ap:supportedAppProtocolReq xmlns:ap="urn:iso:15118:2:2010:AppProtocol">
+  <AppProtocol>
+    <ProtocolNamespace>urn:iso:std:iso:15118:-20:DC</ProtocolNamespace>
+    <VersionNumberMajor>1</VersionNumberMajor>
+    <VersionNumberMinor>0</VersionNumberMinor>
+    <SchemaID>1</SchemaID>
+    <Priority>1</Priority>
+  </AppProtocol>
+  <AppProtocol>
+    <ProtocolNamespace>urn:iso:std:iso:15118:-20:AC</ProtocolNamespace>
+    <VersionNumberMajor>1</VersionNumberMajor>
+    <VersionNumberMinor>0</VersionNumberMinor>
+    <SchemaID>2</SchemaID>
+    <Priority>2</Priority>
+  </AppProtocol>
+</ap:supportedAppProtocolReq>
