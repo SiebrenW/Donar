@@ -1,0 +1,3 @@
+# <vector name> <xsd under schemas/iso15118-20>; input is xtask/vectors/<name>.xml
+app_protocol_req V2G_CI_AppProtocol.xsd
+session_setup_req V2G_CI_CommonMessages.xsd
