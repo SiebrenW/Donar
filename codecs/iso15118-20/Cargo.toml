@@ -7,3 +7,6 @@ publish = false
 [features]
 default = []
 alloc = []
+
+[dependencies]
+exi = { path = "../exi" }

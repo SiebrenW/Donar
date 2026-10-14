@@ -1,3 +1,4 @@
+#![no_std]
 //! `supportedAppProtocol` handshake (namespace `urn:iso:15118:2:2010:AppProtocol`).
 //!
 //! Event-code widths below are for default (non-strict) fidelity, as real stacks use and
@@ -5,9 +6,9 @@
 //! 1 bit, the document root and the repeat state take 2 bits. Every typed value is
 //! preceded by a 1-bit CH code and followed by a 1-bit EE code.
 
-use crate::arena::Arena;
-use crate::bits::{BitReader, BitWriter};
-use crate::{DecodeError, EncodeError};
+use exi::bits::{BitReader, BitWriter};
+use exi::text::decode_string;
+use exi::{Arena, DecodeError, EncodeError};
 
 pub const MAX_APP_PROTOCOLS: usize = 20;
 pub const MAX_NAMESPACE_CHARS: usize = 100;
@@ -267,35 +268,6 @@ fn decode_app_protocol<'s>(
     }
     expect_zero(r, 2)?;
     Ok(AppProtocol { namespace, version_major, version_minor, schema_id, priority })
-}
-
-/// Reads `len` code points. With an arena the UTF-8 is stored there; without one the
-/// characters are validated and skipped.
-pub(crate) fn decode_string<'s>(
-    r: &mut BitReader<'_>,
-    len: usize,
-    arena: Option<&'s Arena<'_>>,
-) -> Result<&'s str, DecodeError> {
-    let char_at = |r: &mut BitReader<'_>| {
-        char::from_u32(r.uint()?).ok_or(DecodeError::InvalidValue("invalid code point"))
-    };
-    let Some(arena) = arena else {
-        for _ in 0..len {
-            char_at(r)?;
-        }
-        return Ok("");
-    };
-    let mut sizing = r.clone();
-    let mut bytes = 0;
-    for _ in 0..len {
-        bytes += char_at(&mut sizing)?.len_utf8();
-    }
-    let out = arena.alloc_bytes(bytes)?;
-    let mut at = 0;
-    for _ in 0..len {
-        at += char_at(r)?.encode_utf8(&mut out[at..]).len();
-    }
-    core::str::from_utf8(out).map_err(|_| DecodeError::InvalidValue("invalid UTF-8"))
 }
 
 fn decode_res(r: &mut BitReader<'_>) -> Result<SupportedAppProtocolRes, DecodeError> {

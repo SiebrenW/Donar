@@ -10,3 +10,5 @@ evcc-core = { path = "../evcc-core" }
 [dev-dependencies]
 evse-sim = { path = "../evse-sim" }
 iso15118-20 = { path = "../codecs/iso15118-20" }
+app-protocol = { path = "../codecs/app-protocol" }
+exi = { path = "../codecs/exi" }

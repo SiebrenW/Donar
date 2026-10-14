@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iso15118_20::app_protocol::{self, ResponseCode as SapCode, SupportedAppProtocolRes};
+use app_protocol::{self, ResponseCode as SapCode, SupportedAppProtocolRes};
 use iso15118_20::common::{
     self, Authorization, AuthorizationRes, AuthorizationServices, AuthorizationSetupRes, MessageHeader, Processing,
     ResponseCode, SessionSetupRes,
@@ -18,7 +18,7 @@ use iso15118_20::services::{
     self, Parameter, ParameterSet, ParameterValue, SelectedService, Service, ServiceDetailRes, ServiceDiscoveryRes,
     ServiceSelectionRes,
 };
-use iso15118_20::{Arena, EncodeError};
+use exi::{Arena, EncodeError};
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
 const DC_NAMESPACE: &str = "urn:iso:std:iso:15118:-20:DC";

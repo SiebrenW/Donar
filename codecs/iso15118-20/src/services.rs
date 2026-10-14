@@ -13,10 +13,10 @@
 //!
 //! Service ids are listed in ISO 15118-20:2022 Table 204 (via EcoG, unchecked).
 
-use crate::arena::Arena;
-use crate::bits::{BitReader, BitWriter};
+use exi::Arena;
+use exi::bits::{BitReader, BitWriter};
 use crate::common::*;
-use crate::{DecodeError, EncodeError};
+use exi::{DecodeError, EncodeError};
 
 pub const MAX_SERVICE_IDS: usize = 16;
 pub const MAX_SERVICES: usize = 8;
@@ -226,7 +226,7 @@ impl<'s> Table<'s> {
                 if len > MAX_NAME_CHARS {
                     return Err(DecodeError::InvalidValue("string longer than 80 characters"));
                 }
-                let s = crate::app_protocol::decode_string(r, len, arena)?;
+                let s = exi::text::decode_string(r, len, arena)?;
                 self.push(part, s)?;
                 Ok(s)
             }

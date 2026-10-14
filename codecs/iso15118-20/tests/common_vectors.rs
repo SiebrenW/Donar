@@ -1,6 +1,6 @@
 //! Checks the hand-written `common` codec against EXIficient reference vectors.
 
-use iso15118_20::Arena;
+use exi::Arena;
 use iso15118_20::common::*;
 
 fn vector(name: &str) -> std::vec::Vec<u8> {
@@ -78,7 +78,7 @@ fn empty_identifier_is_unsupported_not_wrong() {
     let reference = vector("session_setup_res_empty");
     let mut mem = [0u8; 512];
     let arena = Arena::new(&mut mem);
-    assert_eq!(decode(&reference, &arena), Err(iso15118_20::DecodeError::Unsupported("empty string element")));
+    assert_eq!(decode(&reference, &arena), Err(exi::DecodeError::Unsupported("empty string element")));
 }
 
 // ---------------------------------------------------------------- authorization

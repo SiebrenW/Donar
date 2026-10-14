@@ -3,7 +3,7 @@
 //! them. Records may borrow from the message being processed, because the sink is called
 //! synchronously.
 
-use iso15118_20::DecodeError;
+use exi::DecodeError;
 use iso15118_20::common::{Processing, ResponseCode};
 
 use crate::session::{EndReason, State};

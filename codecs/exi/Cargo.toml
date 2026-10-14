@@ -1,0 +1,6 @@
+[package]
+name = "exi"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Runtime support for schema-informed EXI codecs: bit I/O, arena, errors"

@@ -5,11 +5,11 @@
 //! is 35 and `SessionSetupRes` 36; the Authorization pairs are 0..=3 (checked against
 //! EXIficient).
 
-use crate::app_protocol::decode_string;
-use crate::arena::Arena;
-use crate::bits::{BitReader, BitWriter};
+use exi::text::decode_string;
+use exi::Arena;
+use exi::bits::{BitReader, BitWriter};
 use crate::services::*;
-use crate::{DecodeError, EncodeError};
+use exi::{DecodeError, EncodeError};
 
 pub const MAX_IDENTIFIER_CHARS: usize = 255;
 

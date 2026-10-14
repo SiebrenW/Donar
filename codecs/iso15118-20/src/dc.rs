@@ -2,9 +2,9 @@
 //! one: its document root holds 49 elements (6-bit code), CPDReq = 15 and CPDRes = 16
 //! (checked against EXIficient). BPT variants are not implemented.
 
-use crate::bits::BitReader;
+use exi::bits::BitReader;
 use crate::common::*;
-use crate::{DecodeError, EncodeError};
+use exi::{DecodeError, EncodeError};
 
 const ROOT_CPD_REQ: u32 = 15;
 const ROOT_CPD_RES: u32 = 16;

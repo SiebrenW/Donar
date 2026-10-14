@@ -3,9 +3,18 @@
 version = 4
 
 [[package]]
+name = "app-protocol"
+version = "0.1.0"
+dependencies = [
+ "exi",
+]
+
+[[package]]
 name = "evcc-core"
 version = "0.1.0"
 dependencies = [
+ "app-protocol",
+ "exi",
  "iso15118-20",
  "v2gtp",
 ]
@@ -14,8 +23,10 @@ dependencies = [
 name = "evcc-linux"
 version = "0.1.0"
 dependencies = [
+ "app-protocol",
  "evcc-core",
  "evse-sim",
+ "exi",
  "iso15118-20",
 ]
 
@@ -23,13 +34,22 @@ dependencies = [
 name = "evse-sim"
 version = "0.1.0"
 dependencies = [
+ "app-protocol",
+ "exi",
  "iso15118-20",
  "v2gtp",
 ]
 
 [[package]]
+name = "exi"
+version = "0.1.0"
+
+[[package]]
 name = "iso15118-20"
 version = "0.1.0"
+dependencies = [
+ "exi",
+]
 
 [[package]]
 name = "v2gtp"

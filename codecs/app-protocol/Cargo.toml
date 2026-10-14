@@ -1,0 +1,9 @@
+[package]
+name = "app-protocol"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "supportedAppProtocol handshake (urn:iso:15118:2:2010:AppProtocol), used before a protocol is chosen"
+
+[dependencies]
+exi = { path = "../exi" }

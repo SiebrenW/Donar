@@ -1,8 +1,8 @@
 //! Checks the hand-written codec against EXIficient reference vectors.
 //! Run `cargo xtask setup && cargo xtask vectors` first.
 
-use iso15118_20::Arena;
-use iso15118_20::app_protocol::*;
+use exi::Arena;
+use app_protocol::*;
 
 fn vector(name: &str) -> std::vec::Vec<u8> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../vectors/{name}.hex"));
@@ -80,7 +80,7 @@ fn small_arena_is_an_error_not_a_panic() {
     let full = vector("app_protocol_req_2");
     let mut mem = [0u8; 16];
     let arena = Arena::new(&mut mem);
-    assert_eq!(decode(&full, &arena), Err(iso15118_20::DecodeError::ArenaFull));
+    assert_eq!(decode(&full, &arena), Err(exi::DecodeError::ArenaFull));
 }
 
 #[test]

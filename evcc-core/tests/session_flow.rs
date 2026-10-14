@@ -8,7 +8,7 @@ use evcc_core::ev::{DcLimits, Ev};
 use evcc_core::log::{Level, LogSink, MsgKind, Record};
 use evcc_core::session::*;
 use evcc_core::{Timer, TimerCmd, Timers};
-use iso15118_20::app_protocol::{self, ResponseCode as SapCode, SupportedAppProtocolRes};
+use app_protocol::{self, ResponseCode as SapCode, SupportedAppProtocolRes};
 use iso15118_20::dc;
 use iso15118_20::common::{RationalNumber, 
     self, Authorization, AuthorizationRes, AuthorizationServices, AuthorizationSetupRes, MessageHeader, Processing,
@@ -17,7 +17,7 @@ use iso15118_20::common::{RationalNumber,
 use iso15118_20::services::{
     self, Parameter, ParameterSet, ParameterValue, Service, ServiceDetailRes, ServiceDiscoveryRes, ServiceSelectionRes,
 };
-use iso15118_20::{Arena, DecodeError};
+use exi::{Arena, DecodeError};
 use v2gtp::{HEADER_LEN, PayloadType};
 
 fn rn(exponent: i8, value: i16) -> RationalNumber {

@@ -10,7 +10,7 @@
 //!    apply the timer commands, handle `notice`, and close the connection once `end` is set.
 //! 4. When an armed timer fires, send [`Event::TimerExpired`] naming it.
 
-use iso15118_20::app_protocol::{self, AppProtocol, SupportedAppProtocolReq};
+use app_protocol::{self, AppProtocol, SupportedAppProtocolReq};
 use iso15118_20::common::{
     self, Authorization, AuthorizationReq, AuthorizationSetupReq, MessageHeader, Processing, ResponseCode,
     SessionSetupReq,
@@ -19,7 +19,7 @@ use iso15118_20::dc;
 use iso15118_20::services::{
     self, ParameterSet, ParameterValue, SelectedService, ServiceDetailReq, ServiceDiscoveryReq, ServiceSelectionReq,
 };
-use iso15118_20::{Arena, DecodeError};
+use exi::{Arena, DecodeError};
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
 use crate::ev::Ev;
@@ -579,7 +579,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
 fn frame(
     tx: &mut [u8],
     payload_type: PayloadType,
-    encode: impl FnOnce(&mut [u8]) -> Result<usize, iso15118_20::EncodeError>,
+    encode: impl FnOnce(&mut [u8]) -> Result<usize, exi::EncodeError>,
 ) -> Result<usize, ()> {
     let n = encode(tx.get_mut(HEADER_LEN..).ok_or(())?).map_err(|_| ())?;
     write_header(tx, payload_type, n).map_err(|_| ())?;

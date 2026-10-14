@@ -1,6 +1,6 @@
 //! Checks the service discovery / detail / selection codecs against EXIficient vectors.
 
-use iso15118_20::Arena;
+use exi::Arena;
 use iso15118_20::common::*;
 use iso15118_20::services::*;
 
@@ -16,7 +16,7 @@ fn vector(name: &str) -> std::vec::Vec<u8> {
 const H: MessageHeader = MessageHeader { session_id: [0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18], timestamp: 1_700_000_000 };
 
 /// Encodes `msg` with `enc`, compares with the vector, and decodes the vector back.
-fn check<'m>(name: &str, msg: Message<'m>, enc: impl FnOnce(&mut [u8]) -> Result<usize, iso15118_20::EncodeError>) {
+fn check<'m>(name: &str, msg: Message<'m>, enc: impl FnOnce(&mut [u8]) -> Result<usize, exi::EncodeError>) {
     let want = vector(name);
     let mut out = [0u8; 1024];
     let n = enc(&mut out).unwrap();
