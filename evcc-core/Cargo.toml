@@ -1,0 +1,8 @@
+[package]
+name = "evcc-core"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+v2gtp = { path = "../v2gtp" }

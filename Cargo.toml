@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["xtask", "codecs/iso15118-20"]
+members = ["xtask", "codecs/iso15118-20", "v2gtp", "evcc-core"]
 
 [workspace.package]
 version = "0.1.0"

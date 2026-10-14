@@ -3,7 +3,18 @@
 version = 4
 
 [[package]]
+name = "evcc-core"
+version = "0.1.0"
+dependencies = [
+ "v2gtp",
+]
+
+[[package]]
 name = "iso15118-20"
+version = "0.1.0"
+
+[[package]]
+name = "v2gtp"
 version = "0.1.0"
 
 [[package]]
