@@ -22,8 +22,9 @@ use crate::log::{LogSink, MsgKind, Record};
 pub struct Config {
     /// The protocol offered in `SupportedAppProtocolReq`.
     pub offer: AppProtocol<'static>,
-    /// How long to wait for any response. 2 s is the SupportedAppProtocol value used by
-    /// open-source stacks; per-message values for the later messages are still to be checked.
+    /// How long to wait for any response. 2 s is the SupportedAppProtocolReq timeout used by
+    /// EcoG's stack (requirement id: TODO, not yet identified). It is reused for every other
+    /// message until their individual ISO 15118-20:2022 timeouts are looked up.
     pub response_timeout_ms: u32,
 }
 
@@ -280,7 +281,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             return self.end(EndReason::NoCommonProtocol);
         }
         let msg = SessionSetupReq {
-            header: MessageHeader { session_id: [0; 8], timestamp: self.ev.unix_time() },
+            header: MessageHeader { session_id: [0; 8], timestamp: self.ev.header_timestamp() },
             evcc_id: self.ev.evcc_id(),
         };
         let framed = frame(tx, PayloadType::MAINSTREAM, |out| common::encode_session_setup_req(&msg, out));

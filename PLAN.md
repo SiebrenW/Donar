@@ -145,3 +145,11 @@ Steps 1 to 4 are interleaved per slice rather than finished in sequence.
 Done: workspace + `xtask setup/vectors`; EXIficient oracle; hand-written `iso15118-20` codecs for `app_protocol` and `common::SessionSetup`; `v2gtp`; SDP client machine; session machine through `SessionSetup`; `evse-sim` and the `evcc-linux` TCP adapter with an end-to-end loopback test (EV session machine vs the simulated EVSE over real TCP).
 
 Next slices (each end to end, codec first, checked against vectors): `AuthorizationSetup`/`Authorization` (EIM), service discovery/detail/selection, `DC_ChargeParameterDiscovery`, `ScheduleExchange`, `DC_CableCheck`/`DC_PreCharge`, `PowerDelivery`, `DC_ChargeLoop`, stop, `SessionStop`. Then TLS in `evcc-linux`, the SDP socket loop, SLAC with the `unshare` harness, and `exi-gen` replacing the hand-written codecs.
+
+## References to the standard
+
+Where code implements a specific, citable behaviour (timers, mandated message handling, tables), its doc comment carries `Ref: ISO 15118-20:2022 <V2G20-NNNN | Table N | clause>`. Rules:
+
+- Only cite what has a source. I do not have the standard text; so far references come from comments in EcoG's open-source stack and are marked "unchecked" until verified against the standard. If no requirement id is known the comment says `TODO, not yet identified` instead of inventing one.
+- Known so far (all via EcoG, unchecked): payload types = Table 12; response codes = Annex A; service ids = Table 204 (8.4.3.1); `V2G20-1582` (on `EVSEProcessing = Ongoing` the EVCC repeats the `AuthorizationReq` unaltered except for the timestamp); `V2G20-2681` (exactly one authorization mode in `AuthorizationReq`); `V2G20-1640` (min SoC <= target SoC).
+- Open: the unit of the header `TimeStamp` (EcoG: microseconds since the epoch). `Ev::header_timestamp` passes the value through until this is settled.

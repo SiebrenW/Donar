@@ -5,6 +5,10 @@
 pub trait Ev {
     /// EVCCID sent in `SessionSetupReq` (at most 255 characters, usually the MAC address).
     fn evcc_id(&self) -> &str;
-    /// Seconds since the Unix epoch for the message header, or 0 if the vehicle has no clock.
-    fn unix_time(&self) -> u64;
+    /// Value for the header `TimeStamp` (`xs:unsignedLong`) of messages the EV sends.
+    ///
+    /// Open question: the XSD gives no unit. EcoG's stack sends microseconds since the Unix
+    /// epoch; a plain "Unix time" reading would be seconds. The core passes the value through
+    /// unchanged, so the host decides until this is checked against ISO 15118-20:2022.
+    fn header_timestamp(&self) -> u64;
 }

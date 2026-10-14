@@ -17,6 +17,7 @@ const ROOT_SESSION_SETUP_REQ: u32 = 35;
 const ROOT_SESSION_SETUP_RES: u32 = 36;
 
 /// `responseCodeType`; the discriminant is the 6-bit EXI code (schema declaration order).
+/// Ref: ISO 15118-20:2022 Annex A (response codes; page cited by EcoG, unchecked).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ResponseCode {

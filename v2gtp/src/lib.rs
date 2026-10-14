@@ -15,6 +15,10 @@ const INVERSE_VERSION: u8 = 0xFE;
 /// V2GTP payload type. Unknown values are preserved so callers can decide what to do.
 /// In ISO 15118-20 the payload type also selects the schema (grammar) the EXI payload is
 /// decoded with: `SAP` uses the AppProtocol schema, `MAINSTREAM` CommonMessages, and so on.
+///
+/// Ref: ISO 15118-20:2022 Table 12 (values as listed by EcoG's implementation; not yet
+/// checked against the standard text). `SDP_REQUEST`/`SDP_RESPONSE` are common to
+/// ISO 15118-2, -20 and DIN SPEC 70121.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PayloadType(pub u16);
 

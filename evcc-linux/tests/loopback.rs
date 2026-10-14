@@ -16,7 +16,7 @@ impl Ev for Car {
     fn evcc_id(&self) -> &str {
         "WMIV1234567890ABCDEX"
     }
-    fn unix_time(&self) -> u64 {
+    fn header_timestamp(&self) -> u64 {
         1_700_000_000
     }
 }
