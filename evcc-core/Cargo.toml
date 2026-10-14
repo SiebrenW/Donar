@@ -6,3 +6,4 @@ publish = false
 
 [dependencies]
 v2gtp = { path = "../v2gtp" }
+iso15118-20 = { path = "../codecs/iso15118-20" }

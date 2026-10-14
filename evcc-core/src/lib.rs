@@ -8,7 +8,10 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod ev;
+pub mod log;
 pub mod sdp;
+pub mod session;
 
 /// What the host should do with the machine's one timer after a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
