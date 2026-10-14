@@ -1,0 +1,4 @@
+/target
+# ISO-copyrighted schemas and anything derived from them; recreate with `cargo xtask setup`
+/schemas
+/vectors
