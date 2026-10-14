@@ -80,3 +80,77 @@ fn empty_identifier_is_unsupported_not_wrong() {
     let arena = Arena::new(&mut mem);
     assert_eq!(decode(&reference, &arena), Err(iso15118_20::DecodeError::Unsupported("empty string element")));
 }
+
+// ---------------------------------------------------------------- authorization
+
+const EVSE_SESSION: [u8; 8] = [0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18];
+
+fn hdr() -> MessageHeader {
+    MessageHeader { session_id: EVSE_SESSION, timestamp: TS }
+}
+
+fn round_trip(name: &str, msg: Message<'_>, encode: impl FnOnce(&mut [u8]) -> usize) {
+    let want = vector(name);
+    let mut out = [0u8; 128];
+    let n = encode(&mut out);
+    assert_eq!(&out[..n], &want[..], "{name}: encode differs from EXIficient");
+    let mut mem = [0u8; 256];
+    let arena = Arena::new(&mut mem);
+    assert_eq!(decode(&want, &arena).unwrap(), msg, "{name}: decode");
+}
+
+#[test]
+fn authorization_setup_req() {
+    let m = AuthorizationSetupReq { header: hdr() };
+    round_trip("authorization_setup_req", Message::AuthorizationSetupReq(m), |o| encode_authorization_setup_req(&m, o).unwrap());
+}
+
+#[test]
+fn authorization_setup_res() {
+    use Authorization::{Eim, Pnc};
+    for (name, services, cert) in [
+        ("eim", &[Eim][..], false),
+        ("eim_cert", &[Eim][..], true),
+        ("eim_pnc_listed", &[Eim, Pnc][..], false),
+        ("pnc_eim_listed", &[Pnc, Eim][..], true),
+    ] {
+        let m = AuthorizationSetupRes {
+            header: hdr(),
+            response_code: ResponseCode::Ok,
+            authorization_services: AuthorizationServices::new(services).unwrap(),
+            certificate_installation_service: cert,
+        };
+        round_trip(&format!("authorization_setup_res_{name}"), Message::AuthorizationSetupRes(m), |o| encode_authorization_setup_res(&m, o).unwrap());
+    }
+}
+
+#[test]
+fn authorization_req_eim() {
+    let m = AuthorizationReq { header: hdr() };
+    round_trip("authorization_req_eim", Message::AuthorizationReq(m), |o| encode_authorization_req(&m, o).unwrap());
+}
+
+#[test]
+fn authorization_res() {
+    for (name, code, p) in [
+        ("finished", ResponseCode::Ok, Processing::Finished),
+        ("ongoing", ResponseCode::Ok, Processing::Ongoing),
+        ("waiting", ResponseCode::Ok, Processing::OngoingWaitingForCustomerInteraction),
+        ("failed", ResponseCode::WarningEIMAuthorizationFailure, Processing::Finished),
+    ] {
+        let m = AuthorizationRes { header: hdr(), response_code: code, evse_processing: p };
+        round_trip(&format!("authorization_res_{name}"), Message::AuthorizationRes(m), |o| encode_authorization_res(&m, o).unwrap());
+    }
+}
+
+#[test]
+fn authorization_truncations_never_panic() {
+    for name in ["authorization_setup_res_eim_pnc_listed", "authorization_req_eim", "authorization_res_ongoing"] {
+        let full = vector(name);
+        for cut in 0..full.len() {
+            let mut mem = [0u8; 256];
+            let arena = Arena::new(&mut mem);
+            assert!(decode(&full[..cut], &arena).is_err(), "{name} cut at {cut} decoded");
+        }
+    }
+}
