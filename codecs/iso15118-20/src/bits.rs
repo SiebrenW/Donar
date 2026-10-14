@@ -34,11 +34,15 @@ impl<'b> BitWriter<'b> {
     }
 
     /// EXI unsigned integer: 7-bit groups, least significant group first, high bit = more.
-    pub fn uint(&mut self, mut v: u32) -> Result<(), EncodeError> {
+    pub fn uint(&mut self, v: u32) -> Result<(), EncodeError> {
+        self.uint64(u64::from(v))
+    }
+
+    pub fn uint64(&mut self, mut v: u64) -> Result<(), EncodeError> {
         loop {
             let group = v & 0x7f;
             v >>= 7;
-            self.bits(group | if v != 0 { 0x80 } else { 0 }, 8)?;
+            self.bits(group as u32 | if v != 0 { 0x80 } else { 0 }, 8)?;
             if v == 0 {
                 return Ok(());
             }
@@ -81,18 +85,23 @@ impl<'b> BitReader<'b> {
     }
 
     pub fn uint(&mut self) -> Result<u32, DecodeError> {
-        let mut v: u32 = 0;
-        for i in 0..5 {
+        u32::try_from(self.uint64()?)
+            .map_err(|_| DecodeError::InvalidValue("unsigned integer exceeds 32 bits"))
+    }
+
+    pub fn uint64(&mut self) -> Result<u64, DecodeError> {
+        let mut v: u64 = 0;
+        for i in 0..10 {
             let octet = self.bits(8)?;
-            let group = octet & 0x7f;
-            if i == 4 && group > 0x0f {
-                return Err(DecodeError::InvalidValue("unsigned integer exceeds 32 bits"));
+            let group = u64::from(octet & 0x7f);
+            if i == 9 && group > 1 {
+                return Err(DecodeError::InvalidValue("unsigned integer exceeds 64 bits"));
             }
             v |= group << (7 * i);
             if octet & 0x80 == 0 {
                 return Ok(v);
             }
         }
-        Err(DecodeError::InvalidValue("unsigned integer exceeds 32 bits"))
+        Err(DecodeError::InvalidValue("unsigned integer exceeds 64 bits"))
     }
 }

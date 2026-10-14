@@ -12,6 +12,7 @@ extern crate std;
 pub mod app_protocol;
 pub mod arena;
 pub mod bits;
+pub mod common;
 
 pub use arena::{Arena, ArenaFull};
 

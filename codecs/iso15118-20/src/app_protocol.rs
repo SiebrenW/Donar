@@ -271,7 +271,7 @@ fn decode_app_protocol<'s>(
 
 /// Reads `len` code points. With an arena the UTF-8 is stored there; without one the
 /// characters are validated and skipped.
-fn decode_string<'s>(
+pub(crate) fn decode_string<'s>(
     r: &mut BitReader<'_>,
     len: usize,
     arena: Option<&'s Arena<'_>>,
