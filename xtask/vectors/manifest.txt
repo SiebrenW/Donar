@@ -35,3 +35,7 @@ service_selection_res_failed V2G_CI_CommonMessages.xsd
 service_detail_res_hits V2G_CI_CommonMessages.xsd
 service_discovery_res_max V2G_CI_CommonMessages.xsd
 service_discovery_req_max V2G_CI_CommonMessages.xsd
+dc_cpd_req V2G_CI_DC.xsd
+dc_cpd_req_soc V2G_CI_DC.xsd
+dc_cpd_res V2G_CI_DC.xsd
+dc_cpd_res_ramp V2G_CI_DC.xsd

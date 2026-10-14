@@ -124,6 +124,13 @@ pub struct MessageHeader {
     pub timestamp: u64,
 }
 
+/// `RationalNumberType`: `value * 10^exponent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RationalNumber {
+    pub exponent: i8,
+    pub value: i16,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionSetupReq<'a> {
     pub header: MessageHeader,
@@ -516,4 +523,25 @@ fn decode_identifier<'s>(r: &mut BitReader<'_>, arena: &'s Arena<'_>) -> Result<
     let s = decode_string(r, len, Some(arena))?;
     expect_zero(r, 1)?; // EE
     Ok(s)
+}
+
+/// A `RationalNumberType` element whose start tag is event code `se_code` in a `se_bits`-wide
+/// state: `Exponent` (8-bit offset) and `Value` (EXI integer).
+pub(crate) fn put_rational(w: &mut BitWriter<'_>, se_code: u32, se_bits: u32, v: RationalNumber) -> Result<(), EncodeError> {
+    w.bits(se_code, se_bits)?;
+    w.bits(0, 2)?; // SE(Exponent), CH
+    w.bits((i32::from(v.exponent) + 128) as u32, 8)?;
+    w.bits(0, 3)?; // EE, SE(Value), CH
+    w.int(i32::from(v.value))?;
+    w.bits(0, 2) // EE(Value), EE(rational)
+}
+
+/// Reads what [`put_rational`] wrote for `se_code == 0` (the caller checks the start tag).
+pub(crate) fn get_rational(r: &mut BitReader<'_>, se_bits: u32) -> Result<RationalNumber, DecodeError> {
+    expect_zero(r, se_bits + 2)?;
+    let exponent = (r.bits(8)? as i32 - 128) as i8;
+    expect_zero(r, 3)?;
+    let value = i16::try_from(r.int()?).map_err(|_| DecodeError::InvalidValue("value exceeds short"))?;
+    expect_zero(r, 2)?;
+    Ok(RationalNumber { exponent, value })
 }
