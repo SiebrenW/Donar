@@ -29,6 +29,12 @@ pub enum MsgKind {
     AuthorizationSetupRes,
     AuthorizationReq,
     AuthorizationRes,
+    ServiceDiscoveryReq,
+    ServiceDiscoveryRes,
+    ServiceDetailReq,
+    ServiceDetailRes,
+    ServiceSelectionReq,
+    ServiceSelectionRes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +48,8 @@ pub enum Record<'a> {
     SessionSetUp { session_id: [u8; 8], evse_id: &'a str },
     /// The `EVSEProcessing` value of an `AuthorizationRes`.
     EvseProcessing { processing: Processing },
+    /// The energy transfer service and parameter set the EVSE accepted.
+    ServiceSelected { service_id: u16, parameter_set_id: u16 },
     RxPayload { payload_type: u16, payload: &'a [u8] },
     DecodeFailed { state: State, error: DecodeError },
     Ended { reason: EndReason },
@@ -50,7 +58,10 @@ pub enum Record<'a> {
 impl Record<'_> {
     pub fn level(&self) -> Level {
         match self {
-            Record::Started { .. } | Record::StateChange { .. } | Record::SessionSetUp { .. } => Level::Info,
+            Record::Started { .. }
+            | Record::StateChange { .. }
+            | Record::SessionSetUp { .. }
+            | Record::ServiceSelected { .. } => Level::Info,
             Record::Response { code, .. } if !crate::session::is_ok(*code) => Level::Info,
             Record::Response { .. } | Record::EvseProcessing { .. } | Record::MsgTx { .. } | Record::MsgRx { .. } => {
                 Level::Debug

@@ -1,5 +1,6 @@
-//! The V2G session machine: SupportedAppProtocol handshake, SessionSetup, then EIM
-//! authorization. (More of the DC dynamic flow is added slice by slice.)
+//! The V2G session machine: SupportedAppProtocol handshake, SessionSetup, EIM authorization
+//! and service discovery, detail and selection. (More of the DC dynamic flow is added slice
+//! by slice.)
 //!
 //! Host contract:
 //! 1. Open the TCP/TLS connection found by SDP, then send [`Event::Start`].
@@ -13,6 +14,9 @@ use iso15118_20::app_protocol::{self, AppProtocol, SupportedAppProtocolReq};
 use iso15118_20::common::{
     self, Authorization, AuthorizationReq, AuthorizationSetupReq, MessageHeader, Processing, ResponseCode,
     SessionSetupReq,
+};
+use iso15118_20::services::{
+    self, ParameterSet, ParameterValue, SelectedService, ServiceDetailReq, ServiceDiscoveryReq, ServiceSelectionReq,
 };
 use iso15118_20::{Arena, DecodeError};
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
@@ -32,6 +36,11 @@ pub struct Config {
     /// Upper bound on a repeated `Ongoing` exchange such as authorization polling. 60 s is
     /// EcoG's `V2G_EVCC_ONGOING_TIMEOUT` (requirement id: TODO, not yet identified).
     pub ongoing_timeout_ms: u32,
+    /// The energy transfer service to select (`services::service_id`).
+    pub energy_service: u16,
+    /// A parameter set is acceptable when it holds every `(name, value)` listed here as an
+    /// integer parameter. The first acceptable set is selected.
+    pub parameter_filter: &'static [(&'static str, i32)],
 }
 
 impl Config {
@@ -46,6 +55,12 @@ impl Config {
         },
         response_timeout_ms: 2000,
         ongoing_timeout_ms: 60_000,
+        energy_service: services::service_id::DC,
+        // ControlMode 2 = Dynamic, MobilityNeedsMode 1 = provided by the EVCC. The numbers are
+        // from memory of other open-source stacks, not checked against the standard's DC
+        // service parameter table (TODO). The `Connector` parameter is not matched yet: it
+        // should follow the vehicle's inlet (TODO, needs an `Ev` query).
+        parameter_filter: &[("ControlMode", 2), ("MobilityNeedsMode", 1)],
     };
 }
 
@@ -66,8 +81,12 @@ pub enum State {
     AwaitSessionSetupRes,
     AwaitAuthorizationSetupRes,
     AwaitAuthorizationRes,
-    /// Authorized; the rest of the flow is added with the later slices.
-    Authorized,
+    AwaitServiceDiscoveryRes,
+    AwaitServiceDetailRes,
+    AwaitServiceSelectionRes,
+    /// The energy transfer service is selected; the rest of the flow is added with the later
+    /// slices.
+    ServiceSelected,
     Ended,
 }
 
@@ -79,6 +98,10 @@ pub enum EndReason {
     NoCommonProtocol,
     /// The EVSE offers no authorization service this EV can use (only EIM is implemented).
     NoCompatibleAuthorization,
+    /// The EVSE does not offer the energy transfer service this EV wants.
+    NoCompatibleService,
+    /// None of the EVSE's parameter sets for the service matches `Config::parameter_filter`.
+    NoCompatibleParameterSet,
     /// The EVSE answered with a failing response code.
     Rejected(ResponseCode),
     Timeout,
@@ -106,6 +129,8 @@ pub enum Notice {
     SessionSetUp { session_id: [u8; 8] },
     /// Authorization finished successfully.
     Authorized,
+    /// The EVSE accepted the service selection.
+    ServiceSelected { service_id: u16, parameter_set_id: u16 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -135,6 +160,7 @@ struct Machine<E, L> {
     session_id: [u8; 8],
     /// The `Ongoing` timer is armed once, when the first `Ongoing` response arrives.
     ongoing_armed: bool,
+    selected: SelectedService,
 }
 
 impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
@@ -152,6 +178,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 secured: false,
                 session_id: [0; 8],
                 ongoing_armed: false,
+                selected: SelectedService { service_id: 0, parameter_set_id: 0 },
             },
         }
     }
@@ -232,6 +259,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 | State::AwaitSessionSetupRes
                 | State::AwaitAuthorizationSetupRes
                 | State::AwaitAuthorizationRes
+                | State::AwaitServiceDiscoveryRes
+                | State::AwaitServiceDetailRes
+                | State::AwaitServiceSelectionRes
         )
     }
 
@@ -344,13 +374,17 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         }
                         match res.evse_processing {
                             Processing::Finished => {
-                                self.goto(State::Authorized);
-                                Step {
-                                    timers: Timers::one(TimerCmd::Cancel(Timer::Response))
-                                        .with(TimerCmd::Cancel(Timer::Ongoing)),
-                                    notice: Some(Notice::Authorized),
-                                    ..Step::default()
+                                let msg = ServiceDiscoveryReq { header: self.header(), supported_service_ids: None };
+                                let framed = frame(tx, PayloadType::MAINSTREAM, |out| {
+                                    services::encode_service_discovery_req(&msg, out)
+                                });
+                                let mut step =
+                                    self.send_then(State::AwaitServiceDiscoveryRes, MsgKind::ServiceDiscoveryReq, framed);
+                                if step.end.is_none() {
+                                    step.timers = step.timers.with(TimerCmd::Cancel(Timer::Ongoing));
+                                    step.notice = Some(Notice::Authorized);
                                 }
+                                step
                             }
                             // Ref: ISO 15118-20:2022 V2G20-1582 (as cited by EcoG, unchecked):
                             // while EVSEProcessing is Ongoing the EVCC sends another AuthorizationReq,
@@ -372,8 +406,92 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                     Err(e) => self.malformed(e),
                 }
             }
+            State::AwaitServiceDiscoveryRes if payload_type == PayloadType::MAINSTREAM => {
+                match common::decode(payload, arena) {
+                    Ok(M::ServiceDiscoveryRes(res)) => {
+                        if let Some(end) = self.received(MsgKind::ServiceDiscoveryRes, res.response_code) {
+                            return end;
+                        }
+                        let wanted = self.config.energy_service;
+                        if !res.energy_transfer_services.iter().any(|s| s.service_id == wanted) {
+                            return self.end(EndReason::NoCompatibleService);
+                        }
+                        let msg = ServiceDetailReq { header: self.header(), service_id: wanted };
+                        let framed =
+                            frame(tx, PayloadType::MAINSTREAM, |out| services::encode_service_detail_req(&msg, out));
+                        self.send_then(State::AwaitServiceDetailRes, MsgKind::ServiceDetailReq, framed)
+                    }
+                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Err(e) => self.malformed(e),
+                }
+            }
+            State::AwaitServiceDetailRes if payload_type == PayloadType::MAINSTREAM => {
+                match common::decode(payload, arena) {
+                    Ok(M::ServiceDetailRes(res)) => {
+                        if let Some(end) = self.received(MsgKind::ServiceDetailRes, res.response_code) {
+                            return end;
+                        }
+                        if res.service_id != self.config.energy_service {
+                            return self.end(EndReason::UnexpectedMessage);
+                        }
+                        let Some(parameter_set_id) = self.pick_parameter_set(res.parameter_sets) else {
+                            return self.end(EndReason::NoCompatibleParameterSet);
+                        };
+                        let selected = SelectedService { service_id: res.service_id, parameter_set_id };
+                        self.selected = selected;
+                        let msg = ServiceSelectionReq { header: self.header(), energy_transfer_service: selected, vas: None };
+                        let framed =
+                            frame(tx, PayloadType::MAINSTREAM, |out| services::encode_service_selection_req(&msg, out));
+                        self.send_then(State::AwaitServiceSelectionRes, MsgKind::ServiceSelectionReq, framed)
+                    }
+                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Err(e) => self.malformed(e),
+                }
+            }
+            State::AwaitServiceSelectionRes if payload_type == PayloadType::MAINSTREAM => {
+                match common::decode(payload, arena) {
+                    Ok(M::ServiceSelectionRes(res)) => {
+                        if let Some(end) = self.received(MsgKind::ServiceSelectionRes, res.response_code) {
+                            return end;
+                        }
+                        let SelectedService { service_id, parameter_set_id } = self.selected;
+                        self.log.record(&Record::ServiceSelected { service_id, parameter_set_id });
+                        self.goto(State::ServiceSelected);
+                        Step {
+                            timers: Timers::one(TimerCmd::Cancel(Timer::Response)),
+                            notice: Some(Notice::ServiceSelected { service_id, parameter_set_id }),
+                            ..Step::default()
+                        }
+                    }
+                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Err(e) => self.malformed(e),
+                }
+            }
             _ => self.end(EndReason::UnexpectedMessage),
         }
+    }
+
+    /// Logs a received response and its code; returns the ending step if the code is a failure.
+    fn received(&mut self, msg: MsgKind, code: ResponseCode) -> Option<Step> {
+        self.log.record(&Record::MsgRx { msg });
+        self.log.record(&Record::Response { msg, code });
+        if is_ok(code) { None } else { Some(self.end(EndReason::Rejected(code))) }
+    }
+
+    fn pick_parameter_set(&self, sets: &[ParameterSet<'_>]) -> Option<u16> {
+        let as_int = |v: ParameterValue<'_>| match v {
+            ParameterValue::Byte(v) => Some(i32::from(v)),
+            ParameterValue::Short(v) => Some(i32::from(v)),
+            ParameterValue::Int(v) => Some(v),
+            _ => None,
+        };
+        sets.iter()
+            .find(|set| {
+                self.config.parameter_filter.iter().all(|&(name, want)| {
+                    set.parameters.iter().any(|p| p.name == name && as_int(p.value) == Some(want))
+                })
+            })
+            .map(|set| set.id)
     }
 
     fn send_authorization_req(&mut self, next: State, tx: &mut [u8]) -> Step {

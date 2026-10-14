@@ -13,9 +13,9 @@ use evcc_core::session::{EndReason, Event, Notice, Session, Step};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// The part of the flow implemented so far finished: the session is set up and the EV is
-    /// authorized.
-    Authorized { session_id: [u8; 8] },
+    /// The part of the flow implemented so far finished: the EV is authorized and the EVSE
+    /// accepted its energy transfer service selection.
+    ServiceSelected { session_id: [u8; 8], service_id: u16, parameter_set_id: u16 },
     /// The session machine ended.
     Ended(EndReason),
     /// The peer closed the connection while the session was still running.
@@ -55,8 +55,10 @@ fn drive<E: Ev, L: LogSink>(stream: &mut TcpStream, session: &mut Session<'_, E,
         }
         match step.notice {
             Some(Notice::SessionSetUp { session_id: id }) => session_id = id,
-            Some(Notice::Authorized) => return Ok(Outcome::Authorized { session_id }),
-            None => {}
+            Some(Notice::ServiceSelected { service_id, parameter_set_id }) => {
+                return Ok(Outcome::ServiceSelected { session_id, service_id, parameter_set_id });
+            }
+            Some(Notice::Authorized) | None => {}
         }
         match next_step(stream, session, &mut deadlines)? {
             Next::Step(next) => step = next,

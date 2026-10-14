@@ -40,8 +40,8 @@ fn session_is_set_up_over_tcp() {
     let evse = evse_sim::Config::default();
     let want = evse.session_id;
     let (addr, server) = start(evse);
-    assert_eq!(run_ev(addr, Config::DC_20), Outcome::Authorized { session_id: want });
-    assert_eq!(server.join().unwrap().unwrap(), EvseState::Authorized);
+    assert_eq!(run_ev(addr, Config::DC_20), Outcome::ServiceSelected { session_id: want, service_id: 2, parameter_set_id: 1 });
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::ServiceSelected);
 }
 
 #[test]
@@ -82,8 +82,8 @@ fn evse_hanging_up_is_reported() {
 fn authorization_polling_ends_when_the_evse_finishes() {
     let (addr, server) = start(evse_sim::Config { authorization_ongoing_responses: 3, ..Default::default() });
     let outcome = run_ev(addr, Config::DC_20);
-    assert!(matches!(outcome, Outcome::Authorized { .. }), "{outcome:?}");
-    assert_eq!(server.join().unwrap().unwrap(), EvseState::Authorized);
+    assert!(matches!(outcome, Outcome::ServiceSelected { .. }), "{outcome:?}");
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::ServiceSelected);
 }
 
 #[test]
@@ -113,4 +113,38 @@ fn evse_offering_only_pnc_leaves_no_usable_authorization() {
     let (addr, server) = start(evse_sim::Config { offered_authorization: vec![iso15118_20::common::Authorization::Pnc], ..Default::default() });
     assert_eq!(run_ev(addr, Config::DC_20), Outcome::Ended(EndReason::NoCompatibleAuthorization));
     drop(server);
+}
+
+#[test]
+fn evse_without_dc_leaves_no_usable_service() {
+    let (addr, server) = start(evse_sim::Config { energy_services: vec![1], ..Default::default() });
+    assert_eq!(run_ev(addr, Config::DC_20), Outcome::Ended(EndReason::NoCompatibleService));
+    drop(server);
+}
+
+#[test]
+fn evse_with_only_scheduled_control_leaves_no_usable_parameter_set() {
+    let scheduled = vec![("ControlMode".to_string(), 1), ("MobilityNeedsMode".to_string(), 1)];
+    let (addr, server) = start(evse_sim::Config { parameter_sets: vec![(1, scheduled)], ..Default::default() });
+    assert_eq!(run_ev(addr, Config::DC_20), Outcome::Ended(EndReason::NoCompatibleParameterSet));
+    drop(server);
+}
+
+#[test]
+fn the_dynamic_parameter_set_is_chosen_among_several() {
+    let set = |id, control_mode| (id, vec![("ControlMode".to_string(), control_mode), ("MobilityNeedsMode".to_string(), 1)]);
+    let (addr, server) = start(evse_sim::Config { parameter_sets: vec![set(4, 1), set(9, 2)], ..Default::default() });
+    let outcome = run_ev(addr, Config::DC_20);
+    assert!(matches!(outcome, Outcome::ServiceSelected { service_id: 2, parameter_set_id: 9, .. }), "{outcome:?}");
+    server.join().unwrap().unwrap();
+}
+
+#[test]
+fn refused_service_selection_is_reported() {
+    let (addr, server) = start(evse_sim::Config { selection_code: ResponseCode::FailedServiceSelectionInvalid, ..Default::default() });
+    assert_eq!(
+        run_ev(addr, Config::DC_20),
+        Outcome::Ended(EndReason::Rejected(ResponseCode::FailedServiceSelectionInvalid))
+    );
+    server.join().unwrap().unwrap();
 }

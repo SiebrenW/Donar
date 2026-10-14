@@ -12,6 +12,10 @@ use iso15118_20::common::{
     self, Authorization, AuthorizationRes, AuthorizationServices, AuthorizationSetupRes, MessageHeader, Processing,
     ResponseCode, SessionSetupRes,
 };
+use iso15118_20::services::{
+    self, Parameter, ParameterSet, ParameterValue, SelectedService, Service, ServiceDetailRes, ServiceDiscoveryRes,
+    ServiceSelectionRes,
+};
 use iso15118_20::{Arena, EncodeError};
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
@@ -35,6 +39,12 @@ pub struct Config {
     pub authorization_code: ResponseCode,
     /// Authorization services offered in `AuthorizationSetupRes`.
     pub offered_authorization: Vec<Authorization>,
+    /// Energy transfer services offered in `ServiceDiscoveryRes`.
+    pub energy_services: Vec<u16>,
+    /// Parameter sets answered for every offered service: `(id, [(name, integer value)])`.
+    pub parameter_sets: Vec<(u16, Vec<(String, i32)>)>,
+    /// Response code of the `ServiceSelectionRes` for a valid selection.
+    pub selection_code: ResponseCode,
 }
 
 impl Default for Config {
@@ -49,6 +59,19 @@ impl Default for Config {
             authorization_never_finishes: false,
             authorization_code: ResponseCode::Ok,
             offered_authorization: vec![Authorization::Eim],
+            energy_services: vec![services::service_id::DC],
+            // Connector 1, ControlMode 2 (Dynamic), MobilityNeedsMode 1, Pricing 0; the
+            // numbers are unchecked (see `evcc_core::session::Config::DC_20`).
+            parameter_sets: vec![(
+                1,
+                vec![
+                    ("Connector".into(), 1),
+                    ("ControlMode".into(), 2),
+                    ("MobilityNeedsMode".into(), 1),
+                    ("Pricing".into(), 0),
+                ],
+            )],
+            selection_code: ResponseCode::Ok,
         }
     }
 }
@@ -59,7 +82,11 @@ pub enum State {
     AwaitSessionSetupReq,
     AwaitAuthorizationSetupReq,
     AwaitAuthorizationReq,
-    Authorized,
+    AwaitServiceDiscoveryReq,
+    AwaitServiceDetailReq,
+    AwaitServiceSelectionReq,
+    /// The EV's service selection was accepted.
+    ServiceSelected,
     Closed,
 }
 
@@ -197,12 +224,48 @@ impl Evse {
                 let res = AuthorizationRes { header: self.header(), response_code, evse_processing };
                 let finished_ok = !ongoing && matches!(response_code, ResponseCode::Ok);
                 if finished_ok {
-                    self.state = State::Authorized;
+                    self.state = State::AwaitServiceDiscoveryReq;
                 }
                 Output {
                     send: frame(PayloadType::MAINSTREAM, |out| common::encode_authorization_res(&res, out)),
                     close: !ongoing && !finished_ok,
                 }
+            }
+            State::AwaitServiceDiscoveryReq if payload_type == PayloadType::MAINSTREAM => {
+                let Ok(common::Message::ServiceDiscoveryReq(req)) = common::decode(payload, &arena) else { return closed };
+                if req.header.session_id != self.config.session_id {
+                    return self.discovery_res(ResponseCode::FailedUnknownSession);
+                }
+                self.state = State::AwaitServiceDetailReq;
+                self.discovery_res(ResponseCode::Ok)
+            }
+            State::AwaitServiceDetailReq if payload_type == PayloadType::MAINSTREAM => {
+                let Ok(common::Message::ServiceDetailReq(req)) = common::decode(payload, &arena) else { return closed };
+                if req.header.session_id != self.config.session_id {
+                    return self.detail_res(ResponseCode::FailedUnknownSession, req.service_id);
+                }
+                if !self.config.energy_services.contains(&req.service_id) {
+                    return self.detail_res(ResponseCode::FailedServiceIDInvalid, req.service_id);
+                }
+                self.state = State::AwaitServiceSelectionReq;
+                self.detail_res(ResponseCode::Ok, req.service_id)
+            }
+            State::AwaitServiceSelectionReq if payload_type == PayloadType::MAINSTREAM => {
+                let Ok(common::Message::ServiceSelectionReq(req)) = common::decode(payload, &arena) else { return closed };
+                if req.header.session_id != self.config.session_id {
+                    return self.selection_res(ResponseCode::FailedUnknownSession);
+                }
+                let SelectedService { service_id, parameter_set_id } = req.energy_transfer_service;
+                let valid = self.config.energy_services.contains(&service_id)
+                    && self.config.parameter_sets.iter().any(|(id, _)| *id == parameter_set_id);
+                if !valid {
+                    return self.selection_res(ResponseCode::FailedServiceSelectionInvalid);
+                }
+                let code = self.config.selection_code;
+                if matches!(code, ResponseCode::Ok) {
+                    self.state = State::ServiceSelected;
+                }
+                self.selection_res(code)
             }
             // The rest of the flow is added with the later slices.
             _ => closed,
@@ -211,6 +274,54 @@ impl Evse {
 }
 
 impl Evse {
+    /// `ServiceDiscoveryRes`; a failure code closes the connection.
+    fn discovery_res(&self, code: ResponseCode) -> Output {
+        let list: Vec<Service> =
+            self.config.energy_services.iter().map(|&service_id| Service { service_id, free: false }).collect();
+        let res = ServiceDiscoveryRes {
+            header: self.header(),
+            response_code: code,
+            service_renegotiation_supported: false,
+            energy_transfer_services: &list,
+            vas: None,
+        };
+        Output {
+            send: frame(PayloadType::MAINSTREAM, |out| services::encode_service_discovery_res(&res, out)),
+            close: !is_ok(code),
+        }
+    }
+
+    fn detail_res(&self, code: ResponseCode, service_id: u16) -> Output {
+        let names: Vec<Vec<Parameter<'_>>> = self
+            .config
+            .parameter_sets
+            .iter()
+            .map(|(_, params)| {
+                params.iter().map(|(name, v)| Parameter { name, value: ParameterValue::Int(*v) }).collect()
+            })
+            .collect();
+        let sets: Vec<ParameterSet<'_>> = self
+            .config
+            .parameter_sets
+            .iter()
+            .zip(&names)
+            .map(|((id, _), parameters)| ParameterSet { id: *id, parameters })
+            .collect();
+        let res = ServiceDetailRes { header: self.header(), response_code: code, service_id, parameter_sets: &sets };
+        Output {
+            send: frame(PayloadType::MAINSTREAM, |out| services::encode_service_detail_res(&res, out)),
+            close: !is_ok(code),
+        }
+    }
+
+    fn selection_res(&self, code: ResponseCode) -> Output {
+        let res = ServiceSelectionRes { header: self.header(), response_code: code };
+        Output {
+            send: frame(PayloadType::MAINSTREAM, |out| services::encode_service_selection_res(&res, out)),
+            close: !is_ok(code),
+        }
+    }
+
     fn header(&self) -> MessageHeader {
         MessageHeader { session_id: self.config.session_id, timestamp: now() }
     }
@@ -238,6 +349,10 @@ impl Evse {
         };
         Output { send, close: true }
     }
+}
+
+fn is_ok(code: ResponseCode) -> bool {
+    matches!(code, ResponseCode::Ok | ResponseCode::OkNewSessionEstablished | ResponseCode::OkOldSessionJoined)
 }
 
 fn now() -> u64 {

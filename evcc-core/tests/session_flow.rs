@@ -13,6 +13,9 @@ use iso15118_20::common::{
     self, Authorization, AuthorizationRes, AuthorizationServices, AuthorizationSetupRes, MessageHeader, Processing,
     ResponseCode, SessionSetupRes,
 };
+use iso15118_20::services::{
+    self, Parameter, ParameterSet, ParameterValue, Service, ServiceDetailRes, ServiceDiscoveryRes, ServiceSelectionRes,
+};
 use iso15118_20::{Arena, DecodeError};
 use v2gtp::{HEADER_LEN, PayloadType};
 
@@ -87,7 +90,7 @@ fn deliver(s: &mut Sess<'_>, bytes: &[u8]) -> Step {
 }
 
 fn framed(payload_type: PayloadType, encode: impl FnOnce(&mut [u8]) -> usize) -> std::vec::Vec<u8> {
-    let mut buf = [0u8; 256];
+    let mut buf = [0u8; 1024];
     let n = encode(&mut buf[HEADER_LEN..]);
     v2gtp::write_header(&mut buf, payload_type, n).unwrap();
     buf[..HEADER_LEN + n].to_vec()
@@ -131,6 +134,43 @@ fn auth_res(code: ResponseCode, p: Processing) -> std::vec::Vec<u8> {
 }
 
 /// The framed message the session wants to send, decoded by the common codec.
+fn discovery_res(code: ResponseCode, ids: &[u16]) -> std::vec::Vec<u8> {
+    let list: std::vec::Vec<Service> = ids.iter().map(|&service_id| Service { service_id, free: false }).collect();
+    framed(PayloadType::MAINSTREAM, |out| {
+        let msg = ServiceDiscoveryRes {
+            header: hdr(),
+            response_code: code,
+            service_renegotiation_supported: false,
+            energy_transfer_services: &list,
+            vas: None,
+        };
+        services::encode_service_discovery_res(&msg, out).unwrap()
+    })
+}
+
+/// One parameter set per `(id, [(name, int)])` entry.
+fn detail_res(code: ResponseCode, service_id: u16, sets: &[(u16, &[(&str, i32)])]) -> std::vec::Vec<u8> {
+    let params: std::vec::Vec<std::vec::Vec<Parameter<'_>>> = sets
+        .iter()
+        .map(|(_, ps)| ps.iter().map(|&(name, v)| Parameter { name, value: ParameterValue::Int(v) }).collect())
+        .collect();
+    let sets: std::vec::Vec<ParameterSet<'_>> =
+        sets.iter().zip(&params).map(|((id, _), parameters)| ParameterSet { id: *id, parameters }).collect();
+    framed(PayloadType::MAINSTREAM, |out| {
+        let msg = ServiceDetailRes { header: hdr(), response_code: code, service_id, parameter_sets: &sets };
+        services::encode_service_detail_res(&msg, out).unwrap()
+    })
+}
+
+const DYNAMIC: &[(&str, i32)] = &[("Connector", 1), ("ControlMode", 2), ("MobilityNeedsMode", 1), ("Pricing", 0)];
+const SCHEDULED: &[(&str, i32)] = &[("Connector", 1), ("ControlMode", 1), ("MobilityNeedsMode", 1), ("Pricing", 0)];
+
+fn selection_res(code: ResponseCode) -> std::vec::Vec<u8> {
+    framed(PayloadType::MAINSTREAM, |out| {
+        services::encode_service_selection_res(&ServiceSelectionRes { header: hdr(), response_code: code }, out).unwrap()
+    })
+}
+
 fn sent(s: &Sess<'_>, step: &Step) -> (PayloadType, std::vec::Vec<u8>) {
     let bytes = &s.tx()[..step.send.expect("nothing to send")];
     let v2gtp::Parse::Frame(f) = v2gtp::parse(bytes, 512).unwrap() else { panic!("incomplete frame") };
@@ -167,6 +207,85 @@ fn up_to_authorization<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
     deliver(&mut s, &auth_setup_res(ResponseCode::Ok, &[Authorization::Eim]));
     assert_eq!(s.state(), State::AwaitAuthorizationRes);
     s
+}
+
+/// Up to and including the `ServiceDiscoveryReq`.
+fn up_to_service_discovery<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
+    let mut s = up_to_authorization(rig, log);
+    deliver(&mut s, &auth_res(ResponseCode::Ok, Processing::Finished));
+    assert_eq!(s.state(), State::AwaitServiceDiscoveryRes);
+    s
+}
+
+/// Up to and including the `ServiceDetailReq`.
+fn up_to_service_detail<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
+    let mut s = up_to_service_discovery(rig, log);
+    deliver(&mut s, &discovery_res(ResponseCode::Ok, &[2]));
+    assert_eq!(s.state(), State::AwaitServiceDetailRes);
+    s
+}
+
+fn up_to_service_selection<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
+    let mut s = up_to_service_detail(rig, log);
+    deliver(&mut s, &detail_res(ResponseCode::Ok, 2, &[(1, DYNAMIC)]));
+    assert_eq!(s.state(), State::AwaitServiceSelectionRes);
+    s
+}
+
+fn up_to_service_selected<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
+    let mut s = up_to_service_selection(rig, log);
+    deliver(&mut s, &selection_res(ResponseCode::Ok));
+    assert_eq!(s.state(), State::ServiceSelected);
+    s
+}
+
+#[test]
+fn service_negotiation_failures_end_the_session() {
+    // The EVSE does not offer DC.
+    let mut rig = Rig::new();
+    let mut s = up_to_service_discovery(&mut rig, Capture::default());
+    let step = deliver(&mut s, &discovery_res(ResponseCode::Ok, &[1]));
+    assert_eq!(step.end, Some(EndReason::NoCompatibleService));
+
+    let mut rig = Rig::new();
+    let mut s = up_to_service_discovery(&mut rig, Capture::default());
+    let step = deliver(&mut s, &discovery_res(ResponseCode::FailedSequenceError, &[2]));
+    assert_eq!(step.end, Some(EndReason::Rejected(ResponseCode::FailedSequenceError)));
+
+    // Only a scheduled parameter set: this EV does Dynamic.
+    let mut rig = Rig::new();
+    let mut s = up_to_service_detail(&mut rig, Capture::default());
+    let step = deliver(&mut s, &detail_res(ResponseCode::Ok, 2, &[(1, SCHEDULED)]));
+    assert_eq!(step.end, Some(EndReason::NoCompatibleParameterSet));
+
+    let mut rig = Rig::new();
+    let mut s = up_to_service_detail(&mut rig, Capture::default());
+    let step = deliver(&mut s, &detail_res(ResponseCode::FailedServiceIDInvalid, 2, &[(1, DYNAMIC)]));
+    assert_eq!(step.end, Some(EndReason::Rejected(ResponseCode::FailedServiceIDInvalid)));
+
+    // A detail for another service than the one asked about.
+    let mut rig = Rig::new();
+    let mut s = up_to_service_detail(&mut rig, Capture::default());
+    let step = deliver(&mut s, &detail_res(ResponseCode::Ok, 1, &[(1, DYNAMIC)]));
+    assert_eq!(step.end, Some(EndReason::UnexpectedMessage));
+
+    let mut rig = Rig::new();
+    let mut s = up_to_service_selection(&mut rig, Capture::default());
+    let step = deliver(&mut s, &selection_res(ResponseCode::FailedServiceSelectionInvalid));
+    assert_eq!(step.end, Some(EndReason::Rejected(ResponseCode::FailedServiceSelectionInvalid)));
+}
+
+#[test]
+fn every_service_step_has_a_response_timeout() {
+    let mut rig = Rig::new();
+    let mut s = up_to_service_discovery(&mut rig, Capture::default());
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Response)).end, Some(EndReason::Timeout));
+    let mut rig = Rig::new();
+    let mut s = up_to_service_detail(&mut rig, Capture::default());
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Response)).end, Some(EndReason::Timeout));
+    let mut rig = Rig::new();
+    let mut s = up_to_service_selection(&mut rig, Capture::default());
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Response)).end, Some(EndReason::Timeout));
 }
 
 #[test]
@@ -208,11 +327,38 @@ fn full_flow_to_authorized() {
         assert_eq!(req.header.session_id, SID);
     });
 
+    // Authorization done: the EV asks which services exist, and the ongoing timer is cancelled.
     let step = deliver(&mut s, &auth_res(ResponseCode::Ok, Processing::Finished));
     assert_eq!(step.notice, Some(Notice::Authorized));
+    assert_eq!(step.timers, response_timer().with(TimerCmd::Cancel(Timer::Ongoing)));
+    assert_eq!(s.state(), State::AwaitServiceDiscoveryRes);
+    sent_common(&s, &step, |m| {
+        let common::Message::ServiceDiscoveryReq(req) = m else { panic!("{m:?}") };
+        assert_eq!(req.header.session_id, SID);
+        assert_eq!(req.supported_service_ids, None, "ask for every service");
+    });
+
+    let step = deliver(&mut s, &discovery_res(ResponseCode::Ok, &[services::service_id::AC, services::service_id::DC]));
+    assert_eq!(step.timers, response_timer());
+    sent_common(&s, &step, |m| {
+        let common::Message::ServiceDetailReq(req) = m else { panic!("{m:?}") };
+        assert_eq!(req.service_id, services::service_id::DC);
+    });
+
+    // Two parameter sets: the scheduled one is skipped, the dynamic one (id 7) is chosen.
+    let step = deliver(&mut s, &detail_res(ResponseCode::Ok, 2, &[(3, SCHEDULED), (7, DYNAMIC)]));
+    assert_eq!(step.timers, response_timer());
+    sent_common(&s, &step, |m| {
+        let common::Message::ServiceSelectionReq(req) = m else { panic!("{m:?}") };
+        assert_eq!(req.energy_transfer_service, services::SelectedService { service_id: 2, parameter_set_id: 7 });
+        assert_eq!(req.vas, None);
+    });
+
+    let step = deliver(&mut s, &selection_res(ResponseCode::Ok));
+    assert_eq!(step.notice, Some(Notice::ServiceSelected { service_id: 2, parameter_set_id: 7 }));
     assert_eq!(step.send, None);
-    assert_eq!(step.timers, Timers::one(TimerCmd::Cancel(Timer::Response)).with(TimerCmd::Cancel(Timer::Ongoing)));
-    assert_eq!(s.state(), State::Authorized);
+    assert_eq!(step.timers, Timers::one(TimerCmd::Cancel(Timer::Response)));
+    assert_eq!(s.state(), State::ServiceSelected);
 
     let seen = seen.borrow();
     for (kind, tx) in [
@@ -220,6 +366,10 @@ fn full_flow_to_authorized() {
         (MsgKind::SessionSetupRes, false),
         (MsgKind::AuthorizationSetupReq, true),
         (MsgKind::AuthorizationRes, false),
+        (MsgKind::ServiceDiscoveryReq, true),
+        (MsgKind::ServiceDetailRes, false),
+        (MsgKind::ServiceSelectionReq, true),
+        (MsgKind::ServiceSelectionRes, false),
     ] {
         assert!(seen.contains(&Seen::Msg(kind, tx)), "missing {kind:?} tx={tx}");
     }
@@ -276,13 +426,17 @@ fn ongoing_forever_hits_the_ongoing_timeout() {
 #[test]
 fn stale_timers_are_ignored() {
     let mut rig = Rig::new();
-    let mut s = up_to_authorization(&mut rig, Capture::default());
-    deliver(&mut s, &auth_res(ResponseCode::Ok, Processing::Finished));
-    assert_eq!(s.state(), State::Authorized);
+    let mut s = up_to_service_selected(&mut rig, Capture::default());
     // Both timers were cancelled, but an expiry may already have been in flight.
     assert_eq!(s.handle(Event::TimerExpired(Timer::Response)), Step::default());
     assert_eq!(s.handle(Event::TimerExpired(Timer::Ongoing)), Step::default());
-    assert_eq!(s.state(), State::Authorized);
+    assert_eq!(s.state(), State::ServiceSelected);
+
+    // The ongoing timer is cancelled once authorization finishes, too.
+    let mut rig = Rig::new();
+    let mut s = up_to_service_discovery(&mut rig, Capture::default());
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Ongoing)), Step::default());
+    assert_eq!(s.state(), State::AwaitServiceDiscoveryRes);
 }
 
 #[test]
