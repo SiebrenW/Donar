@@ -11,15 +11,14 @@
 //! 4. When an armed timer fires, send [`Event::TimerExpired`] naming it.
 
 use app_protocol::{self, AppProtocol, SupportedAppProtocolReq};
+use exi::{Arena, DecodeError};
 use iso15118_20::common::{
-    self, Authorization, AuthorizationReq, AuthorizationSetupReq, MessageHeader, Processing, ResponseCode,
+    self, AReqAuthorizationModeChoice, Authorization, AuthorizationReq, AuthorizationSetupReq, EimAReqAuthorizationMode,
+    ParameterChoice, ParameterSet, SelectedService, ServiceDetailReq, ServiceDiscoveryReq, ServiceSelectionReq,
     SessionSetupReq,
 };
+use iso15118_20::common_types::{MessageHeader, Processing, ResponseCode};
 use iso15118_20::dc;
-use iso15118_20::services::{
-    self, ParameterSet, ParameterValue, SelectedService, ServiceDetailReq, ServiceDiscoveryReq, ServiceSelectionReq,
-};
-use exi::{Arena, DecodeError};
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
 use crate::ev::Ev;
@@ -48,15 +47,15 @@ impl Config {
     /// ISO 15118-20 DC, version 1.0, schema id 1, top priority.
     pub const DC_20: Config = Config {
         offer: AppProtocol {
-            namespace: "urn:iso:std:iso:15118:-20:DC",
-            version_major: 1,
-            version_minor: 0,
+            protocol_namespace: "urn:iso:std:iso:15118:-20:DC",
+            version_number_major: 1,
+            version_number_minor: 0,
             schema_id: 1,
             priority: 1,
         },
         response_timeout_ms: 2000,
         ongoing_timeout_ms: 60_000,
-        energy_service: services::service_id::DC,
+        energy_service: SERVICE_ID_DC,
         // ControlMode 2 = Dynamic, MobilityNeedsMode 1 = provided by the EVCC. The numbers are
         // from memory of other open-source stacks, not checked against the standard's DC
         // service parameter table (TODO). The `Connector` parameter is not matched yet: it
@@ -64,6 +63,9 @@ impl Config {
         parameter_filter: &[("ControlMode", 2), ("MobilityNeedsMode", 1)],
     };
 }
+
+/// Service id of DC energy transfer (ISO 15118-20:2022 Table 204; via EcoG, unchecked).
+pub const SERVICE_ID_DC: u16 = 2;
 
 /// Host-provided memory. Nothing is allocated by the core.
 pub struct Buffers<'a> {
@@ -141,7 +143,7 @@ pub enum Notice {
     /// The EVSE accepted the service selection.
     ServiceSelected { service_id: u16, parameter_set_id: u16 },
     /// The EVSE's DC limits, from `DC_ChargeParameterDiscoveryRes`.
-    ChargeParametersDiscovered(dc::ChargeParameterDiscoveryRes),
+    ChargeParametersDiscovered(dc::DcChargeParameterDiscoveryRes),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -293,7 +295,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
 
     fn header(&self) -> MessageHeader {
-        MessageHeader { session_id: self.session_id, timestamp: self.ev.header_timestamp() }
+        MessageHeader { session_id: self.session_id, time_stamp: self.ev.header_timestamp() }
     }
 
     /// Records the transmit and arms the response timer for a message framed by [`frame`].
@@ -318,9 +320,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
 
     fn send_supported_app_protocol_req(&mut self, tx: &mut [u8]) -> Step {
         let offer = [self.config.offer];
-        let framed = frame(tx, PayloadType::SAP, |out| {
-            app_protocol::encode_req(&SupportedAppProtocolReq { app_protocols: &offer }, out)
-        });
+        let msg = SupportedAppProtocolReq { app_protocol: &offer };
+        let framed = frame(tx, PayloadType::SAP, |out| msg.encode(out));
         self.send_then(State::AwaitSupportedAppProtocolRes, MsgKind::SupportedAppProtocolReq, framed)
     }
 
@@ -329,7 +330,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         match self.state {
             State::AwaitSupportedAppProtocolRes if payload_type == PayloadType::SAP => {
                 match app_protocol::decode(payload, arena) {
-                    Ok(app_protocol::Message::Res(res)) => {
+                    Ok(app_protocol::Message::SupportedAppProtocolRes(res)) => {
                         self.log.record(&Record::MsgRx { msg: MsgKind::SupportedAppProtocolRes });
                         self.on_supported_app_protocol_res(res, tx)
                     }
@@ -346,10 +347,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                             return self.end(EndReason::Rejected(res.response_code));
                         }
                         self.session_id = res.header.session_id;
-                        self.log.record(&Record::SessionSetUp { session_id: self.session_id, evse_id: res.evse_id });
-                        let framed = frame(tx, PayloadType::MAINSTREAM, |out| {
-                            common::encode_authorization_setup_req(&AuthorizationSetupReq { header: self.header() }, out)
-                        });
+                        self.log.record(&Record::SessionSetUp { session_id: self.session_id, evse_id: res.evseid });
+                        let msg = AuthorizationSetupReq { header: self.header() };
+                        let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
                         let mut step = self.send_then(State::AwaitAuthorizationSetupRes, MsgKind::AuthorizationSetupReq, framed);
                         step.notice = Some(Notice::SessionSetUp { session_id: self.session_id });
                         step
@@ -366,7 +366,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         if !is_ok(res.response_code) {
                             return self.end(EndReason::Rejected(res.response_code));
                         }
-                        if !res.authorization_services.as_slice().contains(&Authorization::Eim) {
+                        if !res.authorization_services.contains(&Authorization::Eim) {
                             return self.end(EndReason::NoCompatibleAuthorization);
                         }
                         self.send_authorization_req(State::AwaitAuthorizationRes, tx)
@@ -387,9 +387,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         match res.evse_processing {
                             Processing::Finished => {
                                 let msg = ServiceDiscoveryReq { header: self.header(), supported_service_ids: None };
-                                let framed = frame(tx, PayloadType::MAINSTREAM, |out| {
-                                    services::encode_service_discovery_req(&msg, out)
-                                });
+                                let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
                                 let mut step =
                                     self.send_then(State::AwaitServiceDiscoveryRes, MsgKind::ServiceDiscoveryReq, framed);
                                 if step.end.is_none() {
@@ -425,12 +423,11 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                             return end;
                         }
                         let wanted = self.config.energy_service;
-                        if !res.energy_transfer_services.iter().any(|s| s.service_id == wanted) {
+                        if !res.energy_transfer_service_list.service.iter().any(|s| s.service_id == wanted) {
                             return self.end(EndReason::NoCompatibleService);
                         }
                         let msg = ServiceDetailReq { header: self.header(), service_id: wanted };
-                        let framed =
-                            frame(tx, PayloadType::MAINSTREAM, |out| services::encode_service_detail_req(&msg, out));
+                        let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
                         self.send_then(State::AwaitServiceDetailRes, MsgKind::ServiceDetailReq, framed)
                     }
                     Ok(_) => self.end(EndReason::UnexpectedMessage),
@@ -446,14 +443,17 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         if res.service_id != self.config.energy_service {
                             return self.end(EndReason::UnexpectedMessage);
                         }
-                        let Some(parameter_set_id) = self.pick_parameter_set(res.parameter_sets) else {
+                        let Some(parameter_set_id) = self.pick_parameter_set(res.service_parameter_list.parameter_set) else {
                             return self.end(EndReason::NoCompatibleParameterSet);
                         };
                         let selected = SelectedService { service_id: res.service_id, parameter_set_id };
                         self.selected = selected;
-                        let msg = ServiceSelectionReq { header: self.header(), energy_transfer_service: selected, vas: None };
-                        let framed =
-                            frame(tx, PayloadType::MAINSTREAM, |out| services::encode_service_selection_req(&msg, out));
+                        let msg = ServiceSelectionReq {
+                            header: self.header(),
+                            selected_energy_transfer_service: selected,
+                            selected_vas_list: None,
+                        };
+                        let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
                         self.send_then(State::AwaitServiceSelectionRes, MsgKind::ServiceSelectionReq, framed)
                     }
                     Ok(_) => self.end(EndReason::UnexpectedMessage),
@@ -469,19 +469,21 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         let SelectedService { service_id, parameter_set_id } = self.selected;
                         self.log.record(&Record::ServiceSelected { service_id, parameter_set_id });
                         let limits = self.ev.dc_limits();
-                        let msg = dc::ChargeParameterDiscoveryReq {
+                        let msg = dc::DcChargeParameterDiscoveryReq {
                             header: self.header(),
-                            maximum_charge_power: limits.maximum_charge_power,
-                            minimum_charge_power: limits.minimum_charge_power,
-                            maximum_charge_current: limits.maximum_charge_current,
-                            minimum_charge_current: limits.minimum_charge_current,
-                            maximum_voltage: limits.maximum_voltage,
-                            minimum_voltage: limits.minimum_voltage,
-                            target_soc: limits.target_soc,
+                            dc_cpd_req_energy_transfer_mode: dc::DcCpdReqEnergyTransferModeChoice::Base(
+                                dc::DcCpdReqEnergyTransferMode {
+                                    ev_maximum_charge_power: limits.maximum_charge_power,
+                                    ev_minimum_charge_power: limits.minimum_charge_power,
+                                    ev_maximum_charge_current: limits.maximum_charge_current,
+                                    ev_minimum_charge_current: limits.minimum_charge_current,
+                                    ev_maximum_voltage: limits.maximum_voltage,
+                                    ev_minimum_voltage: limits.minimum_voltage,
+                                    target_soc: limits.target_soc.map(|s| s as i8),
+                                },
+                            ),
                         };
-                        let framed = frame(tx, PayloadType::DC_MAINSTREAM, |out| {
-                            dc::encode_charge_parameter_discovery_req(&msg, out)
-                        });
+                        let framed = frame(tx, PayloadType::DC_MAINSTREAM, |out| msg.encode(out));
                         let mut step = self.send_then(
                             State::AwaitChargeParameterDiscoveryRes,
                             MsgKind::DcChargeParameterDiscoveryReq,
@@ -497,8 +499,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 }
             }
             State::AwaitChargeParameterDiscoveryRes if payload_type == PayloadType::DC_MAINSTREAM => {
-                match dc::decode(payload) {
-                    Ok(dc::Message::ChargeParameterDiscoveryRes(res)) => {
+                match dc::decode(payload, arena) {
+                    Ok(dc::Message::DcChargeParameterDiscoveryRes(res)) => {
                         if let Some(end) = self.received(MsgKind::DcChargeParameterDiscoveryRes, res.response_code) {
                             return end;
                         }
@@ -525,26 +527,30 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
 
     fn pick_parameter_set(&self, sets: &[ParameterSet<'_>]) -> Option<u16> {
-        let as_int = |v: ParameterValue<'_>| match v {
-            ParameterValue::Byte(v) => Some(i32::from(v)),
-            ParameterValue::Short(v) => Some(i32::from(v)),
-            ParameterValue::Int(v) => Some(v),
+        let as_int = |v: ParameterChoice<'_>| match v {
+            ParameterChoice::ByteValue(v) => Some(i32::from(v)),
+            ParameterChoice::ShortValue(v) => Some(i32::from(v)),
+            ParameterChoice::IntValue(v) => Some(v),
             _ => None,
         };
         sets.iter()
             .find(|set| {
                 self.config.parameter_filter.iter().all(|&(name, want)| {
-                    set.parameters.iter().any(|p| p.name == name && as_int(p.value) == Some(want))
+                    set.parameter.iter().any(|p| p.name == name && as_int(p.choice) == Some(want))
                 })
             })
-            .map(|set| set.id)
+            .map(|set| set.parameter_set_id)
     }
 
     fn send_authorization_req(&mut self, next: State, tx: &mut [u8]) -> Step {
         // EIM is the only authorization mode implemented, so the request carries no data
         // beyond the header; a repeat is therefore identical except for its timestamp.
-        let msg = AuthorizationReq { header: self.header() };
-        let framed = frame(tx, PayloadType::MAINSTREAM, |out| common::encode_authorization_req(&msg, out));
+        let msg = AuthorizationReq {
+            header: self.header(),
+            selected_authorization_service: Authorization::Eim,
+            a_req_authorization_mode: AReqAuthorizationModeChoice::Eim(EimAReqAuthorizationMode {}),
+        };
+        let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
         if self.state == next {
             // A repeat: stay in the same state without logging a transition.
             return self.sent(MsgKind::AuthorizationReq, framed);
@@ -558,8 +564,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
 
     fn on_supported_app_protocol_res(&mut self, res: app_protocol::SupportedAppProtocolRes, tx: &mut [u8]) -> Step {
-        use app_protocol::ResponseCode as R;
-        if res.response_code == R::FailedNoNegotiation {
+        if res.response_code == app_protocol::ResponseCode::FailedNoNegotiation {
             return self.end(EndReason::NoCommonProtocol);
         }
         // The EVSE must pick the schema id we offered.
@@ -567,10 +572,10 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             return self.end(EndReason::NoCommonProtocol);
         }
         let msg = SessionSetupReq {
-            header: MessageHeader { session_id: [0; 8], timestamp: self.ev.header_timestamp() },
-            evcc_id: self.ev.evcc_id(),
+            header: MessageHeader { session_id: [0; 8], time_stamp: self.ev.header_timestamp() },
+            evccid: self.ev.evcc_id(),
         };
-        let framed = frame(tx, PayloadType::MAINSTREAM, |out| common::encode_session_setup_req(&msg, out));
+        let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
         self.send_then(State::AwaitSessionSetupRes, MsgKind::SessionSetupReq, framed)
     }
 }

@@ -8,17 +8,15 @@ use std::net::TcpListener;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use app_protocol::{self, ResponseCode as SapCode, SupportedAppProtocolRes};
-use iso15118_20::common::{
-    self, Authorization, AuthorizationRes, AuthorizationServices, AuthorizationSetupRes, MessageHeader, Processing,
-    ResponseCode, SessionSetupRes,
-};
-use iso15118_20::common::RationalNumber;
-use iso15118_20::dc;
-use iso15118_20::services::{
-    self, Parameter, ParameterSet, ParameterValue, SelectedService, Service, ServiceDetailRes, ServiceDiscoveryRes,
-    ServiceSelectionRes,
-};
 use exi::{Arena, EncodeError};
+use iso15118_20::common::{
+    self, AsResAuthorizationModeChoice, Authorization, AuthorizationRes,
+    AuthorizationSetupRes, EimAsResAuthorizationMode, Parameter, ParameterChoice, ParameterSet, SelectedService,
+    Service, ServiceDetailRes, ServiceDiscoveryRes, ServiceList, ServiceParameterList, ServiceSelectionRes,
+    SessionSetupRes,
+};
+use iso15118_20::common_types::{MessageHeader, Processing, RationalNumber, ResponseCode};
+use iso15118_20::dc;
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
 const DC_NAMESPACE: &str = "urn:iso:std:iso:15118:-20:DC";
@@ -63,7 +61,7 @@ impl Default for Config {
             authorization_never_finishes: false,
             authorization_code: ResponseCode::Ok,
             offered_authorization: vec![Authorization::Eim],
-            energy_services: vec![services::service_id::DC],
+            energy_services: vec![2],
             // Connector 1, ControlMode 2 (Dynamic), MobilityNeedsMode 1, Pricing 0; the
             // numbers are unchecked (see `evcc_core::session::Config::DC_20`).
             parameter_sets: vec![(
@@ -155,23 +153,26 @@ impl Evse {
         let closed = Output { send: None, close: true };
         match self.state {
             State::AwaitSupportedAppProtocolReq if payload_type == PayloadType::SAP => {
-                let Ok(app_protocol::Message::Req(req)) = app_protocol::decode(payload, &arena) else { return closed };
+                let Ok(app_protocol::Message::SupportedAppProtocolReq(req)) = app_protocol::decode(payload, &arena)
+                else {
+                    return closed;
+                };
                 // Highest priority = lowest number among the protocols we speak.
                 let pick = req
-                    .app_protocols
+                    .app_protocol
                     .iter()
-                    .filter(|p| p.namespace == DC_NAMESPACE && p.version_major == 1)
+                    .filter(|p| p.protocol_namespace == DC_NAMESPACE && p.version_number_major == 1)
                     .min_by_key(|p| p.priority);
                 match pick.filter(|_| !self.config.reject_protocol) {
                     Some(p) => {
                         self.schema_id = p.schema_id;
                         self.state = State::AwaitSessionSetupReq;
                         let res = SupportedAppProtocolRes { response_code: SapCode::OkSuccessfulNegotiation, schema_id: Some(p.schema_id) };
-                        Output { send: frame(PayloadType::SAP, |out| app_protocol::encode_res(&res, out)), close: false }
+                        Output { send: frame(PayloadType::SAP, |out| res.encode(out)), close: false }
                     }
                     None => {
                         let res = SupportedAppProtocolRes { response_code: SapCode::FailedNoNegotiation, schema_id: None };
-                        Output { send: frame(PayloadType::SAP, |out| app_protocol::encode_res(&res, out)), close: true }
+                        Output { send: frame(PayloadType::SAP, |out| res.encode(out)), close: true }
                     }
                 }
             }
@@ -185,15 +186,15 @@ impl Evse {
                     ResponseCode::Ok | ResponseCode::OkNewSessionEstablished | ResponseCode::OkOldSessionJoined
                 );
                 let res = SessionSetupRes {
-                    header: MessageHeader { session_id: self.config.session_id, timestamp: now() },
+                    header: MessageHeader { session_id: self.config.session_id, time_stamp: now() },
                     response_code: self.config.setup_code,
-                    evse_id: &self.config.evse_id,
+                    evseid: &self.config.evse_id,
                 };
                 if ok {
                     self.state = State::AwaitAuthorizationSetupReq;
                 }
                 Output {
-                    send: frame(PayloadType::MAINSTREAM, |out| common::encode_session_setup_res(&res, out)),
+                    send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)),
                     close: !ok,
                 }
             }
@@ -202,17 +203,18 @@ impl Evse {
                 if req.header.session_id != self.config.session_id {
                     return self.unknown_session(common::Message::AuthorizationSetupReq(req));
                 }
-                let Some(authorization_services) = AuthorizationServices::new(&self.config.offered_authorization) else {
+                if self.config.offered_authorization.is_empty() || self.config.offered_authorization.len() > 2 {
                     return closed;
-                };
+                }
                 self.state = State::AwaitAuthorizationReq;
                 let res = AuthorizationSetupRes {
                     header: self.header(),
                     response_code: ResponseCode::Ok,
-                    authorization_services,
+                    authorization_services: &self.config.offered_authorization,
                     certificate_installation_service: false,
+                    as_res_authorization_mode: AsResAuthorizationModeChoice::Eim(EimAsResAuthorizationMode {}),
                 };
-                Output { send: frame(PayloadType::MAINSTREAM, |out| common::encode_authorization_setup_res(&res, out)), close: false }
+                Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: false }
             }
             State::AwaitAuthorizationReq if payload_type == PayloadType::MAINSTREAM => {
                 let Ok(common::Message::AuthorizationReq(req)) = common::decode(payload, &arena) else { return closed };
@@ -233,7 +235,7 @@ impl Evse {
                     self.state = State::AwaitServiceDiscoveryReq;
                 }
                 Output {
-                    send: frame(PayloadType::MAINSTREAM, |out| common::encode_authorization_res(&res, out)),
+                    send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)),
                     close: !ongoing && !finished_ok,
                 }
             }
@@ -251,7 +253,7 @@ impl Evse {
                     return self.detail_res(ResponseCode::FailedUnknownSession, req.service_id);
                 }
                 if !self.config.energy_services.contains(&req.service_id) {
-                    return self.detail_res(ResponseCode::FailedServiceIDInvalid, req.service_id);
+                    return self.detail_res(ResponseCode::FailedServiceIdInvalid, req.service_id);
                 }
                 self.state = State::AwaitServiceSelectionReq;
                 self.detail_res(ResponseCode::Ok, req.service_id)
@@ -261,7 +263,7 @@ impl Evse {
                 if req.header.session_id != self.config.session_id {
                     return self.selection_res(ResponseCode::FailedUnknownSession);
                 }
-                let SelectedService { service_id, parameter_set_id } = req.energy_transfer_service;
+                let SelectedService { service_id, parameter_set_id } = req.selected_energy_transfer_service;
                 let valid = self.config.energy_services.contains(&service_id)
                     && self.config.parameter_sets.iter().any(|(id, _)| *id == parameter_set_id);
                 if !valid {
@@ -274,29 +276,33 @@ impl Evse {
                 self.selection_res(code)
             }
             State::AwaitChargeParameterDiscoveryReq if payload_type == PayloadType::DC_MAINSTREAM => {
-                let Ok(dc::Message::ChargeParameterDiscoveryReq(req)) = dc::decode(payload) else { return closed };
+                let Ok(dc::Message::DcChargeParameterDiscoveryReq(req)) = dc::decode(payload, &arena) else { return closed };
                 let code = if req.header.session_id != self.config.session_id {
                     ResponseCode::FailedUnknownSession
                 } else {
                     self.config.cpd_code
                 };
                 let rn = |value| RationalNumber { exponent: 0, value };
-                let res = dc::ChargeParameterDiscoveryRes {
+                let res = dc::DcChargeParameterDiscoveryRes {
                     header: self.header(),
                     response_code: code,
-                    maximum_charge_power: RationalNumber { exponent: 3, value: 150 },
-                    minimum_charge_power: rn(1000),
-                    maximum_charge_current: rn(300),
-                    minimum_charge_current: rn(2),
-                    maximum_voltage: rn(920),
-                    minimum_voltage: rn(150),
-                    power_ramp_limitation: None,
+                    dc_cpd_res_energy_transfer_mode: dc::DcCpdResEnergyTransferModeChoice::Base(
+                        dc::DcCpdResEnergyTransferMode {
+                            evse_maximum_charge_power: RationalNumber { exponent: 3, value: 150 },
+                            evse_minimum_charge_power: rn(1000),
+                            evse_maximum_charge_current: rn(300),
+                            evse_minimum_charge_current: rn(2),
+                            evse_maximum_voltage: rn(920),
+                            evse_minimum_voltage: rn(150),
+                            evse_power_ramp_limitation: None,
+                        },
+                    ),
                 };
                 if is_ok(code) {
                     self.state = State::ChargeParametersDiscovered;
                 }
                 Output {
-                    send: frame(PayloadType::DC_MAINSTREAM, |out| dc::encode_charge_parameter_discovery_res(&res, out)),
+                    send: frame(PayloadType::DC_MAINSTREAM, |out| res.encode(out)),
                     close: !is_ok(code),
                 }
             }
@@ -310,16 +316,16 @@ impl Evse {
     /// `ServiceDiscoveryRes`; a failure code closes the connection.
     fn discovery_res(&self, code: ResponseCode) -> Output {
         let list: Vec<Service> =
-            self.config.energy_services.iter().map(|&service_id| Service { service_id, free: false }).collect();
+            self.config.energy_services.iter().map(|&service_id| Service { service_id, free_service: false }).collect();
         let res = ServiceDiscoveryRes {
             header: self.header(),
             response_code: code,
             service_renegotiation_supported: false,
-            energy_transfer_services: &list,
-            vas: None,
+            energy_transfer_service_list: ServiceList { service: &list },
+            vas_list: None,
         };
         Output {
-            send: frame(PayloadType::MAINSTREAM, |out| services::encode_service_discovery_res(&res, out)),
+            send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)),
             close: !is_ok(code),
         }
     }
@@ -330,7 +336,7 @@ impl Evse {
             .parameter_sets
             .iter()
             .map(|(_, params)| {
-                params.iter().map(|(name, v)| Parameter { name, value: ParameterValue::Int(*v) }).collect()
+                params.iter().map(|(name, v)| Parameter { name, choice: ParameterChoice::IntValue(*v) }).collect()
             })
             .collect();
         let sets: Vec<ParameterSet<'_>> = self
@@ -338,11 +344,16 @@ impl Evse {
             .parameter_sets
             .iter()
             .zip(&names)
-            .map(|((id, _), parameters)| ParameterSet { id: *id, parameters })
+            .map(|((id, _), parameters)| ParameterSet { parameter_set_id: *id, parameter: parameters })
             .collect();
-        let res = ServiceDetailRes { header: self.header(), response_code: code, service_id, parameter_sets: &sets };
+        let res = ServiceDetailRes {
+            header: self.header(),
+            response_code: code,
+            service_id,
+            service_parameter_list: ServiceParameterList { parameter_set: &sets },
+        };
         Output {
-            send: frame(PayloadType::MAINSTREAM, |out| services::encode_service_detail_res(&res, out)),
+            send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)),
             close: !is_ok(code),
         }
     }
@@ -350,13 +361,13 @@ impl Evse {
     fn selection_res(&self, code: ResponseCode) -> Output {
         let res = ServiceSelectionRes { header: self.header(), response_code: code };
         Output {
-            send: frame(PayloadType::MAINSTREAM, |out| services::encode_service_selection_res(&res, out)),
+            send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)),
             close: !is_ok(code),
         }
     }
 
     fn header(&self) -> MessageHeader {
-        MessageHeader { session_id: self.config.session_id, timestamp: now() }
+        MessageHeader { session_id: self.config.session_id, time_stamp: now() }
     }
 
     /// Answers a message that carries the wrong session id with `FAILED_UnknownSession`.
@@ -366,10 +377,11 @@ impl Evse {
                 let res = AuthorizationSetupRes {
                     header: self.header(),
                     response_code: ResponseCode::FailedUnknownSession,
-                    authorization_services: AuthorizationServices::new(&[Authorization::Eim]).expect("one service"),
+                    authorization_services: &[Authorization::Eim],
                     certificate_installation_service: false,
+                    as_res_authorization_mode: AsResAuthorizationModeChoice::Eim(EimAsResAuthorizationMode {}),
                 };
-                frame(PayloadType::MAINSTREAM, |out| common::encode_authorization_setup_res(&res, out))
+                frame(PayloadType::MAINSTREAM, |out| res.encode(out))
             }
             _ => {
                 let res = AuthorizationRes {
@@ -377,7 +389,7 @@ impl Evse {
                     response_code: ResponseCode::FailedUnknownSession,
                     evse_processing: Processing::Finished,
                 };
-                frame(PayloadType::MAINSTREAM, |out| common::encode_authorization_res(&res, out))
+                frame(PayloadType::MAINSTREAM, |out| res.encode(out))
             }
         };
         Output { send, close: true }

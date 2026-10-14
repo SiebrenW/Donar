@@ -1,4 +1,4 @@
-//! Checks the hand-written codec against EXIficient reference vectors.
+//! Checks the generated codec against EXIficient reference vectors.
 //! Run `cargo xtask setup && cargo xtask vectors` first.
 
 use exi::Arena;
@@ -14,29 +14,35 @@ fn vector(name: &str) -> std::vec::Vec<u8> {
 }
 
 fn dc(schema_id: u8, priority: u8) -> AppProtocol<'static> {
-    AppProtocol { namespace: "urn:iso:std:iso:15118:-20:DC", version_major: 1, version_minor: 0, schema_id, priority }
+    AppProtocol {
+        protocol_namespace: "urn:iso:std:iso:15118:-20:DC",
+        version_number_major: 1,
+        version_number_minor: 0,
+        schema_id,
+        priority,
+    }
 }
 
 fn check_req(name: &str, entries: &[AppProtocol<'_>]) {
     let want = vector(name);
-    let req = SupportedAppProtocolReq { app_protocols: entries };
+    let req = SupportedAppProtocolReq { app_protocol: entries };
     let mut out = [0u8; 512];
-    let n = encode_req(&req, &mut out).unwrap();
+    let n = req.encode(&mut out).unwrap();
     assert_eq!(&out[..n], &want[..], "{name}: encode differs from EXIficient");
 
     let mut mem = [0u8; 4096];
     let arena = Arena::new(&mut mem);
-    assert_eq!(decode(&want, &arena).unwrap(), Message::Req(req), "{name}: decode");
+    assert_eq!(decode(&want, &arena).unwrap(), Message::SupportedAppProtocolReq(req), "{name}: decode");
 }
 
 fn check_res(name: &str, res: SupportedAppProtocolRes) {
     let want = vector(name);
     let mut out = [0u8; 16];
-    let n = encode_res(&res, &mut out).unwrap();
+    let n = res.encode(&mut out).unwrap();
     assert_eq!(&out[..n], &want[..], "{name}: encode differs from EXIficient");
     let mut mem = [0u8; 64];
     let arena = Arena::new(&mut mem);
-    assert_eq!(decode(&want, &arena).unwrap(), Message::Res(res), "{name}: decode");
+    assert_eq!(decode(&want, &arena).unwrap(), Message::SupportedAppProtocolRes(res), "{name}: decode");
 }
 
 #[test]
@@ -46,7 +52,7 @@ fn req_one_entry() {
 
 #[test]
 fn req_two_entries() {
-    let ac = AppProtocol { namespace: "urn:iso:std:iso:15118:-20:AC", schema_id: 2, priority: 2, ..dc(2, 2) };
+    let ac = AppProtocol { protocol_namespace: "urn:iso:std:iso:15118:-20:AC", ..dc(2, 2) };
     check_req("app_protocol_req_2", &[dc(1, 1), ac]);
 }
 
@@ -89,7 +95,7 @@ fn arena_is_reusable_after_reset() {
     let mut mem = [0u8; 2048];
     let mut arena = Arena::new(&mut mem);
     for _ in 0..3 {
-        assert!(matches!(decode(&full, &arena), Ok(Message::Req(_))));
+        assert!(matches!(decode(&full, &arena), Ok(Message::SupportedAppProtocolReq(_))));
         arena.reset();
     }
 }

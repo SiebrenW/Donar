@@ -2,7 +2,7 @@
 //! plain call. Anything physical or slow (cable check, precharge, contactors) will go
 //! through events and actions instead, so the core never waits inside a call.
 
-use iso15118_20::common::RationalNumber;
+use iso15118_20::common_types::RationalNumber;
 
 /// The vehicle's DC charging limits, sent in `DC_ChargeParameterDiscoveryReq`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -5,3 +5,4 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+exi-gen = { path = "../exi-gen" }

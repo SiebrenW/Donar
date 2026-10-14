@@ -9,7 +9,7 @@ use evcc_core::log::NoLog;
 use evcc_core::session::{Buffers, Config, EndReason, Session, State as SessionState};
 use evcc_linux::{Outcome, run};
 use evse_sim::State as EvseState;
-use iso15118_20::common::{RationalNumber, ResponseCode};
+use iso15118_20::common_types::{RationalNumber, ResponseCode};
 
 struct Car;
 impl Ev for Car {
@@ -112,17 +112,17 @@ fn evse_that_never_finishes_authorization_hits_the_ongoing_timeout() {
 
 #[test]
 fn refused_authorization_is_reported() {
-    let (addr, server) = start(evse_sim::Config { authorization_code: ResponseCode::WarningEIMAuthorizationFailure, ..Default::default() });
+    let (addr, server) = start(evse_sim::Config { authorization_code: ResponseCode::WarningEimAuthorizationFailure, ..Default::default() });
     assert_eq!(
         run_ev(addr, Config::DC_20),
-        Outcome::Ended(EndReason::Rejected(ResponseCode::WarningEIMAuthorizationFailure))
+        Outcome::Ended(EndReason::Rejected(ResponseCode::WarningEimAuthorizationFailure))
     );
     server.join().unwrap().unwrap();
 }
 
 #[test]
 fn evse_offering_only_pnc_leaves_no_usable_authorization() {
-    let (addr, server) = start(evse_sim::Config { offered_authorization: vec![iso15118_20::common::Authorization::Pnc], ..Default::default() });
+    let (addr, server) = start(evse_sim::Config { offered_authorization: vec![iso15118_20::common::Authorization::PnC], ..Default::default() });
     assert_eq!(run_ev(addr, Config::DC_20), Outcome::Ended(EndReason::NoCompatibleAuthorization));
     drop(server);
 }

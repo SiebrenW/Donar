@@ -4,7 +4,7 @@
 //! synchronously.
 
 use exi::DecodeError;
-use iso15118_20::common::{Processing, ResponseCode};
+use iso15118_20::common_types::{Processing, ResponseCode};
 
 use crate::session::{EndReason, State};
 

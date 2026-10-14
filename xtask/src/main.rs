@@ -20,10 +20,15 @@ const ISO20_FILES: &[&str] = &[
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let result = match args.next().as_deref() {
-        Some("setup") => setup(args.any(|a| a == "--force")),
+        Some("setup") => {
+            let force = args.any(|a| a == "--force");
+            setup(force).and_then(|()| generate(force))
+        }
+        Some("gen") => generate(args.any(|a| a == "--force")),
         Some("vectors") => vectors(),
+        Some("grammars") => grammars(),
         _ => {
-            eprintln!("usage: cargo xtask setup [--force] | vectors");
+            eprintln!("usage: cargo xtask setup [--force] | gen [--force] | vectors | grammars");
             return ExitCode::from(2);
         }
     };
@@ -41,7 +46,6 @@ fn workspace_root() -> PathBuf {
 }
 
 /// Downloads the XSDs (skipping files already present unless `force`).
-/// Code generation is hooked in here once `exi-gen` exists.
 fn setup(force: bool) -> Result<(), String> {
     let dir = workspace_root().join("schemas/iso15118-20");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -84,9 +88,9 @@ fn jdk_tool(name: &str) -> PathBuf {
     if on_path || !brew.exists() { PathBuf::from(name) } else { brew }
 }
 
-/// Encodes every XML in `xtask/vectors` with EXIficient into `vectors/<name>.hex`.
-/// These are the independent oracle for the codecs; they are gitignored.
-fn vectors() -> Result<(), String> {
+/// Downloads EXIficient and compiles the helper programs in `xtask/java`; returns the class
+/// directory and the class path.
+fn java_env() -> Result<(PathBuf, String), String> {
     let root = workspace_root();
     let lib = root.join("vectors/lib");
     std::fs::create_dir_all(&lib).map_err(|e| e.to_string())?;
@@ -104,10 +108,64 @@ fn vectors() -> Result<(), String> {
     let classes = root.join("vectors/classes");
     std::fs::create_dir_all(&classes).map_err(|e| e.to_string())?;
     let cp = format!("{}/*", lib.display());
-    run(Command::new(jdk_tool("javac"))
-        .args(["-cp", &cp, "-d"])
-        .arg(&classes)
-        .arg(root.join("xtask/java/EncodeVector.java")))?;
+    let mut sources: Vec<PathBuf> = std::fs::read_dir(root.join("xtask/java"))
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "java"))
+        .collect();
+    sources.sort();
+    run(Command::new(jdk_tool("javac")).args(["-cp", &cp, "-d"]).arg(&classes).args(&sources))?;
+    Ok((classes.clone(), format!("{}:{cp}", classes.display())))
+}
+
+/// A copy of the schemas for the Java tools. `xmldsig-core-schema.xsd` has a DOCTYPE naming
+/// the XMLSchema DTD at w3.org, which Xerces then downloads on every run and which
+/// rate-limits; nothing in the schema uses what the DTD declares, so the copy omits it.
+fn java_schemas() -> Result<PathBuf, String> {
+    let root = workspace_root();
+    let (from, to) = (root.join("schemas/iso15118-20"), root.join("vectors/schemas"));
+    std::fs::create_dir_all(&to).map_err(|e| e.to_string())?;
+    for entry in std::fs::read_dir(&from).map_err(|e| e.to_string())? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if path.extension().is_none_or(|x| x != "xsd") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let text = match (text.find("<!DOCTYPE"), text.find("]>")) {
+            (Some(a), Some(b)) if a < b => format!("{}{}", &text[..a], &text[b + 2..]),
+            _ => text,
+        };
+        std::fs::write(to.join(path.file_name().unwrap()), text).map_err(|e| e.to_string())?;
+    }
+    Ok(to)
+}
+
+/// Runs a helper program, retrying a few times in case of transient failures.
+fn java_run(cp: &str, class: &str, args: &[&std::ffi::OsStr]) -> Result<String, String> {
+    let mut attempt = 0;
+    loop {
+        let out = Command::new(jdk_tool("java"))
+            .args(["-cp", cp, class])
+            .args(args)
+            .output()
+            .map_err(|e| e.to_string())?;
+        attempt += 1;
+        if out.status.success() {
+            return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+        }
+        if attempt == 5 {
+            return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+}
+
+/// Encodes every XML in `xtask/vectors` with EXIficient into `vectors/<name>.hex`.
+/// These are the independent oracle for the codecs; they are gitignored.
+fn vectors() -> Result<(), String> {
+    let root = workspace_root();
+    let (_, cp) = java_env()?;
+    let java_schemas = java_schemas()?;
     let manifest = std::fs::read_to_string(root.join("xtask/vectors/manifest.txt"))
         .map_err(|e| e.to_string())?;
     for line in manifest.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
@@ -119,29 +177,14 @@ fn vectors() -> Result<(), String> {
         if mtime(&dest).is_some_and(|h| mtime(&xml).is_some_and(|x| h >= x)) {
             continue; // up to date; delete vectors/*.hex to regenerate everything
         }
-        // Xerces fetches the XMLSchema DTD that xmldsig-core-schema.xsd names from w3.org,
-        // which rate-limits; retry a few times.
-        let mut attempt = 0;
-        let out = loop {
-            let out = Command::new(jdk_tool("java"))
-                .args(["-cp", &format!("{}:{cp}", classes.display())])
-                .arg("EncodeVector")
-                .arg(root.join("schemas/iso15118-20").join(xsd))
-                .args(["lax", "noheader"])
-                .arg(&xml)
-                .output()
-                .map_err(|e| e.to_string())?;
-            attempt += 1;
-            if out.status.success() || attempt == 5 {
-                break out;
-            }
-            std::thread::sleep(std::time::Duration::from_secs(2));
-        };
-        if !out.status.success() {
-            return Err(format!("{name}: {}", String::from_utf8_lossy(&out.stderr)));
-        }
-        let hex = String::from_utf8_lossy(&out.stdout);
-        std::fs::write(&dest, hex.trim().to_string() + "\n")
+        let xsd_path = java_schemas.join(xsd);
+        let out = java_run(
+            &cp,
+            "EncodeVector",
+            &[xsd_path.as_os_str(), "lax".as_ref(), "noheader".as_ref(), xml.as_os_str()],
+        )
+        .map_err(|e| format!("{name}: {e}"))?;
+        std::fs::write(&dest, out.trim().to_string() + "\n")
             .map_err(|e| e.to_string())?;
         println!("wrote vectors/{name}.hex");
     }
@@ -154,4 +197,72 @@ fn run(cmd: &mut Command) -> Result<(), String> {
         Ok(s) => Err(format!("{cmd:?} exited with {s}")),
         Err(e) => Err(format!("cannot run {cmd:?}: {e}")),
     }
+}
+
+/// Crate directory that holds the generated code of an `exi-gen` group.
+fn group_dir(group: &exi_gen::Group) -> PathBuf {
+    workspace_root().join("codecs").join(group.name)
+}
+
+fn mtime(p: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(p).and_then(|m| m.modified()).ok()
+}
+
+/// Generates the codecs (gitignored `src/generated` of each codec crate) from the XSDs.
+/// Skipped when the output is newer than every schema and than this binary, which carries
+/// the generator.
+fn generate(force: bool) -> Result<(), String> {
+    let schemas = workspace_root().join("schemas/iso15118-20");
+    let exe = std::env::current_exe().ok().and_then(|p| mtime(&p));
+    for group in exi_gen::GROUPS {
+        let out = group_dir(group).join("src/generated");
+        let newest_input = group
+            .files
+            .iter()
+            .filter_map(|f| mtime(&schemas.join(f)))
+            .chain(exe)
+            .max();
+        let up_to_date = mtime(&out.join("mod.rs")).zip(newest_input).is_some_and(|(o, i)| o >= i);
+        if up_to_date && !force {
+            println!("have  {} codec", group.name);
+            continue;
+        }
+        println!("gen   {} codec", group.name);
+        exi_gen::generate(group, &schemas, &out)?;
+        let files: Vec<PathBuf> = std::fs::read_dir(&out)
+            .map_err(|e| e.to_string())?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+            .collect();
+        // Readable output is a convenience; a missing rustfmt is not an error.
+        let _ = Command::new("rustfmt").args(["--edition", "2024"]).args(&files).status();
+    }
+    Ok(())
+}
+
+/// Compares, for every message, the grammar `exi-gen` derives with the one EXIficient builds
+/// from the same schema (event codes, datatypes, nesting).
+fn grammars() -> Result<(), String> {
+    let schemas = workspace_root().join("schemas/iso15118-20");
+    let (_, cp) = java_env()?;
+    let java_schemas = java_schemas()?;
+    let mut failed = 0;
+    for group in exi_gen::GROUPS {
+        for (ns, file, root) in exi_gen::message_roots(group, &schemas)? {
+            let ours = exi_gen::dump_grammar(group, &schemas, &ns, &root)?;
+            let xsd = java_schemas.join(&file);
+            let theirs = java_run(&cp, "DumpTree", &[xsd.as_os_str(), root.as_ref()])?;
+            if ours == theirs {
+                println!("same  {root}");
+            } else {
+                failed += 1;
+                println!("DIFF  {root}");
+                let (a, b): (Vec<_>, Vec<_>) = (ours.lines().collect(), theirs.lines().collect());
+                if let Some(i) = (0..a.len().max(b.len())).find(|&i| a.get(i) != b.get(i)) {
+                    println!("  exi-gen:   {}\n  EXIficient: {}", a.get(i).unwrap_or(&"<end>"), b.get(i).unwrap_or(&"<end>"));
+                }
+            }
+        }
+    }
+    if failed > 0 { Err(format!("{failed} grammars differ")) } else { Ok(()) }
 }

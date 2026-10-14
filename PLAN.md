@@ -72,14 +72,14 @@ Cargo workspace:
 
 ```
 codecs/
-  din70121/                 # package din70121, lib din70121
-    src/{lib,types,encode,decode}.rs
+  exi/                      # no_std runtime shared by all codecs: bit I/O, arena, string table, event-code layout
+  app-protocol/             # supportedAppProtocol handshake; used before a standard is chosen, so it is its own crate
+    src/generated/          # gitignored, from V2G_CI_AppProtocol.xsd
   iso15118-20/              # package iso15118-20, lib iso15118_20
-    src/lib.rs
-    src/common/{mod,types,encode,decode}.rs   # from the CommonMessages XSD
-    src/dc/{mod,types,encode,decode}.rs       # DC XSD (milestone 1)
-    # later: ac/, bpt/, acdp/, wpt/ (Cargo features)
-exi-gen/                    # host tool: XSD -> Rust codec source
+    src/generated/          # gitignored: common_types.rs (header, RationalNumber, response codes), common.rs, dc.rs
+    # later: ac, acdp, wpt (Cargo features), bpt
+  # later: din70121/, iso15118-2/ (generated the same way, from their schemas)
+exi-gen/                    # host tool (lib + bin): XSD -> Rust codec source; `dump` prints the derived grammar
 evcc-core/                  # no_std sans-IO EV session + SDP machines, Ev trait, actions/events, log records
 evse-sim/                   # in-repo EVSE simulator, the mirror image of the core
 evcc-linux/                 # host adapter: sockets, rustls, timers, later SLAC
@@ -97,8 +97,8 @@ Naming: directories and packages are kebab-case, files and modules snake_case, t
 
 Built as **vertical slices**: first get `SupportedAppProtocol` and `SessionSetup` working end to end (generator, codec, session machine, simulator, loopback TCP), then add message pairs a few at a time. Every slice runs and is tested, so generator, arena, action/event and `Ev` trait design problems surface early.
 
-0. Workspace, `xtask setup` (download, hash-cached generation).
-1. `exi-gen` and the `iso15118-20` codec for `common` and `dc`, with reference vectors.
+0. Workspace, `xtask setup` (download, mtime-cached generation).
+1. `exi-gen` and the `iso15118-20` codec for `common` and `dc`, with reference vectors. Done; the generated codecs replaced the hand-written ones.
 2. V2GTP, then the SDP machines.
 3. `evcc-core` session machine, covering the first full DC dynamic EIM flow:
    - `SupportedAppProtocol` -> `SessionSetup`
@@ -142,7 +142,7 @@ Steps 1 to 4 are interleaved per slice rather than finished in sequence.
 
 ## Status
 
-Done: workspace + `xtask setup/vectors`; EXIficient oracle; hand-written `iso15118-20` codecs for `app_protocol` and `common` (`SessionSetup`, `AuthorizationSetup`, `Authorization`, EIM only); `v2gtp`; SDP client machine; `ServiceDiscovery`/`ServiceDetail`/`ServiceSelection` codecs; session machine through EIM authorization (including the V2G20-1582 repeat and an ongoing timeout) service selection (`Config::energy_service` + `parameter_filter`) and `DC_ChargeParameterDiscovery` (codecs in `codecs/iso15118-20/src/dc.rs`, vehicle limits via `Ev::dc_limits`; the adapter stops at the first resting state, `State::is_resting`); `evse-sim` and the `evcc-linux` TCP adapter with end-to-end loopback tests (EV session machine vs the simulated EVSE over real TCP).
+Done: workspace + `xtask setup/gen/vectors/grammars`; EXIficient oracle; **`exi-gen`**: the `app-protocol` and `iso15118-20` (`common_types`, `common`, `dc`) codecs are generated from the XSDs, cover every message of those schemas (including PnC types and BPT) and match all vectors byte for byte; `cargo xtask grammars` proves the derived grammar of all 38 messages equals EXIficient's; `v2gtp`; SDP client machine; session machine through EIM authorization (including the V2G20-1582 repeat and an ongoing timeout) service selection (`Config::energy_service` + `parameter_filter`) and `DC_ChargeParameterDiscovery` (vehicle limits via `Ev::dc_limits`; the adapter stops at the first resting state, `State::is_resting`); `evse-sim` and the `evcc-linux` TCP adapter with end-to-end loopback tests (EV session machine vs the simulated EVSE over real TCP).
 
 Next slices (each end to end, codec first, checked against vectors): `ScheduleExchange`, `DC_CableCheck`/`DC_PreCharge`, `PowerDelivery`, `DC_ChargeLoop`, stop, `SessionStop`. Then TLS in `evcc-linux`, the SDP socket loop, SLAC with the `unshare` harness, and `exi-gen` replacing the hand-written codecs.
 
@@ -162,3 +162,14 @@ Where code implements a specific, citable behaviour (timers, mandated message ha
 - **DC service parameters** (`Connector`, `ControlMode`, `MobilityNeedsMode`, `Pricing`) and their integer meanings (ControlMode 2 = Dynamic, MobilityNeedsMode 1 = EVCC-provided) are from memory of other open-source stacks, unchecked (TODO against the standard's DC parameter table); `Connector` is not matched yet and needs an `Ev` query.
 - **Vector tooling**: `xtask vectors` skips vectors newer than their XML and retries the Java run, because Xerces fetches a DTD from w3.org while loading the xmldsig schema and w3.org rate-limits.
 - **DC grammar** (verified with EXIficient): the DC document root has 49 elements (6-bit code; CPDReq = 15, CPDRes = 16, CableCheck 11/12, ChargeLoop 13/14, PreCharge 17/18, WeldingDetection 19/20). The energy transfer mode is a substitution group coded in 2 bits (BPT = 0, plain DC = 1). `TargetSOC` (0..=100) is a 7-bit offset. Optional trailing elements sit in a 2-bit state. In -20 the flow order is ServiceSelection, `DC_ChargeParameterDiscovery`, then `ScheduleExchange`.
+
+## The generator (`exi-gen`)
+
+- **Pipeline**: `xsd.rs` reads the XSD subset the schemas use and errors on anything else; `model.rs` resolves types to EXI datatypes and flattens each complex type into a list of *slots* (attributes first, sorted by name, then the particles; extension = base first); `emit.rs` writes Rust; `dump.rs` prints the grammar for diffing with EXIficient (`xtask/java/DumpTree.java`, structurally identical states merged). `cargo xtask gen` regenerates when a schema or the xtask binary is newer than the output; `cargo xtask grammars` runs the diff.
+- **Layout instead of tables** (`exi::layout`): a type's grammar is its slots (`min`, `max`, number of alternatives); the productions of a state are computed on demand (current slot while more copies are allowed, following slots up to the first mandatory one, then EE if everything left is optional), so `maxOccurs=2048` costs nothing. Event code = index, width = `ceil(log2(n + 1))`; the document root has `ceil(log2(global elements + 1))` bits (the `SE(*)` code is the extra one).
+- **Facts the grammar diff confirmed**: attributes come before elements and are sorted; substitution groups (head included, even when abstract) and choices list their alternatives in order, the group sorted by local name; a choice and a substitution group are the same thing to the layout; integers with a range of at most 4096 values are n-bit offsets (this includes `xs:byte`, `xs:unsignedByte`, percent), wider unsigned ones are EXI unsigned integers, wider signed ones EXI integers.
+- **Generated API**: one struct per complex type (`Copy`, borrowing from the arena via `&'a [T]` / `&'a str`; a lifetime only where needed), one enum per choice or substitution group (`...Choice`; identical choices share one), `#[repr(u8)]` enums for enumerations (`from_index`, `xml_name`), `Message` + `decode(buf, arena)` per module, `Msg::encode(&self, out)` for every request/response. Names are derived by `names.rs` (word splitting: `EVMaximumChargePower` -> `ev_maximum_charge_power`, `PnC` stays `PnC`). Elements typed from xmldsig (`Signature`, `X509IssuerSerial`) are omitted: decoding them is `Unsupported`; a type that *requires* one (`CertificateInstallationReq` and friends) is not generated at all.
+- **Decoding lists**: a dry run over a copy of the stream counts the entries, then the arena slice is allocated at exactly that size. Nested lists make this O(depth x size); the string table is cloned for the dry run (capacity 64 distinct strings per message).
+- **Stack use**: the generated messages are small (`size_of` of the largest, `ScheduleExchangeRes`, is 224 bytes; `tests/sizes.rs` keeps them under 2 KiB) because lists live in the arena.
+- **Fuzzing**: `tests/vectors.rs` flips bits in valid streams and requires that decoding returns. A real fuzz target (cargo-fuzz) is still to do.
+- **Open**: empty string elements (EXIficient's event code for them is not understood; both directions refuse); choice enum names such as `AReqAuthorizationModeChoice` are mechanical (override table if they bother anyone); the wrapper types (`ServiceList { service: &[..] }`) are not flattened; AC, ACDP and WPT are not generated yet (add them to `ISO20.files/modules` and decide the module names).

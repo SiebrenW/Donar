@@ -9,15 +9,14 @@ use evcc_core::log::{Level, LogSink, MsgKind, Record};
 use evcc_core::session::*;
 use evcc_core::{Timer, TimerCmd, Timers};
 use app_protocol::{self, ResponseCode as SapCode, SupportedAppProtocolRes};
-use iso15118_20::dc;
-use iso15118_20::common::{RationalNumber, 
-    self, Authorization, AuthorizationRes, AuthorizationServices, AuthorizationSetupRes, MessageHeader, Processing,
-    ResponseCode, SessionSetupRes,
-};
-use iso15118_20::services::{
-    self, Parameter, ParameterSet, ParameterValue, Service, ServiceDetailRes, ServiceDiscoveryRes, ServiceSelectionRes,
-};
 use exi::{Arena, DecodeError};
+use iso15118_20::common::{
+    self, AsResAuthorizationModeChoice, Authorization, AuthorizationRes, AuthorizationSetupRes, EimAsResAuthorizationMode,
+    Parameter, ParameterChoice, ParameterSet, SelectedService, Service, ServiceDetailRes, ServiceDiscoveryRes,
+    ServiceList, ServiceParameterList, ServiceSelectionRes, SessionSetupRes,
+};
+use iso15118_20::common_types::{MessageHeader, Processing, RationalNumber, ResponseCode};
+use iso15118_20::dc;
 use v2gtp::{HEADER_LEN, PayloadType};
 
 fn rn(exponent: i8, value: i16) -> RationalNumber {
@@ -115,19 +114,23 @@ fn framed(payload_type: PayloadType, encode: impl FnOnce(&mut [u8]) -> usize) ->
 const SID: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 
 fn hdr() -> MessageHeader {
-    MessageHeader { session_id: SID, timestamp: 5 }
+    MessageHeader { session_id: SID, time_stamp: 5 }
 }
 
 fn sap_res(code: SapCode, schema_id: Option<u8>) -> std::vec::Vec<u8> {
     framed(PayloadType::SAP, |out| {
-        app_protocol::encode_res(&SupportedAppProtocolRes { response_code: code, schema_id }, out).unwrap()
+        SupportedAppProtocolRes { response_code: code, schema_id }.encode(out).unwrap()
     })
 }
 
 fn setup_res(code: ResponseCode, session_id: [u8; 8]) -> std::vec::Vec<u8> {
     framed(PayloadType::MAINSTREAM, |out| {
-        let msg = SessionSetupRes { header: MessageHeader { session_id, timestamp: 5 }, response_code: code, evse_id: "DE*EVSE*0001" };
-        common::encode_session_setup_res(&msg, out).unwrap()
+        let msg = SessionSetupRes {
+            header: MessageHeader { session_id, time_stamp: 5 },
+            response_code: code,
+            evseid: "DE*EVSE*0001",
+        };
+        msg.encode(out).unwrap()
     })
 }
 
@@ -136,31 +139,32 @@ fn auth_setup_res(code: ResponseCode, services: &[Authorization]) -> std::vec::V
         let msg = AuthorizationSetupRes {
             header: hdr(),
             response_code: code,
-            authorization_services: AuthorizationServices::new(services).unwrap(),
+            authorization_services: services,
             certificate_installation_service: false,
+            as_res_authorization_mode: AsResAuthorizationModeChoice::Eim(EimAsResAuthorizationMode {}),
         };
-        common::encode_authorization_setup_res(&msg, out).unwrap()
+        msg.encode(out).unwrap()
     })
 }
 
 fn auth_res(code: ResponseCode, p: Processing) -> std::vec::Vec<u8> {
     framed(PayloadType::MAINSTREAM, |out| {
-        common::encode_authorization_res(&AuthorizationRes { header: hdr(), response_code: code, evse_processing: p }, out).unwrap()
+        AuthorizationRes { header: hdr(), response_code: code, evse_processing: p }.encode(out).unwrap()
     })
 }
 
 /// The framed message the session wants to send, decoded by the common codec.
 fn discovery_res(code: ResponseCode, ids: &[u16]) -> std::vec::Vec<u8> {
-    let list: std::vec::Vec<Service> = ids.iter().map(|&service_id| Service { service_id, free: false }).collect();
+    let list: std::vec::Vec<Service> = ids.iter().map(|&service_id| Service { service_id, free_service: false }).collect();
     framed(PayloadType::MAINSTREAM, |out| {
         let msg = ServiceDiscoveryRes {
             header: hdr(),
             response_code: code,
             service_renegotiation_supported: false,
-            energy_transfer_services: &list,
-            vas: None,
+            energy_transfer_service_list: ServiceList { service: &list },
+            vas_list: None,
         };
-        services::encode_service_discovery_res(&msg, out).unwrap()
+        msg.encode(out).unwrap()
     })
 }
 
@@ -168,13 +172,18 @@ fn discovery_res(code: ResponseCode, ids: &[u16]) -> std::vec::Vec<u8> {
 fn detail_res(code: ResponseCode, service_id: u16, sets: &[(u16, &[(&str, i32)])]) -> std::vec::Vec<u8> {
     let params: std::vec::Vec<std::vec::Vec<Parameter<'_>>> = sets
         .iter()
-        .map(|(_, ps)| ps.iter().map(|&(name, v)| Parameter { name, value: ParameterValue::Int(v) }).collect())
+        .map(|(_, ps)| ps.iter().map(|&(name, v)| Parameter { name, choice: ParameterChoice::IntValue(v) }).collect())
         .collect();
     let sets: std::vec::Vec<ParameterSet<'_>> =
-        sets.iter().zip(&params).map(|((id, _), parameters)| ParameterSet { id: *id, parameters }).collect();
+        sets.iter().zip(&params).map(|((id, _), parameters)| ParameterSet { parameter_set_id: *id, parameter: parameters }).collect();
     framed(PayloadType::MAINSTREAM, |out| {
-        let msg = ServiceDetailRes { header: hdr(), response_code: code, service_id, parameter_sets: &sets };
-        services::encode_service_detail_res(&msg, out).unwrap()
+        let msg = ServiceDetailRes {
+            header: hdr(),
+            response_code: code,
+            service_id,
+            service_parameter_list: ServiceParameterList { parameter_set: &sets },
+        };
+        msg.encode(out).unwrap()
     })
 }
 
@@ -183,24 +192,26 @@ const SCHEDULED: &[(&str, i32)] = &[("Connector", 1), ("ControlMode", 1), ("Mobi
 
 fn cpd_res(code: ResponseCode) -> std::vec::Vec<u8> {
     framed(PayloadType::DC_MAINSTREAM, |out| {
-        let msg = dc::ChargeParameterDiscoveryRes {
+        let msg = dc::DcChargeParameterDiscoveryRes {
             header: hdr(),
             response_code: code,
-            maximum_charge_power: rn(3, 150),
-            minimum_charge_power: rn(0, 1000),
-            maximum_charge_current: rn(0, 300),
-            minimum_charge_current: rn(0, 2),
-            maximum_voltage: rn(0, 920),
-            minimum_voltage: rn(0, 150),
-            power_ramp_limitation: None,
+            dc_cpd_res_energy_transfer_mode: dc::DcCpdResEnergyTransferModeChoice::Base(dc::DcCpdResEnergyTransferMode {
+                evse_maximum_charge_power: rn(3, 150),
+                evse_minimum_charge_power: rn(0, 1000),
+                evse_maximum_charge_current: rn(0, 300),
+                evse_minimum_charge_current: rn(0, 2),
+                evse_maximum_voltage: rn(0, 920),
+                evse_minimum_voltage: rn(0, 150),
+                evse_power_ramp_limitation: None,
+            }),
         };
-        dc::encode_charge_parameter_discovery_res(&msg, out).unwrap()
+        msg.encode(out).unwrap()
     })
 }
 
 fn selection_res(code: ResponseCode) -> std::vec::Vec<u8> {
     framed(PayloadType::MAINSTREAM, |out| {
-        services::encode_service_selection_res(&ServiceSelectionRes { header: hdr(), response_code: code }, out).unwrap()
+        ServiceSelectionRes { header: hdr(), response_code: code }.encode(out).unwrap()
     })
 }
 
@@ -301,8 +312,8 @@ fn service_negotiation_failures_end_the_session() {
 
     let mut rig = Rig::new();
     let mut s = up_to_service_detail(&mut rig, Capture::default());
-    let step = deliver(&mut s, &detail_res(ResponseCode::FailedServiceIDInvalid, 2, &[(1, DYNAMIC)]));
-    assert_eq!(step.end, Some(EndReason::Rejected(ResponseCode::FailedServiceIDInvalid)));
+    let step = deliver(&mut s, &detail_res(ResponseCode::FailedServiceIdInvalid, 2, &[(1, DYNAMIC)]));
+    assert_eq!(step.end, Some(EndReason::Rejected(ResponseCode::FailedServiceIdInvalid)));
 
     // A detail for another service than the one asked about.
     let mut rig = Rig::new();
@@ -357,14 +368,14 @@ fn full_flow_to_authorized() {
     assert_eq!(pt, PayloadType::SAP);
     let mut mem = [0u8; 1024];
     let arena = Arena::new(&mut mem);
-    let app_protocol::Message::Req(req) = app_protocol::decode(&payload, &arena).unwrap() else { panic!() };
-    assert_eq!(req.app_protocols, &[Config::DC_20.offer]);
+    let app_protocol::Message::SupportedAppProtocolReq(req) = app_protocol::decode(&payload, &arena).unwrap() else { panic!() };
+    assert_eq!(req.app_protocol, &[Config::DC_20.offer]);
 
     let step = deliver(&mut s, &sap_res(SapCode::OkSuccessfulNegotiation, Some(1)));
     assert_eq!(step.timers, response_timer());
     sent_common(&s, &step, |m| {
         let common::Message::SessionSetupReq(req) = m else { panic!("{m:?}") };
-        assert_eq!(req.evcc_id, "WMIV1234567890ABCDEX");
+        assert_eq!(req.evccid, "WMIV1234567890ABCDEX");
         assert_eq!(req.header.session_id, [0; 8], "a new session starts with an all-zero id");
     });
 
@@ -377,7 +388,7 @@ fn full_flow_to_authorized() {
         assert_eq!(req.header.session_id, SID, "later messages carry the id the EVSE assigned");
     });
 
-    let step = deliver(&mut s, &auth_setup_res(ResponseCode::Ok, &[Authorization::Pnc, Authorization::Eim]));
+    let step = deliver(&mut s, &auth_setup_res(ResponseCode::Ok, &[Authorization::PnC, Authorization::Eim]));
     sent_common(&s, &step, |m| {
         let common::Message::AuthorizationReq(req) = m else { panic!("{m:?}") };
         assert_eq!(req.header.session_id, SID);
@@ -391,14 +402,14 @@ fn full_flow_to_authorized() {
     sent_common(&s, &step, |m| {
         let common::Message::ServiceDiscoveryReq(req) = m else { panic!("{m:?}") };
         assert_eq!(req.header.session_id, SID);
-        assert_eq!(req.supported_service_ids, None, "ask for every service");
+        assert!(req.supported_service_ids.is_none(), "ask for every service");
     });
 
-    let step = deliver(&mut s, &discovery_res(ResponseCode::Ok, &[services::service_id::AC, services::service_id::DC]));
+    let step = deliver(&mut s, &discovery_res(ResponseCode::Ok, &[1, 2]));
     assert_eq!(step.timers, response_timer());
     sent_common(&s, &step, |m| {
         let common::Message::ServiceDetailReq(req) = m else { panic!("{m:?}") };
-        assert_eq!(req.service_id, services::service_id::DC);
+        assert_eq!(req.service_id, 2);
     });
 
     // Two parameter sets: the scheduled one is skipped, the dynamic one (id 7) is chosen.
@@ -406,8 +417,8 @@ fn full_flow_to_authorized() {
     assert_eq!(step.timers, response_timer());
     sent_common(&s, &step, |m| {
         let common::Message::ServiceSelectionReq(req) = m else { panic!("{m:?}") };
-        assert_eq!(req.energy_transfer_service, services::SelectedService { service_id: 2, parameter_set_id: 7 });
-        assert_eq!(req.vas, None);
+        assert_eq!(req.selected_energy_transfer_service, SelectedService { service_id: 2, parameter_set_id: 7 });
+        assert!(req.selected_vas_list.is_none());
     });
 
     let step = deliver(&mut s, &selection_res(ResponseCode::Ok));
@@ -417,14 +428,18 @@ fn full_flow_to_authorized() {
     // The EV's DC limits come from the vehicle, on the DC payload type.
     let (pt, payload) = sent(&s, &step);
     assert_eq!(pt, PayloadType::DC_MAINSTREAM);
-    let dc::Message::ChargeParameterDiscoveryReq(req) = dc::decode(&payload).unwrap() else { panic!() };
-    assert_eq!(req.maximum_voltage, rn(0, 450));
-    assert_eq!(req.target_soc, Some(80));
+    let mut mem = [0u8; 1024];
+    let arena = Arena::new(&mut mem);
+    let dc::Message::DcChargeParameterDiscoveryReq(req) = dc::decode(&payload, &arena).unwrap() else { panic!() };
+    let dc::DcCpdReqEnergyTransferModeChoice::Base(mode) = req.dc_cpd_req_energy_transfer_mode else { panic!() };
+    assert_eq!(mode.ev_maximum_voltage, rn(0, 450));
+    assert_eq!(mode.target_soc, Some(80));
     assert_eq!(req.header.session_id, SID);
 
     let step = deliver(&mut s, &cpd_res(ResponseCode::Ok));
     let Some(Notice::ChargeParametersDiscovered(evse)) = step.notice else { panic!("{step:?}") };
-    assert_eq!(evse.maximum_voltage, rn(0, 920));
+    let dc::DcCpdResEnergyTransferModeChoice::Base(mode) = evse.dc_cpd_res_energy_transfer_mode else { panic!() };
+    assert_eq!(mode.evse_maximum_voltage, rn(0, 920));
     assert_eq!(step.send, None);
     assert_eq!(step.timers, Timers::one(TimerCmd::Cancel(Timer::Response)));
     assert_eq!(s.state(), State::ChargeParametersDiscovered);
@@ -461,7 +476,7 @@ fn ongoing_authorization_repeats_the_request_with_a_new_timestamp() {
         sent_common(&s, &step, |m| {
             let common::Message::AuthorizationReq(req) = m else { panic!("{m:?}") };
             assert_eq!(req.header.session_id, SID);
-            ts = req.header.timestamp;
+            ts = req.header.time_stamp;
         });
         // First Ongoing: arms the response timer and, once, the ongoing timer.
         assert_eq!(
@@ -477,7 +492,7 @@ fn ongoing_authorization_repeats_the_request_with_a_new_timestamp() {
         let mut ts = 0;
         sent_common(&s, &step, |m| {
             let common::Message::AuthorizationReq(req) = m else { panic!("{m:?}") };
-            ts = req.header.timestamp;
+            ts = req.header.time_stamp;
         });
         assert!(ts > first_ts);
     }
@@ -516,7 +531,7 @@ fn authorization_failures_end_the_session() {
     // EVSE offers only PnC, which this EV does not implement.
     let mut rig = Rig::new();
     let mut s = up_to_authorization_setup(&mut rig, Capture::default());
-    let step = deliver(&mut s, &auth_setup_res(ResponseCode::Ok, &[Authorization::Pnc]));
+    let step = deliver(&mut s, &auth_setup_res(ResponseCode::Ok, &[Authorization::PnC]));
     assert_eq!(step.end, Some(EndReason::NoCompatibleAuthorization));
 
     // AuthorizationSetupRes with a failing code.
@@ -528,8 +543,8 @@ fn authorization_failures_end_the_session() {
     // AuthorizationRes: the EVSE refuses the user.
     let mut rig = Rig::new();
     let mut s = up_to_authorization(&mut rig, Capture::default());
-    let step = deliver(&mut s, &auth_res(ResponseCode::WarningEIMAuthorizationFailure, Processing::Finished));
-    assert_eq!(step.end, Some(EndReason::Rejected(ResponseCode::WarningEIMAuthorizationFailure)));
+    let step = deliver(&mut s, &auth_res(ResponseCode::WarningEimAuthorizationFailure, Processing::Finished));
+    assert_eq!(step.end, Some(EndReason::Rejected(ResponseCode::WarningEimAuthorizationFailure)));
 }
 
 #[test]
@@ -597,7 +612,7 @@ fn wrong_payload_type_or_message_ends_the_session() {
     let mut rig = Rig::new();
     let mut s = up_to_authorization(&mut rig, Capture::default());
     let wrong = framed(PayloadType::DC_MAINSTREAM, |out| {
-        common::encode_authorization_res(&AuthorizationRes { header: hdr(), response_code: ResponseCode::Ok, evse_processing: Processing::Finished }, out).unwrap()
+        AuthorizationRes { header: hdr(), response_code: ResponseCode::Ok, evse_processing: Processing::Finished }.encode(out).unwrap()
     });
     assert_eq!(deliver(&mut s, &wrong).end, Some(EndReason::UnexpectedMessage));
 }

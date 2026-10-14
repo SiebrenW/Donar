@@ -4,8 +4,14 @@
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+#[cfg(test)]
+extern crate std;
+
 pub mod arena;
 pub mod bits;
+pub mod codec;
+pub mod layout;
+pub mod strings;
 pub mod text;
 
 pub use arena::{Arena, ArenaFull};
