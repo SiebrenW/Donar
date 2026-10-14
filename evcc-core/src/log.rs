@@ -35,6 +35,8 @@ pub enum MsgKind {
     ServiceDetailRes,
     ServiceSelectionReq,
     ServiceSelectionRes,
+    DcChargeParameterDiscoveryReq,
+    DcChargeParameterDiscoveryRes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

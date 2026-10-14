@@ -15,6 +15,7 @@ use iso15118_20::common::{
     self, Authorization, AuthorizationReq, AuthorizationSetupReq, MessageHeader, Processing, ResponseCode,
     SessionSetupReq,
 };
+use iso15118_20::dc;
 use iso15118_20::services::{
     self, ParameterSet, ParameterValue, SelectedService, ServiceDetailReq, ServiceDiscoveryReq, ServiceSelectionReq,
 };
@@ -84,10 +85,18 @@ pub enum State {
     AwaitServiceDiscoveryRes,
     AwaitServiceDetailRes,
     AwaitServiceSelectionRes,
-    /// The energy transfer service is selected; the rest of the flow is added with the later
-    /// slices.
-    ServiceSelected,
+    AwaitChargeParameterDiscoveryRes,
+    /// Charge parameters are exchanged; the rest of the flow is added with the later slices.
+    ChargeParametersDiscovered,
     Ended,
+}
+
+impl State {
+    /// True when the session waits for nothing from the EVSE and has not ended: a point where
+    /// the part of the flow implemented so far is complete.
+    pub fn is_resting(self) -> bool {
+        matches!(self, State::ChargeParametersDiscovered)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +140,8 @@ pub enum Notice {
     Authorized,
     /// The EVSE accepted the service selection.
     ServiceSelected { service_id: u16, parameter_set_id: u16 },
+    /// The EVSE's DC limits, from `DC_ChargeParameterDiscoveryRes`.
+    ChargeParametersDiscovered(dc::ChargeParameterDiscoveryRes),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -262,6 +273,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 | State::AwaitServiceDiscoveryRes
                 | State::AwaitServiceDetailRes
                 | State::AwaitServiceSelectionRes
+                | State::AwaitChargeParameterDiscoveryRes
         )
     }
 
@@ -456,10 +468,44 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         }
                         let SelectedService { service_id, parameter_set_id } = self.selected;
                         self.log.record(&Record::ServiceSelected { service_id, parameter_set_id });
-                        self.goto(State::ServiceSelected);
+                        let limits = self.ev.dc_limits();
+                        let msg = dc::ChargeParameterDiscoveryReq {
+                            header: self.header(),
+                            maximum_charge_power: limits.maximum_charge_power,
+                            minimum_charge_power: limits.minimum_charge_power,
+                            maximum_charge_current: limits.maximum_charge_current,
+                            minimum_charge_current: limits.minimum_charge_current,
+                            maximum_voltage: limits.maximum_voltage,
+                            minimum_voltage: limits.minimum_voltage,
+                            target_soc: limits.target_soc,
+                        };
+                        let framed = frame(tx, PayloadType::DC_MAINSTREAM, |out| {
+                            dc::encode_charge_parameter_discovery_req(&msg, out)
+                        });
+                        let mut step = self.send_then(
+                            State::AwaitChargeParameterDiscoveryRes,
+                            MsgKind::DcChargeParameterDiscoveryReq,
+                            framed,
+                        );
+                        if step.end.is_none() {
+                            step.notice = Some(Notice::ServiceSelected { service_id, parameter_set_id });
+                        }
+                        step
+                    }
+                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Err(e) => self.malformed(e),
+                }
+            }
+            State::AwaitChargeParameterDiscoveryRes if payload_type == PayloadType::DC_MAINSTREAM => {
+                match dc::decode(payload) {
+                    Ok(dc::Message::ChargeParameterDiscoveryRes(res)) => {
+                        if let Some(end) = self.received(MsgKind::DcChargeParameterDiscoveryRes, res.response_code) {
+                            return end;
+                        }
+                        self.goto(State::ChargeParametersDiscovered);
                         Step {
                             timers: Timers::one(TimerCmd::Cancel(Timer::Response)),
-                            notice: Some(Notice::ServiceSelected { service_id, parameter_set_id }),
+                            notice: Some(Notice::ChargeParametersDiscovered(res)),
                             ..Step::default()
                         }
                     }

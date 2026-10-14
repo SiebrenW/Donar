@@ -9,13 +9,13 @@ use std::time::{Duration, Instant};
 use evcc_core::{Timer, TimerCmd};
 use evcc_core::ev::Ev;
 use evcc_core::log::LogSink;
-use evcc_core::session::{EndReason, Event, Notice, Session, Step};
+use evcc_core::session::{EndReason, Event, Notice, Session, State, Step};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// The part of the flow implemented so far finished: the EV is authorized and the EVSE
-    /// accepted its energy transfer service selection.
-    ServiceSelected { session_id: [u8; 8], service_id: u16, parameter_set_id: u16 },
+    /// The part of the flow implemented so far finished: the session machine reached a
+    /// resting state ([`evcc_core::session::State::is_resting`]).
+    Reached { session_id: [u8; 8], state: State },
     /// The session machine ended.
     Ended(EndReason),
     /// The peer closed the connection while the session was still running.
@@ -53,12 +53,11 @@ fn drive<E: Ev, L: LogSink>(stream: &mut TcpStream, session: &mut Session<'_, E,
         if let Some(reason) = step.end {
             return Ok(Outcome::Ended(reason));
         }
-        match step.notice {
-            Some(Notice::SessionSetUp { session_id: id }) => session_id = id,
-            Some(Notice::ServiceSelected { service_id, parameter_set_id }) => {
-                return Ok(Outcome::ServiceSelected { session_id, service_id, parameter_set_id });
-            }
-            Some(Notice::Authorized) | None => {}
+        if let Some(Notice::SessionSetUp { session_id: id }) = step.notice {
+            session_id = id;
+        }
+        if session.state().is_resting() {
+            return Ok(Outcome::Reached { session_id, state: session.state() });
         }
         match next_step(stream, session, &mut deadlines)? {
             Next::Step(next) => step = next,

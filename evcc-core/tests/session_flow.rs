@@ -4,12 +4,13 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use evcc_core::ev::Ev;
+use evcc_core::ev::{DcLimits, Ev};
 use evcc_core::log::{Level, LogSink, MsgKind, Record};
 use evcc_core::session::*;
 use evcc_core::{Timer, TimerCmd, Timers};
 use iso15118_20::app_protocol::{self, ResponseCode as SapCode, SupportedAppProtocolRes};
-use iso15118_20::common::{
+use iso15118_20::dc;
+use iso15118_20::common::{RationalNumber, 
     self, Authorization, AuthorizationRes, AuthorizationServices, AuthorizationSetupRes, MessageHeader, Processing,
     ResponseCode, SessionSetupRes,
 };
@@ -18,6 +19,10 @@ use iso15118_20::services::{
 };
 use iso15118_20::{Arena, DecodeError};
 use v2gtp::{HEADER_LEN, PayloadType};
+
+fn rn(exponent: i8, value: i16) -> RationalNumber {
+    RationalNumber { exponent, value }
+}
 
 /// The vehicle. Every call to `header_timestamp` returns a larger value so tests can tell
 /// messages apart.
@@ -33,6 +38,17 @@ impl TestEv {
 impl Ev for TestEv {
     fn evcc_id(&self) -> &str {
         "WMIV1234567890ABCDEX"
+    }
+    fn dc_limits(&self) -> DcLimits {
+        DcLimits {
+            maximum_charge_power: rn(3, 100),
+            minimum_charge_power: rn(0, 100),
+            maximum_charge_current: rn(0, 200),
+            minimum_charge_current: rn(0, 1),
+            maximum_voltage: rn(0, 450),
+            minimum_voltage: rn(0, 200),
+            target_soc: Some(80),
+        }
     }
     fn header_timestamp(&self) -> u64 {
         let t = self.0.get();
@@ -165,6 +181,23 @@ fn detail_res(code: ResponseCode, service_id: u16, sets: &[(u16, &[(&str, i32)])
 const DYNAMIC: &[(&str, i32)] = &[("Connector", 1), ("ControlMode", 2), ("MobilityNeedsMode", 1), ("Pricing", 0)];
 const SCHEDULED: &[(&str, i32)] = &[("Connector", 1), ("ControlMode", 1), ("MobilityNeedsMode", 1), ("Pricing", 0)];
 
+fn cpd_res(code: ResponseCode) -> std::vec::Vec<u8> {
+    framed(PayloadType::DC_MAINSTREAM, |out| {
+        let msg = dc::ChargeParameterDiscoveryRes {
+            header: hdr(),
+            response_code: code,
+            maximum_charge_power: rn(3, 150),
+            minimum_charge_power: rn(0, 1000),
+            maximum_charge_current: rn(0, 300),
+            minimum_charge_current: rn(0, 2),
+            maximum_voltage: rn(0, 920),
+            minimum_voltage: rn(0, 150),
+            power_ramp_limitation: None,
+        };
+        dc::encode_charge_parameter_discovery_res(&msg, out).unwrap()
+    })
+}
+
 fn selection_res(code: ResponseCode) -> std::vec::Vec<u8> {
     framed(PayloadType::MAINSTREAM, |out| {
         services::encode_service_selection_res(&ServiceSelectionRes { header: hdr(), response_code: code }, out).unwrap()
@@ -232,10 +265,18 @@ fn up_to_service_selection<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
     s
 }
 
-fn up_to_service_selected<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
+/// Up to and including the `DC_ChargeParameterDiscoveryReq`.
+fn up_to_charge_parameters<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
     let mut s = up_to_service_selection(rig, log);
     deliver(&mut s, &selection_res(ResponseCode::Ok));
-    assert_eq!(s.state(), State::ServiceSelected);
+    assert_eq!(s.state(), State::AwaitChargeParameterDiscoveryRes);
+    s
+}
+
+fn up_to_charge_parameters_discovered<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
+    let mut s = up_to_charge_parameters(rig, log);
+    deliver(&mut s, &cpd_res(ResponseCode::Ok));
+    assert_eq!(s.state(), State::ChargeParametersDiscovered);
     s
 }
 
@@ -273,6 +314,18 @@ fn service_negotiation_failures_end_the_session() {
     let mut s = up_to_service_selection(&mut rig, Capture::default());
     let step = deliver(&mut s, &selection_res(ResponseCode::FailedServiceSelectionInvalid));
     assert_eq!(step.end, Some(EndReason::Rejected(ResponseCode::FailedServiceSelectionInvalid)));
+
+    let mut rig = Rig::new();
+    let mut s = up_to_charge_parameters(&mut rig, Capture::default());
+    let step = deliver(&mut s, &cpd_res(ResponseCode::FailedWrongChargeParameter));
+    assert_eq!(step.end, Some(EndReason::Rejected(ResponseCode::FailedWrongChargeParameter)));
+
+    // A DC message on the common payload type is not what the state expects.
+    let mut rig = Rig::new();
+    let mut s = up_to_charge_parameters(&mut rig, Capture::default());
+    let mut wrong = cpd_res(ResponseCode::Ok);
+    wrong[2..4].copy_from_slice(&PayloadType::MAINSTREAM.0.to_be_bytes());
+    assert_eq!(deliver(&mut s, &wrong).end, Some(EndReason::UnexpectedMessage));
 }
 
 #[test]
@@ -285,6 +338,9 @@ fn every_service_step_has_a_response_timeout() {
     assert_eq!(s.handle(Event::TimerExpired(Timer::Response)).end, Some(EndReason::Timeout));
     let mut rig = Rig::new();
     let mut s = up_to_service_selection(&mut rig, Capture::default());
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Response)).end, Some(EndReason::Timeout));
+    let mut rig = Rig::new();
+    let mut s = up_to_charge_parameters(&mut rig, Capture::default());
     assert_eq!(s.handle(Event::TimerExpired(Timer::Response)).end, Some(EndReason::Timeout));
 }
 
@@ -356,9 +412,23 @@ fn full_flow_to_authorized() {
 
     let step = deliver(&mut s, &selection_res(ResponseCode::Ok));
     assert_eq!(step.notice, Some(Notice::ServiceSelected { service_id: 2, parameter_set_id: 7 }));
+    assert_eq!(step.timers, response_timer());
+    assert_eq!(s.state(), State::AwaitChargeParameterDiscoveryRes);
+    // The EV's DC limits come from the vehicle, on the DC payload type.
+    let (pt, payload) = sent(&s, &step);
+    assert_eq!(pt, PayloadType::DC_MAINSTREAM);
+    let dc::Message::ChargeParameterDiscoveryReq(req) = dc::decode(&payload).unwrap() else { panic!() };
+    assert_eq!(req.maximum_voltage, rn(0, 450));
+    assert_eq!(req.target_soc, Some(80));
+    assert_eq!(req.header.session_id, SID);
+
+    let step = deliver(&mut s, &cpd_res(ResponseCode::Ok));
+    let Some(Notice::ChargeParametersDiscovered(evse)) = step.notice else { panic!("{step:?}") };
+    assert_eq!(evse.maximum_voltage, rn(0, 920));
     assert_eq!(step.send, None);
     assert_eq!(step.timers, Timers::one(TimerCmd::Cancel(Timer::Response)));
-    assert_eq!(s.state(), State::ServiceSelected);
+    assert_eq!(s.state(), State::ChargeParametersDiscovered);
+    assert!(s.state().is_resting());
 
     let seen = seen.borrow();
     for (kind, tx) in [
@@ -370,6 +440,8 @@ fn full_flow_to_authorized() {
         (MsgKind::ServiceDetailRes, false),
         (MsgKind::ServiceSelectionReq, true),
         (MsgKind::ServiceSelectionRes, false),
+        (MsgKind::DcChargeParameterDiscoveryReq, true),
+        (MsgKind::DcChargeParameterDiscoveryRes, false),
     ] {
         assert!(seen.contains(&Seen::Msg(kind, tx)), "missing {kind:?} tx={tx}");
     }
@@ -426,11 +498,11 @@ fn ongoing_forever_hits_the_ongoing_timeout() {
 #[test]
 fn stale_timers_are_ignored() {
     let mut rig = Rig::new();
-    let mut s = up_to_service_selected(&mut rig, Capture::default());
+    let mut s = up_to_charge_parameters_discovered(&mut rig, Capture::default());
     // Both timers were cancelled, but an expiry may already have been in flight.
     assert_eq!(s.handle(Event::TimerExpired(Timer::Response)), Step::default());
     assert_eq!(s.handle(Event::TimerExpired(Timer::Ongoing)), Step::default());
-    assert_eq!(s.state(), State::ServiceSelected);
+    assert_eq!(s.state(), State::ChargeParametersDiscovered);
 
     // The ongoing timer is cancelled once authorization finishes, too.
     let mut rig = Rig::new();

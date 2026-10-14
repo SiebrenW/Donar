@@ -12,6 +12,8 @@ use iso15118_20::common::{
     self, Authorization, AuthorizationRes, AuthorizationServices, AuthorizationSetupRes, MessageHeader, Processing,
     ResponseCode, SessionSetupRes,
 };
+use iso15118_20::common::RationalNumber;
+use iso15118_20::dc;
 use iso15118_20::services::{
     self, Parameter, ParameterSet, ParameterValue, SelectedService, Service, ServiceDetailRes, ServiceDiscoveryRes,
     ServiceSelectionRes,
@@ -45,6 +47,8 @@ pub struct Config {
     pub parameter_sets: Vec<(u16, Vec<(String, i32)>)>,
     /// Response code of the `ServiceSelectionRes` for a valid selection.
     pub selection_code: ResponseCode,
+    /// Response code of `DC_ChargeParameterDiscoveryRes`.
+    pub cpd_code: ResponseCode,
 }
 
 impl Default for Config {
@@ -72,6 +76,7 @@ impl Default for Config {
                 ],
             )],
             selection_code: ResponseCode::Ok,
+            cpd_code: ResponseCode::Ok,
         }
     }
 }
@@ -85,8 +90,9 @@ pub enum State {
     AwaitServiceDiscoveryReq,
     AwaitServiceDetailReq,
     AwaitServiceSelectionReq,
-    /// The EV's service selection was accepted.
-    ServiceSelected,
+    AwaitChargeParameterDiscoveryReq,
+    /// The EV's charge parameters were answered.
+    ChargeParametersDiscovered,
     Closed,
 }
 
@@ -263,9 +269,36 @@ impl Evse {
                 }
                 let code = self.config.selection_code;
                 if matches!(code, ResponseCode::Ok) {
-                    self.state = State::ServiceSelected;
+                    self.state = State::AwaitChargeParameterDiscoveryReq;
                 }
                 self.selection_res(code)
+            }
+            State::AwaitChargeParameterDiscoveryReq if payload_type == PayloadType::DC_MAINSTREAM => {
+                let Ok(dc::Message::ChargeParameterDiscoveryReq(req)) = dc::decode(payload) else { return closed };
+                let code = if req.header.session_id != self.config.session_id {
+                    ResponseCode::FailedUnknownSession
+                } else {
+                    self.config.cpd_code
+                };
+                let rn = |value| RationalNumber { exponent: 0, value };
+                let res = dc::ChargeParameterDiscoveryRes {
+                    header: self.header(),
+                    response_code: code,
+                    maximum_charge_power: RationalNumber { exponent: 3, value: 150 },
+                    minimum_charge_power: rn(1000),
+                    maximum_charge_current: rn(300),
+                    minimum_charge_current: rn(2),
+                    maximum_voltage: rn(920),
+                    minimum_voltage: rn(150),
+                    power_ramp_limitation: None,
+                };
+                if is_ok(code) {
+                    self.state = State::ChargeParametersDiscovered;
+                }
+                Output {
+                    send: frame(PayloadType::DC_MAINSTREAM, |out| dc::encode_charge_parameter_discovery_res(&res, out)),
+                    close: !is_ok(code),
+                }
             }
             // The rest of the flow is added with the later slices.
             _ => closed,

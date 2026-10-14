@@ -4,17 +4,29 @@
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 
-use evcc_core::ev::Ev;
+use evcc_core::ev::{DcLimits, Ev};
 use evcc_core::log::NoLog;
-use evcc_core::session::{Buffers, Config, EndReason, Session};
+use evcc_core::session::{Buffers, Config, EndReason, Session, State as SessionState};
 use evcc_linux::{Outcome, run};
 use evse_sim::State as EvseState;
-use iso15118_20::common::ResponseCode;
+use iso15118_20::common::{RationalNumber, ResponseCode};
 
 struct Car;
 impl Ev for Car {
     fn evcc_id(&self) -> &str {
         "WMIV1234567890ABCDEX"
+    }
+    fn dc_limits(&self) -> DcLimits {
+        let rn = |exponent, value| RationalNumber { exponent, value };
+        DcLimits {
+            maximum_charge_power: rn(3, 100),
+            minimum_charge_power: rn(0, 100),
+            maximum_charge_current: rn(0, 200),
+            minimum_charge_current: rn(0, 1),
+            maximum_voltage: rn(0, 450),
+            minimum_voltage: rn(0, 200),
+            target_soc: Some(80),
+        }
     }
     fn header_timestamp(&self) -> u64 {
         1_700_000_000
@@ -40,8 +52,8 @@ fn session_is_set_up_over_tcp() {
     let evse = evse_sim::Config::default();
     let want = evse.session_id;
     let (addr, server) = start(evse);
-    assert_eq!(run_ev(addr, Config::DC_20), Outcome::ServiceSelected { session_id: want, service_id: 2, parameter_set_id: 1 });
-    assert_eq!(server.join().unwrap().unwrap(), EvseState::ServiceSelected);
+    assert_eq!(run_ev(addr, Config::DC_20), Outcome::Reached { session_id: want, state: SessionState::ChargeParametersDiscovered });
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::ChargeParametersDiscovered);
 }
 
 #[test]
@@ -82,8 +94,8 @@ fn evse_hanging_up_is_reported() {
 fn authorization_polling_ends_when_the_evse_finishes() {
     let (addr, server) = start(evse_sim::Config { authorization_ongoing_responses: 3, ..Default::default() });
     let outcome = run_ev(addr, Config::DC_20);
-    assert!(matches!(outcome, Outcome::ServiceSelected { .. }), "{outcome:?}");
-    assert_eq!(server.join().unwrap().unwrap(), EvseState::ServiceSelected);
+    assert!(matches!(outcome, Outcome::Reached { .. }), "{outcome:?}");
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::ChargeParametersDiscovered);
 }
 
 #[test]
@@ -135,7 +147,7 @@ fn the_dynamic_parameter_set_is_chosen_among_several() {
     let set = |id, control_mode| (id, vec![("ControlMode".to_string(), control_mode), ("MobilityNeedsMode".to_string(), 1)]);
     let (addr, server) = start(evse_sim::Config { parameter_sets: vec![set(4, 1), set(9, 2)], ..Default::default() });
     let outcome = run_ev(addr, Config::DC_20);
-    assert!(matches!(outcome, Outcome::ServiceSelected { service_id: 2, parameter_set_id: 9, .. }), "{outcome:?}");
+    assert!(matches!(outcome, Outcome::Reached { .. }), "{outcome:?}");
     server.join().unwrap().unwrap();
 }
 
@@ -145,6 +157,16 @@ fn refused_service_selection_is_reported() {
     assert_eq!(
         run_ev(addr, Config::DC_20),
         Outcome::Ended(EndReason::Rejected(ResponseCode::FailedServiceSelectionInvalid))
+    );
+    server.join().unwrap().unwrap();
+}
+
+#[test]
+fn refused_charge_parameters_are_reported() {
+    let (addr, server) = start(evse_sim::Config { cpd_code: ResponseCode::FailedWrongChargeParameter, ..Default::default() });
+    assert_eq!(
+        run_ev(addr, Config::DC_20),
+        Outcome::Ended(EndReason::Rejected(ResponseCode::FailedWrongChargeParameter))
     );
     server.join().unwrap().unwrap();
 }
