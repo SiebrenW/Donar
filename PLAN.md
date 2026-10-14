@@ -142,9 +142,9 @@ Steps 1 to 4 are interleaved per slice rather than finished in sequence.
 
 ## Status
 
-Done: workspace + `xtask setup/vectors`; EXIficient oracle; hand-written `iso15118-20` codecs for `app_protocol` and `common::SessionSetup`; `v2gtp`; SDP client machine; session machine through `SessionSetup`; `evse-sim` and the `evcc-linux` TCP adapter with an end-to-end loopback test (EV session machine vs the simulated EVSE over real TCP).
+Done: workspace + `xtask setup/vectors`; EXIficient oracle; hand-written `iso15118-20` codecs for `app_protocol` and `common` (`SessionSetup`, `AuthorizationSetup`, `Authorization`, EIM only); `v2gtp`; SDP client machine; session machine through EIM authorization (including the V2G20-1582 repeat and an ongoing timeout); `evse-sim` and the `evcc-linux` TCP adapter with end-to-end loopback tests (EV session machine vs the simulated EVSE over real TCP).
 
-Next slices (each end to end, codec first, checked against vectors): `AuthorizationSetup`/`Authorization` (EIM), service discovery/detail/selection, `DC_ChargeParameterDiscovery`, `ScheduleExchange`, `DC_CableCheck`/`DC_PreCharge`, `PowerDelivery`, `DC_ChargeLoop`, stop, `SessionStop`. Then TLS in `evcc-linux`, the SDP socket loop, SLAC with the `unshare` harness, and `exi-gen` replacing the hand-written codecs.
+Next slices (each end to end, codec first, checked against vectors): service discovery/detail/selection, `DC_ChargeParameterDiscovery`, `ScheduleExchange`, `DC_CableCheck`/`DC_PreCharge`, `PowerDelivery`, `DC_ChargeLoop`, stop, `SessionStop`. Then TLS in `evcc-linux`, the SDP socket loop, SLAC with the `unshare` harness, and `exi-gen` replacing the hand-written codecs.
 
 ## References to the standard
 
@@ -153,3 +153,7 @@ Where code implements a specific, citable behaviour (timers, mandated message ha
 - Only cite what has a source. I do not have the standard text; so far references come from comments in EcoG's open-source stack and are marked "unchecked" until verified against the standard. If no requirement id is known the comment says `TODO, not yet identified` instead of inventing one.
 - Known so far (all via EcoG, unchecked): payload types = Table 12; response codes = Annex A; service ids = Table 204 (8.4.3.1); `V2G20-1582` (on `EVSEProcessing = Ongoing` the EVCC repeats the `AuthorizationReq` unaltered except for the timestamp); `V2G20-2681` (exactly one authorization mode in `AuthorizationReq`); `V2G20-1640` (min SoC <= target SoC).
 - Open: the unit of the header `TimeStamp` (EcoG: microseconds since the epoch). `Ev::header_timestamp` passes the value through until this is settled.
+
+- **Timers**: `Timer::{Sdp, Response, Ongoing}`; a step carries up to two `TimerCmd`s (`Arm{timer, ms}` / `Cancel(timer)`); the host reports expiry as `TimerExpired(timer)`. The `Ongoing` timer bounds a repeated `Ongoing` exchange (60 s, EcoG's `V2G_EVCC_ONGOING_TIMEOUT`, requirement id TODO) and is armed once, on the first `Ongoing` response.
+- **Authorization grammar facts** (verified with EXIficient): `AuthorizationServices` (`maxOccurs=2`) is unrolled (2-bit state after the first entry, 1-bit after the second); `xs:boolean` is 1 bit; the EIM/PnC choice is 2 bits and EIM is an empty element followed by an EE. The choice width is unobservable in the EIM vectors (padding); a PnC vector will confirm it.
+- **`Ongoing_WaitingForCustomerInteraction`** is treated like `Ongoing` (EcoG does not distinguish them); check the standard for pacing or other differences.

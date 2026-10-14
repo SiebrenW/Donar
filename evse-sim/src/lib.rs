@@ -8,7 +8,10 @@ use std::net::TcpListener;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iso15118_20::app_protocol::{self, ResponseCode as SapCode, SupportedAppProtocolRes};
-use iso15118_20::common::{self, MessageHeader, ResponseCode, SessionSetupRes};
+use iso15118_20::common::{
+    self, Authorization, AuthorizationRes, AuthorizationServices, AuthorizationSetupRes, MessageHeader, Processing,
+    ResponseCode, SessionSetupRes,
+};
 use iso15118_20::{Arena, EncodeError};
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
@@ -24,6 +27,14 @@ pub struct Config {
     pub setup_code: ResponseCode,
     /// Never answer a `SessionSetupReq` (the EV should time out).
     pub silent_on_setup: bool,
+    /// How many `AuthorizationRes` carry `Ongoing` before one says `Finished`.
+    pub authorization_ongoing_responses: u32,
+    /// Never finish authorization: answer `Ongoing` forever (the EV's ongoing timeout should fire).
+    pub authorization_never_finishes: bool,
+    /// Response code of the `AuthorizationRes` that would finish authorization.
+    pub authorization_code: ResponseCode,
+    /// Authorization services offered in `AuthorizationSetupRes`.
+    pub offered_authorization: Vec<Authorization>,
 }
 
 impl Default for Config {
@@ -34,6 +45,10 @@ impl Default for Config {
             reject_protocol: false,
             setup_code: ResponseCode::OkNewSessionEstablished,
             silent_on_setup: false,
+            authorization_ongoing_responses: 0,
+            authorization_never_finishes: false,
+            authorization_code: ResponseCode::Ok,
+            offered_authorization: vec![Authorization::Eim],
         }
     }
 }
@@ -42,7 +57,9 @@ impl Default for Config {
 pub enum State {
     AwaitSupportedAppProtocolReq,
     AwaitSessionSetupReq,
-    SessionSetUp,
+    AwaitAuthorizationSetupReq,
+    AwaitAuthorizationReq,
+    Authorized,
     Closed,
 }
 
@@ -60,11 +77,12 @@ pub struct Evse {
     state: State,
     rx: Vec<u8>,
     schema_id: u8,
+    authorization_reqs_seen: u32,
 }
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0 }
+        Self { config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0 }
     }
 
     pub fn state(&self) -> State {
@@ -139,16 +157,86 @@ impl Evse {
                     evse_id: &self.config.evse_id,
                 };
                 if ok {
-                    self.state = State::SessionSetUp;
+                    self.state = State::AwaitAuthorizationSetupReq;
                 }
                 Output {
                     send: frame(PayloadType::MAINSTREAM, |out| common::encode_session_setup_res(&res, out)),
                     close: !ok,
                 }
             }
+            State::AwaitAuthorizationSetupReq if payload_type == PayloadType::MAINSTREAM => {
+                let Ok(common::Message::AuthorizationSetupReq(req)) = common::decode(payload, &arena) else { return closed };
+                if req.header.session_id != self.config.session_id {
+                    return self.unknown_session(common::Message::AuthorizationSetupReq(req));
+                }
+                let Some(authorization_services) = AuthorizationServices::new(&self.config.offered_authorization) else {
+                    return closed;
+                };
+                self.state = State::AwaitAuthorizationReq;
+                let res = AuthorizationSetupRes {
+                    header: self.header(),
+                    response_code: ResponseCode::Ok,
+                    authorization_services,
+                    certificate_installation_service: false,
+                };
+                Output { send: frame(PayloadType::MAINSTREAM, |out| common::encode_authorization_setup_res(&res, out)), close: false }
+            }
+            State::AwaitAuthorizationReq if payload_type == PayloadType::MAINSTREAM => {
+                let Ok(common::Message::AuthorizationReq(req)) = common::decode(payload, &arena) else { return closed };
+                if req.header.session_id != self.config.session_id {
+                    return self.unknown_session(common::Message::AuthorizationReq(req));
+                }
+                self.authorization_reqs_seen += 1;
+                let ongoing = self.config.authorization_never_finishes
+                    || self.authorization_reqs_seen <= self.config.authorization_ongoing_responses;
+                let (evse_processing, response_code) = if ongoing {
+                    (Processing::Ongoing, ResponseCode::Ok)
+                } else {
+                    (Processing::Finished, self.config.authorization_code)
+                };
+                let res = AuthorizationRes { header: self.header(), response_code, evse_processing };
+                let finished_ok = !ongoing && matches!(response_code, ResponseCode::Ok);
+                if finished_ok {
+                    self.state = State::Authorized;
+                }
+                Output {
+                    send: frame(PayloadType::MAINSTREAM, |out| common::encode_authorization_res(&res, out)),
+                    close: !ongoing && !finished_ok,
+                }
+            }
             // The rest of the flow is added with the later slices.
             _ => closed,
         }
+    }
+}
+
+impl Evse {
+    fn header(&self) -> MessageHeader {
+        MessageHeader { session_id: self.config.session_id, timestamp: now() }
+    }
+
+    /// Answers a message that carries the wrong session id with `FAILED_UnknownSession`.
+    fn unknown_session(&self, msg: common::Message<'_>) -> Output {
+        let send = match msg {
+            common::Message::AuthorizationSetupReq(_) => {
+                let res = AuthorizationSetupRes {
+                    header: self.header(),
+                    response_code: ResponseCode::FailedUnknownSession,
+                    authorization_services: AuthorizationServices::new(&[Authorization::Eim]).expect("one service"),
+                    certificate_installation_service: false,
+                };
+                frame(PayloadType::MAINSTREAM, |out| common::encode_authorization_setup_res(&res, out))
+            }
+            _ => {
+                let res = AuthorizationRes {
+                    header: self.header(),
+                    response_code: ResponseCode::FailedUnknownSession,
+                    evse_processing: Processing::Finished,
+                };
+                frame(PayloadType::MAINSTREAM, |out| common::encode_authorization_res(&res, out))
+            }
+        };
+        Output { send, close: true }
     }
 }
 

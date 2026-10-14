@@ -12,7 +12,7 @@
 use v2gtp::sdp::{Request, Response, Security, Transport};
 use v2gtp::{BufferTooSmall, Parse, PayloadType, parse};
 
-use crate::TimerCmd;
+use crate::{Timer, TimerCmd, Timers};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
@@ -52,7 +52,7 @@ pub enum Outcome {
 pub struct Step {
     /// Number of bytes at the start of the `tx` buffer to send as a multicast datagram.
     pub send: Option<usize>,
-    pub timer: TimerCmd,
+    pub timers: Timers,
     pub outcome: Option<Outcome>,
 }
 
@@ -87,7 +87,7 @@ impl Client {
             (State::Waiting { .. }, Event::Datagram(bytes)) => Ok(match self.accept(bytes) {
                 Some(response) => {
                     self.state = State::Done;
-                    Step { timer: TimerCmd::Cancel, outcome: Some(Outcome::Found(response)), ..Step::default() }
+                    Step { timers: Timers::one(TimerCmd::Cancel(Timer::Sdp)), outcome: Some(Outcome::Found(response)), ..Step::default() }
                 }
                 // Garbage, wrong type or unacceptable security: keep waiting for the real one.
                 None => Step::default(),
@@ -101,7 +101,11 @@ impl Client {
         let request = Request { security: self.config.security, transport: Transport::Tcp };
         let len = request.to_datagram(tx)?;
         self.state = State::Waiting { sent: count };
-        Ok(Step { send: Some(len), timer: TimerCmd::Arm { ms: self.config.request_interval_ms }, outcome: None })
+        Ok(Step {
+            send: Some(len),
+            timers: Timers::one(TimerCmd::Arm { timer: Timer::Sdp, ms: self.config.request_interval_ms }),
+            outcome: None,
+        })
     }
 
     fn accept(&self, bytes: &[u8]) -> Option<Response> {
@@ -142,7 +146,7 @@ mod tests {
         let step = c.handle(Event::Start, &mut tx).unwrap();
         assert_eq!(step.send, Some(10));
         assert_eq!(&tx[..10], &[0x01, 0xFE, 0x90, 0x00, 0, 0, 0, 2, 0x00, 0x00]);
-        assert_eq!(step.timer, TimerCmd::Arm { ms: 250 });
+        assert_eq!(step.timers, Timers::one(TimerCmd::Arm { timer: Timer::Sdp, ms: 250 }));
         assert_eq!(step.outcome, None);
     }
 
@@ -156,7 +160,7 @@ mod tests {
             let step = c.handle(Event::TimerExpired, &mut tx).unwrap();
             if step.send.is_some() {
                 sends += 1;
-                assert_eq!(step.timer, TimerCmd::Arm { ms: 250 });
+                assert_eq!(step.timers, Timers::one(TimerCmd::Arm { timer: Timer::Sdp, ms: 250 }));
             }
             if let Some(o) = step.outcome {
                 break o;
@@ -177,7 +181,7 @@ mod tests {
         let (buf, n) = datagram(&r);
         let step = c.handle(Event::Datagram(&buf[..n]), &mut tx).unwrap();
         assert_eq!(step.outcome, Some(Outcome::Found(r)));
-        assert_eq!(step.timer, TimerCmd::Cancel);
+        assert_eq!(step.timers, Timers::one(TimerCmd::Cancel(Timer::Sdp)));
         // A late duplicate is ignored.
         assert_eq!(c.handle(Event::Datagram(&buf[..n]), &mut tx).unwrap(), Step::default());
     }

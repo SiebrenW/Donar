@@ -1,22 +1,25 @@
-//! The V2G session machine: SupportedAppProtocol handshake, then SessionSetup. (More of the
-//! DC dynamic EIM flow is added slice by slice.)
+//! The V2G session machine: SupportedAppProtocol handshake, SessionSetup, then EIM
+//! authorization. (More of the DC dynamic flow is added slice by slice.)
 //!
 //! Host contract:
 //! 1. Open the TCP/TLS connection found by SDP, then send [`Event::Start`].
 //! 2. Read from the socket straight into [`Session::rx_space`], then send
 //!    [`Event::Received`] with the byte count.
 //! 3. After every call, carry out the returned [`Step`]: write `tx[..send]` to the stream,
-//!    apply the timer command, handle `notice`, and close the connection once `end` is set.
-//! 4. When the armed timer fires, send [`Event::TimerExpired`].
+//!    apply the timer commands, handle `notice`, and close the connection once `end` is set.
+//! 4. When an armed timer fires, send [`Event::TimerExpired`] naming it.
 
 use iso15118_20::app_protocol::{self, AppProtocol, SupportedAppProtocolReq};
-use iso15118_20::common::{self, MessageHeader, ResponseCode, SessionSetupReq};
+use iso15118_20::common::{
+    self, Authorization, AuthorizationReq, AuthorizationSetupReq, MessageHeader, Processing, ResponseCode,
+    SessionSetupReq,
+};
 use iso15118_20::{Arena, DecodeError};
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
-use crate::TimerCmd;
 use crate::ev::Ev;
 use crate::log::{LogSink, MsgKind, Record};
+use crate::{Timer, TimerCmd, Timers};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
@@ -26,6 +29,9 @@ pub struct Config {
     /// EcoG's stack (requirement id: TODO, not yet identified). It is reused for every other
     /// message until their individual ISO 15118-20:2022 timeouts are looked up.
     pub response_timeout_ms: u32,
+    /// Upper bound on a repeated `Ongoing` exchange such as authorization polling. 60 s is
+    /// EcoG's `V2G_EVCC_ONGOING_TIMEOUT` (requirement id: TODO, not yet identified).
+    pub ongoing_timeout_ms: u32,
 }
 
 impl Config {
@@ -39,6 +45,7 @@ impl Config {
             priority: 1,
         },
         response_timeout_ms: 2000,
+        ongoing_timeout_ms: 60_000,
     };
 }
 
@@ -57,7 +64,10 @@ pub enum State {
     Idle,
     AwaitSupportedAppProtocolRes,
     AwaitSessionSetupRes,
-    SessionSetUp,
+    AwaitAuthorizationSetupRes,
+    AwaitAuthorizationRes,
+    /// Authorized; the rest of the flow is added with the later slices.
+    Authorized,
     Ended,
 }
 
@@ -67,6 +77,8 @@ pub enum EndReason {
     Completed,
     /// The EVSE rejected or did not accept our protocol offer.
     NoCommonProtocol,
+    /// The EVSE offers no authorization service this EV can use (only EIM is implemented).
+    NoCompatibleAuthorization,
     /// The EVSE answered with a failing response code.
     Rejected(ResponseCode),
     Timeout,
@@ -85,19 +97,22 @@ pub enum Event {
     Start { secured: bool },
     /// `n` bytes were written into [`Session::rx_space`].
     Received(usize),
-    TimerExpired,
+    TimerExpired(Timer),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Notice {
+    /// The EVSE accepted the session; `session_id` is the id it assigned.
     SessionSetUp { session_id: [u8; 8] },
+    /// Authorization finished successfully.
+    Authorized,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Step {
     /// Length of the framed message at the start of the TX buffer to write to the stream.
     pub send: Option<usize>,
-    pub timer: TimerCmd,
+    pub timers: Timers,
     pub notice: Option<Notice>,
     /// Set when the session is over; the host closes the connection.
     pub end: Option<EndReason>,
@@ -118,6 +133,8 @@ struct Machine<E, L> {
     state: State,
     secured: bool,
     session_id: [u8; 8],
+    /// The `Ongoing` timer is armed once, when the first `Ongoing` response arrives.
+    ongoing_armed: bool,
 }
 
 impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
@@ -127,7 +144,15 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
             rx_len: 0,
             tx: buffers.tx,
             arena: Arena::new(buffers.arena),
-            m: Machine { config, ev, log, state: State::Idle, secured: false, session_id: [0; 8] },
+            m: Machine {
+                config,
+                ev,
+                log,
+                state: State::Idle,
+                secured: false,
+                session_id: [0; 8],
+                ongoing_armed: false,
+            },
         }
     }
 
@@ -159,8 +184,10 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 m.log.record(&Record::Started { secured });
                 m.send_supported_app_protocol_req(tx)
             }
-            Event::TimerExpired => match m.state {
-                State::AwaitSupportedAppProtocolRes | State::AwaitSessionSetupRes => m.end(EndReason::Timeout),
+            Event::TimerExpired(timer) => match (timer, m.state) {
+                (Timer::Response, s) if m.is_awaiting(s) => m.end(EndReason::Timeout),
+                (Timer::Ongoing, State::AwaitAuthorizationRes) => m.end(EndReason::Timeout),
+                // A timer that was cancelled in the same moment it fired.
                 _ => Step::default(),
             },
             Event::Received(n) => {
@@ -198,6 +225,16 @@ pub(crate) fn is_ok(code: ResponseCode) -> bool {
 }
 
 impl<E: Ev, L: LogSink> Machine<E, L> {
+    fn is_awaiting(&self, state: State) -> bool {
+        matches!(
+            state,
+            State::AwaitSupportedAppProtocolRes
+                | State::AwaitSessionSetupRes
+                | State::AwaitAuthorizationSetupRes
+                | State::AwaitAuthorizationRes
+        )
+    }
+
     fn goto(&mut self, to: State) {
         let from = core::mem::replace(&mut self.state, to);
         self.log.record(&Record::StateChange { from, to });
@@ -206,14 +243,35 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     fn end(&mut self, reason: EndReason) -> Step {
         self.goto(State::Ended);
         self.log.record(&Record::Ended { reason });
-        Step { timer: TimerCmd::Cancel, end: Some(reason), ..Step::default() }
+        Step {
+            timers: Timers::one(TimerCmd::Cancel(Timer::Response)).with(TimerCmd::Cancel(Timer::Ongoing)),
+            end: Some(reason),
+            ..Step::default()
+        }
+    }
+
+    fn header(&self) -> MessageHeader {
+        MessageHeader { session_id: self.session_id, timestamp: self.ev.header_timestamp() }
     }
 
     /// Records the transmit and arms the response timer for a message framed by [`frame`].
     fn sent(&mut self, msg: MsgKind, framed: Result<usize, ()>) -> Step {
         let Ok(len) = framed else { return self.end(EndReason::TxBufferTooSmall) };
         self.log.record(&Record::MsgTx { msg });
-        Step { send: Some(len), timer: TimerCmd::Arm { ms: self.config.response_timeout_ms }, ..Step::default() }
+        Step {
+            send: Some(len),
+            timers: Timers::one(TimerCmd::Arm { timer: Timer::Response, ms: self.config.response_timeout_ms }),
+            ..Step::default()
+        }
+    }
+
+    /// Sends `msg` and, unless the send failed, moves to `next`.
+    fn send_then(&mut self, next: State, msg: MsgKind, framed: Result<usize, ()>) -> Step {
+        let step = self.sent(msg, framed);
+        if step.end.is_none() {
+            self.goto(next);
+        }
+        step
     }
 
     fn send_supported_app_protocol_req(&mut self, tx: &mut [u8]) -> Step {
@@ -221,14 +279,11 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         let framed = frame(tx, PayloadType::SAP, |out| {
             app_protocol::encode_req(&SupportedAppProtocolReq { app_protocols: &offer }, out)
         });
-        let step = self.sent(MsgKind::SupportedAppProtocolReq, framed);
-        if step.end.is_none() {
-            self.goto(State::AwaitSupportedAppProtocolRes);
-        }
-        step
+        self.send_then(State::AwaitSupportedAppProtocolRes, MsgKind::SupportedAppProtocolReq, framed)
     }
 
     fn on_frame(&mut self, payload_type: PayloadType, payload: &[u8], arena: &Arena<'_>, tx: &mut [u8]) -> Step {
+        use common::Message as M;
         match self.state {
             State::AwaitSupportedAppProtocolRes if payload_type == PayloadType::SAP => {
                 match app_protocol::decode(payload, arena) {
@@ -242,7 +297,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             }
             State::AwaitSessionSetupRes if payload_type == PayloadType::MAINSTREAM => {
                 match common::decode(payload, arena) {
-                    Ok(common::Message::SessionSetupRes(res)) => {
+                    Ok(M::SessionSetupRes(res)) => {
                         self.log.record(&Record::MsgRx { msg: MsgKind::SessionSetupRes });
                         self.log.record(&Record::Response { msg: MsgKind::SessionSetupRes, code: res.response_code });
                         if !is_ok(res.response_code) {
@@ -250,12 +305,67 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         }
                         self.session_id = res.header.session_id;
                         self.log.record(&Record::SessionSetUp { session_id: self.session_id, evse_id: res.evse_id });
-                        self.goto(State::SessionSetUp);
-                        // This slice ends here; the next one continues with authorization.
-                        Step {
-                            timer: TimerCmd::Cancel,
-                            notice: Some(Notice::SessionSetUp { session_id: self.session_id }),
-                            ..Step::default()
+                        let framed = frame(tx, PayloadType::MAINSTREAM, |out| {
+                            common::encode_authorization_setup_req(&AuthorizationSetupReq { header: self.header() }, out)
+                        });
+                        let mut step = self.send_then(State::AwaitAuthorizationSetupRes, MsgKind::AuthorizationSetupReq, framed);
+                        step.notice = Some(Notice::SessionSetUp { session_id: self.session_id });
+                        step
+                    }
+                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Err(e) => self.malformed(e),
+                }
+            }
+            State::AwaitAuthorizationSetupRes if payload_type == PayloadType::MAINSTREAM => {
+                match common::decode(payload, arena) {
+                    Ok(M::AuthorizationSetupRes(res)) => {
+                        self.log.record(&Record::MsgRx { msg: MsgKind::AuthorizationSetupRes });
+                        self.log.record(&Record::Response { msg: MsgKind::AuthorizationSetupRes, code: res.response_code });
+                        if !is_ok(res.response_code) {
+                            return self.end(EndReason::Rejected(res.response_code));
+                        }
+                        if !res.authorization_services.as_slice().contains(&Authorization::Eim) {
+                            return self.end(EndReason::NoCompatibleAuthorization);
+                        }
+                        self.send_authorization_req(State::AwaitAuthorizationRes, tx)
+                    }
+                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Err(e) => self.malformed(e),
+                }
+            }
+            State::AwaitAuthorizationRes if payload_type == PayloadType::MAINSTREAM => {
+                match common::decode(payload, arena) {
+                    Ok(M::AuthorizationRes(res)) => {
+                        self.log.record(&Record::MsgRx { msg: MsgKind::AuthorizationRes });
+                        self.log.record(&Record::Response { msg: MsgKind::AuthorizationRes, code: res.response_code });
+                        self.log.record(&Record::EvseProcessing { processing: res.evse_processing });
+                        if !is_ok(res.response_code) {
+                            return self.end(EndReason::Rejected(res.response_code));
+                        }
+                        match res.evse_processing {
+                            Processing::Finished => {
+                                self.goto(State::Authorized);
+                                Step {
+                                    timers: Timers::one(TimerCmd::Cancel(Timer::Response))
+                                        .with(TimerCmd::Cancel(Timer::Ongoing)),
+                                    notice: Some(Notice::Authorized),
+                                    ..Step::default()
+                                }
+                            }
+                            // Ref: ISO 15118-20:2022 V2G20-1582 (as cited by EcoG, unchecked):
+                            // while EVSEProcessing is Ongoing the EVCC sends another AuthorizationReq,
+                            // unaltered except for the timestamp. The same is done for
+                            // Ongoing_WaitingForCustomerInteraction, which EcoG does not distinguish
+                            // (TODO: check the standard for any difference, e.g. pacing).
+                            Processing::Ongoing | Processing::OngoingWaitingForCustomerInteraction => {
+                                let mut step = self.send_authorization_req(State::AwaitAuthorizationRes, tx);
+                                if step.end.is_none() && !self.ongoing_armed {
+                                    self.ongoing_armed = true;
+                                    step.timers =
+                                        step.timers.with(TimerCmd::Arm { timer: Timer::Ongoing, ms: self.config.ongoing_timeout_ms });
+                                }
+                                step
+                            }
                         }
                     }
                     Ok(_) => self.end(EndReason::UnexpectedMessage),
@@ -264,6 +374,18 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             }
             _ => self.end(EndReason::UnexpectedMessage),
         }
+    }
+
+    fn send_authorization_req(&mut self, next: State, tx: &mut [u8]) -> Step {
+        // EIM is the only authorization mode implemented, so the request carries no data
+        // beyond the header; a repeat is therefore identical except for its timestamp.
+        let msg = AuthorizationReq { header: self.header() };
+        let framed = frame(tx, PayloadType::MAINSTREAM, |out| common::encode_authorization_req(&msg, out));
+        if self.state == next {
+            // A repeat: stay in the same state without logging a transition.
+            return self.sent(MsgKind::AuthorizationReq, framed);
+        }
+        self.send_then(next, MsgKind::AuthorizationReq, framed)
     }
 
     fn malformed(&mut self, error: DecodeError) -> Step {
@@ -285,11 +407,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             evcc_id: self.ev.evcc_id(),
         };
         let framed = frame(tx, PayloadType::MAINSTREAM, |out| common::encode_session_setup_req(&msg, out));
-        let step = self.sent(MsgKind::SessionSetupReq, framed);
-        if step.end.is_none() {
-            self.goto(State::AwaitSessionSetupRes);
-        }
-        step
+        self.send_then(State::AwaitSessionSetupRes, MsgKind::SessionSetupReq, framed)
     }
 }
 

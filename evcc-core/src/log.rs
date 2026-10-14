@@ -4,7 +4,7 @@
 //! synchronously.
 
 use iso15118_20::DecodeError;
-use iso15118_20::common::ResponseCode;
+use iso15118_20::common::{Processing, ResponseCode};
 
 use crate::session::{EndReason, State};
 
@@ -25,6 +25,10 @@ pub enum MsgKind {
     SupportedAppProtocolRes,
     SessionSetupReq,
     SessionSetupRes,
+    AuthorizationSetupReq,
+    AuthorizationSetupRes,
+    AuthorizationReq,
+    AuthorizationRes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +40,8 @@ pub enum Record<'a> {
     /// A response code from the EVSE.
     Response { msg: MsgKind, code: ResponseCode },
     SessionSetUp { session_id: [u8; 8], evse_id: &'a str },
+    /// The `EVSEProcessing` value of an `AuthorizationRes`.
+    EvseProcessing { processing: Processing },
     RxPayload { payload_type: u16, payload: &'a [u8] },
     DecodeFailed { state: State, error: DecodeError },
     Ended { reason: EndReason },
@@ -46,7 +52,9 @@ impl Record<'_> {
         match self {
             Record::Started { .. } | Record::StateChange { .. } | Record::SessionSetUp { .. } => Level::Info,
             Record::Response { code, .. } if !crate::session::is_ok(*code) => Level::Info,
-            Record::Response { .. } | Record::MsgTx { .. } | Record::MsgRx { .. } => Level::Debug,
+            Record::Response { .. } | Record::EvseProcessing { .. } | Record::MsgTx { .. } | Record::MsgRx { .. } => {
+                Level::Debug
+            }
             Record::RxPayload { .. } => Level::Trace,
             Record::DecodeFailed { .. } => Level::Error,
             Record::Ended { reason } => match reason {
