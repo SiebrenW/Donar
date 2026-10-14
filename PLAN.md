@@ -120,3 +120,10 @@ Steps 1 to 4 are interleaved per slice rather than finished in sequence.
 - The contents of the `Ev` trait.
 - Error and timeout policy (the V2G sequence and message timeouts are central to -20).
 - The XSD download source and the exact set of schemas.
+
+## Decided during implementation
+
+- **EXI options** (verified against EXIficient 1.0.7): schema-informed, bit-packed, default (non-strict) fidelity, no options in the header, so streams start `80 00`. Strict mode produces different streams (`80 07`) and is not what real stacks use.
+- **Schema source:** `https://standards.iso.org/iso/15118/-20/ed-1/en/` (same as cbExiGen's auto-download).
+- **Reference vectors:** `xtask/java/EncodeVector.java` plus the EXIficient jars (downloaded into the gitignored `vectors/lib`). Inputs live in `xtask/vectors/*.xml`. Needs a JDK; on this Mac Homebrew's `openjdk` is at `/opt/homebrew/opt/openjdk/bin`.
+- The AppProtocol XSD has no `elementFormDefault="qualified"`, so its child elements are in no namespace; only the root carries `urn:iso:15118:2:2010:AppProtocol`.
