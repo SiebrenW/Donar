@@ -21,7 +21,7 @@ Milestone 1 targets **ISO 15118-20**, since it dictates the abstraction for the 
 The core is a pure `no_std` state machine. It is driven by events (received bytes, timer expiry, EV input) and emits actions (bytes to send, arm/cancel timer, EV requests). Because it asks the host to arm timers, it never needs to be polled. Host adapters supply the real I/O.
 
 - **V2GTP framing and SDP live in the core.** SDP is a separate small sans-IO machine from the session machine. The host runs SDP, gets the result (address, port, secure or not), opens the connection, then starts the session machine.
-- **TLS lives outside the core**, in the host adapter (rustls on Linux, something else on embedded). The core only sees a byte stream and a "secured" flag.
+- **TLS lives outside the core**, in the host adapter (the `openssl` crate on Linux, something else on embedded). The core only sees a byte stream and a "secured" flag.
 
 ### EV side: hybrid
 
@@ -82,7 +82,7 @@ codecs/
 exi-gen/                    # host tool (lib + bin): XSD -> Rust codec source; `dump` prints the derived grammar
 evcc-core/                  # no_std sans-IO EV session + SDP machines, Ev trait, actions/events, log records
 evse-sim/                   # in-repo EVSE simulator, the mirror image of the core
-evcc-linux/                 # host adapter: sockets, rustls, timers, later SLAC
+evcc-linux/                 # host adapter: sockets, OpenSSL, timers, later SLAC
 xtask/                      # setup: XSD download, generation, reference vectors
 ```
 
@@ -189,8 +189,10 @@ The standard text is in `standards/`. Reading the EVCC requirements of clause 8.
 
 **Decided, not yet built:** `SessionStopReq` on error exits (V2G20-2644 for non-critical stops before `Start`), standby/pause, service renegotiation (V2G20-1476), `MeteringConfirmation` on side stream `0x8102` when the EVSE asks (V2G20-1621), resumed sessions (V2G20-2098), the other `EVSENotification` values.
 
-**TLS (slice 5) is bigger than planned** (7.7): TLS 1.3 with *mutual* authentication must be supported (V2G20-1264) so the EVCC needs a client certificate chain; cipher suites `TLS_AES_256_GCM_SHA384` then `TLS_CHACHA20_POLY1305_SHA256` (Table 6, V2G20-1858); named groups `secp521r1` / `x448` in the order of Table 7. rustls with the `aws-lc-rs` provider covers the suites and `secp521r1`; `x448` is probably missing. EVSE and EVCC test certificates are needed in the loopback and `unshare` tests.
+**TLS (slice 5) is bigger than planned** (7.7): TLS 1.3 with *mutual* authentication must be supported (V2G20-1264) so the EVCC needs a client certificate chain; cipher suites `TLS_AES_256_GCM_SHA384` then `TLS_CHACHA20_POLY1305_SHA256` (Table 6, V2G20-1858); named groups `secp521r1` / `x448` in the order of Table 7. EVSE and EVCC test certificates are needed in the loopback and `unshare` tests.
 
 **Verification gaps:** the grammar of every message equals EXIficient's, but value-level vectors exist only for the messages the session uses; the PnC types, BPT and the scheduled-mode types are generated but untested. The empty-string EXI question is still open.
+
+**TLS library decision (2026-10-15).** rustls cannot do this standard: no provider implements `secp521r1`/`x448` key exchange or Ed448, and it has no CBC or static-ECDH suites that ISO 15118-2 needs (Table 7: `TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA256`, `TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256`; -20 requires them after the TLS 1.3 suites for -2 compatibility, V2G20-2056..2066). Other Rust stacks (boring, wolfssl crate, mbedtls crate, embedded-tls, graviola, RustCrypto) lack groups or TLS 1.3. Decision: the `openssl` crate in `evcc-linux`. Probed with `s_server`/`s_client` on OpenSSL 3.6.4 and 4.0.3: TLS 1.3 mutual auth with P-521 certs, x448 and secp521r1 groups, Ed448 certs, both Table 6 suites, and TLS 1.2 `ECDHE-ECDSA-AES128-SHA256` all work. `ECDH-ECDSA-AES128-SHA256` (static ECDH) is not available in either, so an SECC claiming -2 conformance (V2G2-602) needs another library or an older OpenSSL; the EVCC needs only one suite (V2G2-603).
 
 **Verdict:** on track. With items 1 to 6 fixed, the message flow of milestone 1 follows the standard; TLS, the SDP socket loop and SLAC remain.
