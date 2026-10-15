@@ -645,3 +645,29 @@ pub fn serve(stream: &mut (impl Read + Write), config: Config) -> std::io::Resul
         }
     }
 }
+
+/// Answers SECC discovery requests on `socket` (blocking): the first `ignore` requests get no
+/// answer, then one request is answered with `response` sent back to the requester. Returns
+/// the number of requests seen, including the answered one.
+pub fn answer_discovery(
+    socket: &std::net::UdpSocket,
+    response: v2gtp::sdp::Response,
+    ignore: u32,
+) -> std::io::Result<u32> {
+    let mut buf = [0u8; 64];
+    let mut seen = 0;
+    loop {
+        let (n, from) = socket.recv_from(&mut buf)?;
+        let Ok(Parse::Frame(frame)) = parse(&buf[..n], v2gtp::sdp::Request::PAYLOAD_LEN) else { continue };
+        if frame.payload_type != PayloadType::SDP_REQUEST || v2gtp::sdp::Request::from_payload(frame.payload).is_err() {
+            continue;
+        }
+        seen += 1;
+        if seen > ignore {
+            let mut out = [0u8; 32];
+            let len = response.to_datagram(&mut out).expect("buffer fits a response");
+            socket.send_to(&out[..len], from)?;
+            return Ok(seen);
+        }
+    }
+}

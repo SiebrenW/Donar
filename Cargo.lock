@@ -50,7 +50,9 @@ dependencies = [
  "evse-sim",
  "exi",
  "iso15118-20",
+ "libc",
  "openssl",
+ "v2gtp",
 ]
 
 [[package]]

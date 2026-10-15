@@ -1,8 +1,9 @@
 //! Host adapter for std platforms: drives an [`evcc_core::session::Session`] over a blocking
 //! `TcpStream`. The core's timer commands become socket read timeouts, so no thread or
 //! async runtime is needed. The stream is a plain `TcpStream` or an OpenSSL TLS stream (see
-//! [`tls`]). (SDP sockets and SLAC are added later.)
+//! [`tls`]). (SLAC is added later.)
 
+pub mod sdp;
 pub mod tls;
 
 use std::io::{self, ErrorKind, Read, Write};
