@@ -1,7 +1,8 @@
 #!/bin/sh
-# Gives `developer` the named volumes for the build output and the cargo registry, which are
-# owned by root when an earlier image created them.
+# Gives the current user (`developer`, or whatever UID an editor changed that to) the named
+# volumes for the build output and the cargo registry, which belong to another user when an
+# earlier image or UID created them.
 for dir in /target /usr/local/cargo/registry; do
   [ -d "$dir" ] || continue
-  [ "$(stat -c %U "$dir")" = developer ] || sudo chown -R developer:developer "$dir"
+  [ "$(stat -c %u "$dir")" = "$(id -u)" ] || sudo chown -R "$(id -u):$(id -g)" "$dir"
 done

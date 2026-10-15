@@ -6,12 +6,16 @@
   },
   // Network namespaces, veth pairs and raw packet sockets need privileges.
   "runArgs": ["--privileged"],
+  // The same path in every environment: cargo bakes it into build outputs
+  // (`env!("CARGO_MANIFEST_DIR")`), and the build volume is shared with `cargo xtask linux-test`.
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/evcc-rs,type=bind",
+  "workspaceFolder": "/workspaces/evcc-rs",
   "remoteUser": "developer",
   // Same volumes as `cargo xtask linux-test`, so builds are shared and the workspace's
   // `target` (macOS builds when the folder comes from a Mac) is left alone.
   "mounts": [
-    "source=evcc-rs-target,target=/target,type=volume",
-    "source=evcc-rs-cargo,target=/usr/local/cargo/registry,type=volume"
+    "source=evcc-rs-target-v2,target=/target,type=volume",
+    "source=evcc-rs-cargo-v2,target=/usr/local/cargo/registry,type=volume"
   ],
   // Fetches the ISO schemas, generates the codecs and builds the reference vectors; both
   // steps skip what is already there.

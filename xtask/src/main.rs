@@ -42,8 +42,12 @@ fn main() -> ExitCode {
     }
 }
 
+/// The repository root. Taken from the environment cargo sets when it runs us, not from the
+/// path baked in at compile time: a build output can be reused after the repository moved
+/// (a different mount point in a container).
 fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
+    let manifest = std::env::var_os("CARGO_MANIFEST_DIR").map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from);
+    manifest.parent().unwrap().to_path_buf()
 }
 
 /// Downloads the XSDs (skipping files already present unless `force`).
@@ -206,9 +210,9 @@ fn linux_test(cargo_args: Vec<String>) -> Result<(), String> {
     let mut cmd = Command::new("docker");
     cmd.args(["run", "--rm", "--privileged"])
         .arg("--volume")
-        .arg(format!("{}:/work", root.display()))
-        .args(["--volume", "evcc-rs-target:/target", "--volume", "evcc-rs-cargo:/usr/local/cargo/registry"])
-        .args(["--workdir", "/work", IMAGE])
+        .arg(format!("{}:/workspaces/evcc-rs", root.display()))
+        .args(["--volume", "evcc-rs-target-v2:/target", "--volume", "evcc-rs-cargo-v2:/usr/local/cargo/registry"])
+        .args(["--workdir", "/workspaces/evcc-rs", IMAGE])
         // `own-volumes` first: volumes made by an older image belong to root.
         .args(["bash", "-c", r#"own-volumes && exec cargo "$@""#, "cargo", "test"]);
     if cargo_args.is_empty() {

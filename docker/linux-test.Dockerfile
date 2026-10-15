@@ -14,10 +14,12 @@ RUN useradd --create-home --uid 1000 --shell /bin/bash developer \
  && echo 'developer ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/developer \
  && chmod 0440 /etc/sudoers.d/developer
 
-# Named volumes for the build output and the cargo registry start out empty and take the
-# ownership of these directories; `own-volumes` repairs volumes made by older images.
+# Cargo's home is writable for any user, since editors may change `developer`'s UID to the
+# host user's. The named volumes for the build output and the cargo registry start out empty
+# and take the ownership of these directories; `own-volumes` repairs the rest.
 RUN mkdir -p /target \
- && chown -R developer:developer /target /usr/local/cargo
+ && chown developer:developer /target \
+ && chmod -R a+rwX /usr/local/cargo
 COPY own-volumes.sh /usr/local/bin/own-volumes
 COPY test-runner.sh /usr/local/bin/test-runner
 RUN chmod 0755 /usr/local/bin/own-volumes /usr/local/bin/test-runner
