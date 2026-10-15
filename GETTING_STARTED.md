@@ -13,15 +13,17 @@ The Linux-only tests create network namespaces and virtual Ethernet pairs and op
 
 ## Dev container
 
-Prerequisites: Docker (Docker Desktop, Colima or similar) and VS Code with the Dev Containers extension, or the [`devcontainer` CLI](https://github.com/devcontainers/cli).
+Prerequisites: Docker (Docker Desktop, Colima or similar) in your `PATH`, and an editor with dev container support: VS Code with the Dev Containers extension, [Zed](https://zed.dev/docs/dev-containers), or the [`devcontainer` CLI](https://github.com/devcontainers/cli).
 
-1. Open the folder in VS Code and choose **Reopen in Container** (or run `devcontainer up --workspace-folder .`).
+1. Open the folder in your editor and accept the offer to open it in the container (VS Code: **Reopen in Container**; Zed: **Open in Container** in the prompt; CLI: `devcontainer up --workspace-folder .`).
 2. The first start builds the image from `docker/linux-test.Dockerfile` (Rust, JDK, iproute2) and then runs `cargo xtask setup && cargo xtask vectors`. That downloads the ISO 15118-20 schemas, generates the codecs and builds the reference vectors. It takes a few minutes and needs network access.
 3. In a terminal inside the container:
 
    ```sh
    cargo test --workspace
    ```
+
+Zed ignores the `customizations.vscode` block (extensions, settings) of `devcontainer.json` and brings its own rust-analyzer. The setup has been tried with VS Code's settings format and the plain Docker commands; the Zed route is untested, in particular whether Zed passes `--privileged` from `runArgs`. If the namespace tests fail with "Operation not permitted" in a Zed container, run them from a normal terminal with `cargo xtask linux-test`.
 
 The container is **privileged** (the namespace tests need it), so use it on a machine and Docker VM you trust. Build output lives in the named volume `evcc-rs-target` (`CARGO_TARGET_DIR=/target`), so it never mixes with a `target/` directory made on macOS.
 
