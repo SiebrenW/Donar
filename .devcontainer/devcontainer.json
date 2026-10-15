@@ -1,0 +1,30 @@
+{
+  "name": "evcc-rs (Linux test environment)",
+  "build": {
+    "dockerfile": "../docker/linux-test.Dockerfile",
+    "context": "../docker"
+  },
+  // Network namespaces, veth pairs and raw packet sockets need privileges.
+  "runArgs": ["--privileged"],
+  "remoteUser": "root",
+  // Same volumes as `cargo xtask linux-test`, so builds are shared and the workspace's
+  // `target` (macOS builds when the folder comes from a Mac) is left alone.
+  "mounts": [
+    "source=evcc-rs-target,target=/target,type=volume",
+    "source=evcc-rs-cargo,target=/usr/local/cargo/registry,type=volume"
+  ],
+  "containerEnv": {
+    "CARGO_TARGET_DIR": "/target"
+  },
+  // Fetches the ISO schemas, generates the codecs and builds the reference vectors; both
+  // steps skip what is already there.
+  "postCreateCommand": "cargo xtask setup && cargo xtask vectors",
+  "customizations": {
+    "vscode": {
+      "extensions": ["rust-lang.rust-analyzer", "tamasfe.even-better-toml"],
+      "settings": {
+        "rust-analyzer.check.command": "clippy"
+      }
+    }
+  }
+}
