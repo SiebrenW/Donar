@@ -57,6 +57,12 @@ pub struct Config {
     /// `V2G_EVCC_CommunicationSetup_Timeout`: 20 s from the connection until `SessionSetupRes`
     /// (Table 223, V2G20-2298, V2G20-448).
     pub communication_setup_timeout_ms: u32,
+    /// Welding detection is over when the voltage the EVSE reports at its (disabled) side B,
+    /// `EVSEPresentVoltage` in `DC_WeldingDetectionRes`, has dropped below this. IEC 61851-23
+    /// CC.2.4 requires a disabled side B to discharge to below 60 V DC within 2 s of the EV
+    /// opening its contactor; a welded contactor keeps the battery voltage there. The standards
+    /// leave the criterion to the EV, so this is a policy: set it to what the vehicle needs.
+    pub welding_detection_voltage_v: u16,
     /// `V2G_EVCC_Sequence_Performance_Time`: 40 s (Table 215); the time the EVCC may spend on
     /// the vehicle (closing contactors, ramping down, opening contactors) before its next request.
     pub sequence_performance_ms: u32,
@@ -93,6 +99,7 @@ impl Config {
         charge_loop_timeout_ms: 500,
         charge_loop_interval_ms: 100,
         communication_setup_timeout_ms: 20_000,
+        welding_detection_voltage_v: 60,
         sequence_performance_ms: 40_000,
         allow_unsecured: false,
         maximum_supporting_points: 12,
@@ -925,9 +932,11 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                             }
                             return step;
                         }
-                        // The EV decides when welding detection is over: once the voltage at its
-                        // inlet has dropped (IEC 61851-23: the EVSE discharges its output).
-                        if rational_to_volts(self.ev.inlet_voltage()).abs() < f32::from(self.config.precharge_tolerance_v) {
+                        // The EV decides when welding detection is over (IEC 61851-23 CC.3.3: it
+                        // may read the side B voltage from several responses).
+                        if rational_to_volts(res.evse_present_voltage).abs()
+                            < f32::from(self.config.welding_detection_voltage_v)
+                        {
                             self.welding_finishing = true;
                             return self.send_welding_req(true, tx);
                         }

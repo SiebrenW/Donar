@@ -455,21 +455,20 @@ fn finish_shutdown(s: &mut Sess<'_>) {
         assert_eq!(r.ev_processing, Processing::Ongoing);
     });
     assert_eq!(s.state(), State::AwaitWeldingDetectionRes);
-    // ... repeating while the EV measures a voltage at its inlet (V2G20-1573) ...
-    INLET.with(|i| i.set(150));
-    let step = deliver(s, &welding_res(ResponseCode::Ok));
+    // ... repeating while the EVSE reports a voltage on its side B (V2G20-1573) ...
+    // (the EVSE's side B still carries 150 V: the criterion is the reported voltage)
+    let step = deliver(s, &welding_res(ResponseCode::Ok, 150));
     sent_dc(s, &step, |m| {
         let dc::Message::DcWeldingDetectionReq(r) = m else { panic!("{m:?}") };
         assert_eq!(r.ev_processing, Processing::Ongoing);
     });
     // ... until it is finished (V2G20-1461), and only then stops the session (V2G20-1462).
-    INLET.with(|i| i.set(3));
-    let step = deliver(s, &welding_res(ResponseCode::Ok));
+    let step = deliver(s, &welding_res(ResponseCode::Ok, 3));
     sent_dc(s, &step, |m| {
         let dc::Message::DcWeldingDetectionReq(r) = m else { panic!("{m:?}") };
         assert_eq!(r.ev_processing, Processing::Finished);
     });
-    let step = deliver(s, &welding_res(ResponseCode::Ok));
+    let step = deliver(s, &welding_res(ResponseCode::Ok, 3));
     sent_common(s, &step, |m| {
         let common::Message::SessionStopReq(r) = m else { panic!("{m:?}") };
         assert_eq!(r.charging_session, common::ChargingSession::Terminate);
@@ -482,9 +481,9 @@ fn sequence_timer() -> TimerCmd {
     TimerCmd::Arm { timer: Timer::Sequence, ms: 40_000 }
 }
 
-fn welding_res(code: ResponseCode) -> std::vec::Vec<u8> {
+fn welding_res(code: ResponseCode, volts: i16) -> std::vec::Vec<u8> {
     framed(PayloadType::DC_MAINSTREAM, |out| {
-        dc::DcWeldingDetectionRes { header: hdr(), response_code: code, evse_present_voltage: rn(0, 5) }.encode(out).unwrap()
+        dc::DcWeldingDetectionRes { header: hdr(), response_code: code, evse_present_voltage: rn(0, volts) }.encode(out).unwrap()
     })
 }
 
