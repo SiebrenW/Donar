@@ -36,6 +36,9 @@ pub struct Config {
     /// Upper bound on a repeated `Ongoing` exchange such as authorization polling. 60 s is
     /// EcoG's `V2G_EVCC_ONGOING_TIMEOUT` (requirement id: TODO, not yet identified).
     pub ongoing_timeout_ms: u32,
+    /// `MaximumSupportingPoints` of the schedule exchange: how many entries of a schedule the
+    /// EV can take (12..=1024).
+    pub maximum_supporting_points: u16,
     /// The energy transfer service to select (`services::service_id`).
     pub energy_service: u16,
     /// A parameter set is acceptable when it holds every `(name, value)` listed here as an
@@ -55,6 +58,7 @@ impl Config {
         },
         response_timeout_ms: 2000,
         ongoing_timeout_ms: 60_000,
+        maximum_supporting_points: 12,
         energy_service: SERVICE_ID_DC,
         // ControlMode 2 = Dynamic, MobilityNeedsMode 1 = provided by the EVCC. The numbers are
         // from memory of other open-source stacks, not checked against the standard's DC
@@ -88,8 +92,10 @@ pub enum State {
     AwaitServiceDetailRes,
     AwaitServiceSelectionRes,
     AwaitChargeParameterDiscoveryRes,
-    /// Charge parameters are exchanged; the rest of the flow is added with the later slices.
-    ChargeParametersDiscovered,
+    AwaitScheduleExchangeRes,
+    /// Energy needs and schedule are exchanged; the rest of the flow is added with the later
+    /// slices.
+    ScheduleExchanged,
     Ended,
 }
 
@@ -97,7 +103,7 @@ impl State {
     /// True when the session waits for nothing from the EVSE and has not ended: a point where
     /// the part of the flow implemented so far is complete.
     pub fn is_resting(self) -> bool {
-        matches!(self, State::ChargeParametersDiscovered)
+        matches!(self, State::ScheduleExchanged)
     }
 }
 
@@ -144,6 +150,8 @@ pub enum Notice {
     ServiceSelected { service_id: u16, parameter_set_id: u16 },
     /// The EVSE's DC limits, from `DC_ChargeParameterDiscoveryRes`.
     ChargeParametersDiscovered(dc::DcChargeParameterDiscoveryRes),
+    /// The EVSE finished the schedule exchange.
+    ScheduleExchanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -226,7 +234,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
             }
             Event::TimerExpired(timer) => match (timer, m.state) {
                 (Timer::Response, s) if m.is_awaiting(s) => m.end(EndReason::Timeout),
-                (Timer::Ongoing, State::AwaitAuthorizationRes) => m.end(EndReason::Timeout),
+                (Timer::Ongoing, State::AwaitAuthorizationRes | State::AwaitScheduleExchangeRes) => m.end(EndReason::Timeout),
                 // A timer that was cancelled in the same moment it fired.
                 _ => Step::default(),
             },
@@ -276,6 +284,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 | State::AwaitServiceDetailRes
                 | State::AwaitServiceSelectionRes
                 | State::AwaitChargeParameterDiscoveryRes
+                | State::AwaitScheduleExchangeRes
         )
     }
 
@@ -391,6 +400,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                                 let mut step =
                                     self.send_then(State::AwaitServiceDiscoveryRes, MsgKind::ServiceDiscoveryReq, framed);
                                 if step.end.is_none() {
+                                    self.ongoing_armed = false;
                                     step.timers = step.timers.with(TimerCmd::Cancel(Timer::Ongoing));
                                     step.notice = Some(Notice::Authorized);
                                 }
@@ -402,13 +412,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                             // Ongoing_WaitingForCustomerInteraction, which EcoG does not distinguish
                             // (TODO: check the standard for any difference, e.g. pacing).
                             Processing::Ongoing | Processing::OngoingWaitingForCustomerInteraction => {
-                                let mut step = self.send_authorization_req(State::AwaitAuthorizationRes, tx);
-                                if step.end.is_none() && !self.ongoing_armed {
-                                    self.ongoing_armed = true;
-                                    step.timers =
-                                        step.timers.with(TimerCmd::Arm { timer: Timer::Ongoing, ms: self.config.ongoing_timeout_ms });
-                                }
-                                step
+                                let step = self.send_authorization_req(State::AwaitAuthorizationRes, tx);
+                                self.arm_ongoing(step)
                             }
                         }
                     }
@@ -504,11 +509,44 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         if let Some(end) = self.received(MsgKind::DcChargeParameterDiscoveryRes, res.response_code) {
                             return end;
                         }
-                        self.goto(State::ChargeParametersDiscovered);
-                        Step {
-                            timers: Timers::one(TimerCmd::Cancel(Timer::Response)),
-                            notice: Some(Notice::ChargeParametersDiscovered(res)),
-                            ..Step::default()
+                        let mut step = self.send_schedule_exchange_req(tx);
+                        if step.end.is_none() {
+                            step.notice = Some(Notice::ChargeParametersDiscovered(res));
+                        }
+                        step
+                    }
+                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Err(e) => self.malformed(e),
+                }
+            }
+            State::AwaitScheduleExchangeRes if payload_type == PayloadType::MAINSTREAM => {
+                match common::decode(payload, arena) {
+                    Ok(M::ScheduleExchangeRes(res)) => {
+                        if let Some(end) = self.received(MsgKind::ScheduleExchangeRes, res.response_code) {
+                            return end;
+                        }
+                        self.log.record(&Record::EvseProcessing { processing: res.evse_processing });
+                        if !matches!(res.se_res_control_mode, common::SeResControlModeChoice::Dynamic(_)) {
+                            // We asked for Dynamic; a Scheduled answer is a protocol violation.
+                            return self.end(EndReason::UnexpectedMessage);
+                        }
+                        match res.evse_processing {
+                            Processing::Finished => {
+                                self.goto(State::ScheduleExchanged);
+                                self.ongoing_armed = false;
+                                Step {
+                                    timers: Timers::one(TimerCmd::Cancel(Timer::Response))
+                                        .with(TimerCmd::Cancel(Timer::Ongoing)),
+                                    notice: Some(Notice::ScheduleExchanged),
+                                    ..Step::default()
+                                }
+                            }
+                            // While the EVSE is still working the request is repeated, like
+                            // the AuthorizationReq (TODO: find the requirement id for this).
+                            Processing::Ongoing | Processing::OngoingWaitingForCustomerInteraction => {
+                                let step = self.send_schedule_exchange_req(tx);
+                                self.arm_ongoing(step)
+                            }
                         }
                     }
                     Ok(_) => self.end(EndReason::UnexpectedMessage),
@@ -517,6 +555,38 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             }
             _ => self.end(EndReason::UnexpectedMessage),
         }
+    }
+
+    /// Arms the overall `Ongoing` bound once, when the first `Ongoing` answer arrives.
+    fn arm_ongoing(&mut self, mut step: Step) -> Step {
+        if step.end.is_none() && !self.ongoing_armed {
+            self.ongoing_armed = true;
+            step.timers = step.timers.with(TimerCmd::Arm { timer: Timer::Ongoing, ms: self.config.ongoing_timeout_ms });
+        }
+        step
+    }
+
+    fn send_schedule_exchange_req(&mut self, tx: &mut [u8]) -> Step {
+        let r = self.ev.schedule_request();
+        let msg = common::ScheduleExchangeReq {
+            header: self.header(),
+            maximum_supporting_points: self.config.maximum_supporting_points,
+            se_req_control_mode: common::SeReqControlModeChoice::Dynamic(common::DynamicSeReqControlMode {
+                departure_time: r.departure_time,
+                minimum_soc: r.minimum_soc.map(|v| v as i8),
+                target_soc: r.target_soc.map(|v| v as i8),
+                ev_target_energy_request: r.target_energy,
+                ev_maximum_energy_request: r.maximum_energy,
+                ev_minimum_energy_request: r.minimum_energy,
+                ev_maximum_v2x_energy_request: None,
+                ev_minimum_v2x_energy_request: None,
+            }),
+        };
+        let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
+        if self.state == State::AwaitScheduleExchangeRes {
+            return self.sent(MsgKind::ScheduleExchangeReq, framed);
+        }
+        self.send_then(State::AwaitScheduleExchangeRes, MsgKind::ScheduleExchangeReq, framed)
     }
 
     /// Logs a received response and its code; returns the ending step if the code is a failure.

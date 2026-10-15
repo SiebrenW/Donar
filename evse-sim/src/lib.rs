@@ -47,6 +47,10 @@ pub struct Config {
     pub selection_code: ResponseCode,
     /// Response code of `DC_ChargeParameterDiscoveryRes`.
     pub cpd_code: ResponseCode,
+    /// How many `ScheduleExchangeRes` carry `Ongoing` before one says `Finished`.
+    pub schedule_ongoing_responses: u32,
+    /// Response code of the `ScheduleExchangeRes` that finishes the exchange.
+    pub schedule_code: ResponseCode,
 }
 
 impl Default for Config {
@@ -75,6 +79,8 @@ impl Default for Config {
             )],
             selection_code: ResponseCode::Ok,
             cpd_code: ResponseCode::Ok,
+            schedule_ongoing_responses: 0,
+            schedule_code: ResponseCode::Ok,
         }
     }
 }
@@ -89,8 +95,9 @@ pub enum State {
     AwaitServiceDetailReq,
     AwaitServiceSelectionReq,
     AwaitChargeParameterDiscoveryReq,
-    /// The EV's charge parameters were answered.
-    ChargeParametersDiscovered,
+    AwaitScheduleExchangeReq,
+    /// The schedule exchange is finished.
+    ScheduleExchanged,
     Closed,
 }
 
@@ -109,11 +116,12 @@ pub struct Evse {
     rx: Vec<u8>,
     schema_id: u8,
     authorization_reqs_seen: u32,
+    schedule_reqs_seen: u32,
 }
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0 }
+        Self { config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0 }
     }
 
     pub fn state(&self) -> State {
@@ -299,12 +307,42 @@ impl Evse {
                     ),
                 };
                 if is_ok(code) {
-                    self.state = State::ChargeParametersDiscovered;
+                    self.state = State::AwaitScheduleExchangeReq;
                 }
                 Output {
                     send: frame(PayloadType::DC_MAINSTREAM, |out| res.encode(out)),
                     close: !is_ok(code),
                 }
+            }
+            State::AwaitScheduleExchangeReq if payload_type == PayloadType::MAINSTREAM => {
+                let Ok(common::Message::ScheduleExchangeReq(req)) = common::decode(payload, &arena) else { return closed };
+                self.schedule_reqs_seen += 1;
+                let (processing, code) = if req.header.session_id != self.config.session_id {
+                    (Processing::Finished, ResponseCode::FailedUnknownSession)
+                } else if !matches!(req.se_req_control_mode, common::SeReqControlModeChoice::Dynamic(_)) {
+                    (Processing::Finished, ResponseCode::FailedWrongChargeParameter)
+                } else if self.schedule_reqs_seen <= self.config.schedule_ongoing_responses {
+                    (Processing::Ongoing, ResponseCode::Ok)
+                } else {
+                    (Processing::Finished, self.config.schedule_code)
+                };
+                let res = common::ScheduleExchangeRes {
+                    header: self.header(),
+                    response_code: code,
+                    evse_processing: processing,
+                    go_to_pause: None,
+                    se_res_control_mode: common::SeResControlModeChoice::Dynamic(common::DynamicSeResControlMode {
+                        departure_time: None,
+                        minimum_soc: None,
+                        target_soc: None,
+                        schedule: None,
+                    }),
+                };
+                let ongoing = processing == Processing::Ongoing;
+                if !ongoing && is_ok(code) {
+                    self.state = State::ScheduleExchanged;
+                }
+                Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: !ongoing && !is_ok(code) }
             }
             // The rest of the flow is added with the later slices.
             _ => closed,

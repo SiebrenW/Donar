@@ -39,3 +39,7 @@ dc_cpd_req V2G_CI_DC.xsd
 dc_cpd_req_soc V2G_CI_DC.xsd
 dc_cpd_res V2G_CI_DC.xsd
 dc_cpd_res_ramp V2G_CI_DC.xsd
+schedule_exchange_req_min V2G_CI_CommonMessages.xsd
+schedule_exchange_req_full V2G_CI_CommonMessages.xsd
+schedule_exchange_res_min V2G_CI_CommonMessages.xsd
+schedule_exchange_res_full V2G_CI_CommonMessages.xsd

@@ -4,7 +4,7 @@
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 
-use evcc_core::ev::{DcLimits, Ev};
+use evcc_core::ev::{DcLimits, Ev, ScheduleRequest};
 use evcc_core::log::NoLog;
 use evcc_core::session::{Buffers, Config, EndReason, Session, State as SessionState};
 use evcc_linux::{Outcome, run};
@@ -15,6 +15,17 @@ struct Car;
 impl Ev for Car {
     fn evcc_id(&self) -> &str {
         "WMIV1234567890ABCDEX"
+    }
+    fn schedule_request(&self) -> ScheduleRequest {
+        let rn = |exponent, value| RationalNumber { exponent, value };
+        ScheduleRequest {
+            departure_time: 3600,
+            minimum_soc: None,
+            target_soc: Some(80),
+            target_energy: rn(3, 40),
+            maximum_energy: rn(3, 60),
+            minimum_energy: rn(0, 0),
+        }
     }
     fn dc_limits(&self) -> DcLimits {
         let rn = |exponent, value| RationalNumber { exponent, value };
@@ -52,8 +63,8 @@ fn session_is_set_up_over_tcp() {
     let evse = evse_sim::Config::default();
     let want = evse.session_id;
     let (addr, server) = start(evse);
-    assert_eq!(run_ev(addr, Config::DC_20), Outcome::Reached { session_id: want, state: SessionState::ChargeParametersDiscovered });
-    assert_eq!(server.join().unwrap().unwrap(), EvseState::ChargeParametersDiscovered);
+    assert_eq!(run_ev(addr, Config::DC_20), Outcome::Reached { session_id: want, state: SessionState::ScheduleExchanged });
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::ScheduleExchanged);
 }
 
 #[test]
@@ -95,7 +106,7 @@ fn authorization_polling_ends_when_the_evse_finishes() {
     let (addr, server) = start(evse_sim::Config { authorization_ongoing_responses: 3, ..Default::default() });
     let outcome = run_ev(addr, Config::DC_20);
     assert!(matches!(outcome, Outcome::Reached { .. }), "{outcome:?}");
-    assert_eq!(server.join().unwrap().unwrap(), EvseState::ChargeParametersDiscovered);
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::ScheduleExchanged);
 }
 
 #[test]
@@ -167,6 +178,24 @@ fn refused_charge_parameters_are_reported() {
     assert_eq!(
         run_ev(addr, Config::DC_20),
         Outcome::Ended(EndReason::Rejected(ResponseCode::FailedWrongChargeParameter))
+    );
+    server.join().unwrap().unwrap();
+}
+
+#[test]
+fn schedule_exchange_polling_ends_when_the_evse_finishes() {
+    let (addr, server) = start(evse_sim::Config { schedule_ongoing_responses: 3, ..Default::default() });
+    let outcome = run_ev(addr, Config::DC_20);
+    assert!(matches!(outcome, Outcome::Reached { state: SessionState::ScheduleExchanged, .. }), "{outcome:?}");
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::ScheduleExchanged);
+}
+
+#[test]
+fn refused_schedule_is_reported() {
+    let (addr, server) = start(evse_sim::Config { schedule_code: ResponseCode::FailedScheduleSelectionInvalid, ..Default::default() });
+    assert_eq!(
+        run_ev(addr, Config::DC_20),
+        Outcome::Ended(EndReason::Rejected(ResponseCode::FailedScheduleSelectionInvalid))
     );
     server.join().unwrap().unwrap();
 }

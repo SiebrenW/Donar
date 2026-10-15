@@ -17,6 +17,19 @@ pub struct DcLimits {
     pub target_soc: Option<u8>,
 }
 
+/// What the vehicle tells the EVSE about its energy needs (Dynamic control mode).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScheduleRequest {
+    /// `DepartureTime` (`xs:unsignedInt`). Whether it is relative or absolute and in which
+    /// unit is not checked against the standard yet (TODO).
+    pub departure_time: u32,
+    pub minimum_soc: Option<u8>,
+    pub target_soc: Option<u8>,
+    pub target_energy: RationalNumber,
+    pub maximum_energy: RationalNumber,
+    pub minimum_energy: RationalNumber,
+}
+
 pub trait Ev {
     /// EVCCID sent in `SessionSetupReq` (at most 255 characters, usually the MAC address).
     fn evcc_id(&self) -> &str;
@@ -29,4 +42,6 @@ pub trait Ev {
     /// The vehicle's DC limits for this session. Static facts, so a plain call; live values
     /// (present voltage, target current) will come through events once the charge loop exists.
     fn dc_limits(&self) -> DcLimits;
+    /// The vehicle's energy needs for the schedule exchange.
+    fn schedule_request(&self) -> ScheduleRequest;
 }

@@ -248,6 +248,63 @@ fn service_selection() {
     }
 }
 
+// ---------------------------------------------------------------- schedule exchange
+
+#[test]
+fn schedule_exchange_dynamic() {
+    let energy = |departure_time, min_soc, target_soc, v2x: Option<(RationalNumber, RationalNumber)>| {
+        SeReqControlModeChoice::Dynamic(DynamicSeReqControlMode {
+            departure_time,
+            minimum_soc: min_soc,
+            target_soc,
+            ev_target_energy_request: rn(3, 40),
+            ev_maximum_energy_request: rn(3, 60),
+            ev_minimum_energy_request: rn(0, 0),
+            ev_maximum_v2x_energy_request: v2x.map(|v| v.0),
+            ev_minimum_v2x_energy_request: v2x.map(|v| v.1),
+        })
+    };
+    let m = ScheduleExchangeReq {
+        header: hdr(),
+        maximum_supporting_points: 12,
+        se_req_control_mode: energy(3600, None, None, None),
+    };
+    check("schedule_exchange_req_min", Message::ScheduleExchangeReq(m), |o| m.encode(o));
+    let m = ScheduleExchangeReq {
+        header: hdr(),
+        maximum_supporting_points: 1024,
+        se_req_control_mode: energy(86400, Some(20), Some(80), Some((rn(3, 10), rn(0, -5)))),
+    };
+    check("schedule_exchange_req_full", Message::ScheduleExchangeReq(m), |o| m.encode(o));
+
+    let m = ScheduleExchangeRes {
+        header: hdr(),
+        response_code: ResponseCode::Ok,
+        evse_processing: Processing::Finished,
+        go_to_pause: None,
+        se_res_control_mode: SeResControlModeChoice::Dynamic(DynamicSeResControlMode {
+            departure_time: None,
+            minimum_soc: None,
+            target_soc: None,
+            schedule: None,
+        }),
+    };
+    check("schedule_exchange_res_min", Message::ScheduleExchangeRes(m), |o| m.encode(o));
+    let m = ScheduleExchangeRes {
+        header: hdr(),
+        response_code: ResponseCode::Ok,
+        evse_processing: Processing::Ongoing,
+        go_to_pause: Some(true),
+        se_res_control_mode: SeResControlModeChoice::Dynamic(DynamicSeResControlMode {
+            departure_time: Some(7200),
+            minimum_soc: Some(10),
+            target_soc: Some(90),
+            schedule: None,
+        }),
+    };
+    check("schedule_exchange_res_full", Message::ScheduleExchangeRes(m), |o| m.encode(o));
+}
+
 // ---------------------------------------------------------------- DC
 
 #[test]

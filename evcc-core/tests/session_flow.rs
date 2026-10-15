@@ -4,7 +4,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use evcc_core::ev::{DcLimits, Ev};
+use evcc_core::ev::{DcLimits, Ev, ScheduleRequest};
 use evcc_core::log::{Level, LogSink, MsgKind, Record};
 use evcc_core::session::*;
 use evcc_core::{Timer, TimerCmd, Timers};
@@ -47,6 +47,16 @@ impl Ev for TestEv {
             maximum_voltage: rn(0, 450),
             minimum_voltage: rn(0, 200),
             target_soc: Some(80),
+        }
+    }
+    fn schedule_request(&self) -> ScheduleRequest {
+        ScheduleRequest {
+            departure_time: 3600,
+            minimum_soc: None,
+            target_soc: Some(80),
+            target_energy: rn(3, 40),
+            maximum_energy: rn(3, 60),
+            minimum_energy: rn(0, 0),
         }
     }
     fn header_timestamp(&self) -> u64 {
@@ -284,11 +294,77 @@ fn up_to_charge_parameters<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
     s
 }
 
-fn up_to_charge_parameters_discovered<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
+/// Up to and including the `ScheduleExchangeReq`.
+fn up_to_schedule_exchange<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
     let mut s = up_to_charge_parameters(rig, log);
     deliver(&mut s, &cpd_res(ResponseCode::Ok));
-    assert_eq!(s.state(), State::ChargeParametersDiscovered);
+    assert_eq!(s.state(), State::AwaitScheduleExchangeRes);
     s
+}
+
+fn se_res(code: ResponseCode, p: Processing) -> std::vec::Vec<u8> {
+    framed(PayloadType::MAINSTREAM, |out| {
+        let msg = common::ScheduleExchangeRes {
+            header: hdr(),
+            response_code: code,
+            evse_processing: p,
+            go_to_pause: None,
+            se_res_control_mode: common::SeResControlModeChoice::Dynamic(common::DynamicSeResControlMode {
+                departure_time: None,
+                minimum_soc: None,
+                target_soc: None,
+                schedule: None,
+            }),
+        };
+        msg.encode(out).unwrap()
+    })
+}
+
+fn up_to_schedule_exchanged<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
+    let mut s = up_to_schedule_exchange(rig, log);
+    deliver(&mut s, &se_res(ResponseCode::Ok, Processing::Finished));
+    assert_eq!(s.state(), State::ScheduleExchanged);
+    s
+}
+
+#[test]
+fn schedule_exchange_repeats_while_ongoing_then_finishes() {
+    let mut rig = Rig::new();
+    let mut s = up_to_schedule_exchange(&mut rig, Capture::default());
+    let mut stamps = std::vec::Vec::new();
+    for i in 0..3 {
+        let step = deliver(&mut s, &se_res(ResponseCode::Ok, Processing::Ongoing));
+        // The ongoing bound is armed once, with the first Ongoing answer.
+        let want = if i == 0 { response_timer().with(TimerCmd::Arm { timer: Timer::Ongoing, ms: 60_000 }) } else { response_timer() };
+        assert_eq!(step.timers, want);
+        sent_common(&s, &step, |m| {
+            let common::Message::ScheduleExchangeReq(req) = m else { panic!("{m:?}") };
+            assert_eq!(req.maximum_supporting_points, 12);
+            stamps.push(req.header.time_stamp);
+        });
+    }
+    assert!(stamps.windows(2).all(|w| w[0] < w[1]));
+    let step = deliver(&mut s, &se_res(ResponseCode::Ok, Processing::Finished));
+    assert_eq!(step.notice, Some(Notice::ScheduleExchanged));
+    assert_eq!(step.timers, Timers::one(TimerCmd::Cancel(Timer::Response)).with(TimerCmd::Cancel(Timer::Ongoing)));
+    assert!(s.state().is_resting());
+}
+
+#[test]
+fn schedule_exchange_failures_and_timeouts() {
+    let mut rig = Rig::new();
+    let mut s = up_to_schedule_exchange(&mut rig, Capture::default());
+    let step = deliver(&mut s, &se_res(ResponseCode::FailedScheduleSelectionInvalid, Processing::Finished));
+    assert_eq!(step.end, Some(EndReason::Rejected(ResponseCode::FailedScheduleSelectionInvalid)));
+
+    let mut rig = Rig::new();
+    let mut s = up_to_schedule_exchange(&mut rig, Capture::default());
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Response)).end, Some(EndReason::Timeout));
+
+    let mut rig = Rig::new();
+    let mut s = up_to_schedule_exchange(&mut rig, Capture::default());
+    deliver(&mut s, &se_res(ResponseCode::Ok, Processing::Ongoing));
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Ongoing)).end, Some(EndReason::Timeout));
 }
 
 #[test]
@@ -440,9 +516,19 @@ fn full_flow_to_authorized() {
     let Some(Notice::ChargeParametersDiscovered(evse)) = step.notice else { panic!("{step:?}") };
     let dc::DcCpdResEnergyTransferModeChoice::Base(mode) = evse.dc_cpd_res_energy_transfer_mode else { panic!() };
     assert_eq!(mode.evse_maximum_voltage, rn(0, 920));
+    assert_eq!(step.timers, response_timer());
+    assert_eq!(s.state(), State::AwaitScheduleExchangeRes);
+    sent_common(&s, &step, |m| {
+        let common::Message::ScheduleExchangeReq(req) = m else { panic!("{m:?}") };
+        let common::SeReqControlModeChoice::Dynamic(mode) = req.se_req_control_mode else { panic!() };
+        assert_eq!(mode.departure_time, 3600);
+        assert_eq!(mode.target_soc, Some(80));
+        assert_eq!(mode.ev_maximum_energy_request, rn(3, 60));
+    });
+
+    let step = deliver(&mut s, &se_res(ResponseCode::Ok, Processing::Finished));
+    assert_eq!(step.notice, Some(Notice::ScheduleExchanged));
     assert_eq!(step.send, None);
-    assert_eq!(step.timers, Timers::one(TimerCmd::Cancel(Timer::Response)));
-    assert_eq!(s.state(), State::ChargeParametersDiscovered);
     assert!(s.state().is_resting());
 
     let seen = seen.borrow();
@@ -457,6 +543,8 @@ fn full_flow_to_authorized() {
         (MsgKind::ServiceSelectionRes, false),
         (MsgKind::DcChargeParameterDiscoveryReq, true),
         (MsgKind::DcChargeParameterDiscoveryRes, false),
+        (MsgKind::ScheduleExchangeReq, true),
+        (MsgKind::ScheduleExchangeRes, false),
     ] {
         assert!(seen.contains(&Seen::Msg(kind, tx)), "missing {kind:?} tx={tx}");
     }
@@ -513,11 +601,11 @@ fn ongoing_forever_hits_the_ongoing_timeout() {
 #[test]
 fn stale_timers_are_ignored() {
     let mut rig = Rig::new();
-    let mut s = up_to_charge_parameters_discovered(&mut rig, Capture::default());
+    let mut s = up_to_schedule_exchanged(&mut rig, Capture::default());
     // Both timers were cancelled, but an expiry may already have been in flight.
     assert_eq!(s.handle(Event::TimerExpired(Timer::Response)), Step::default());
     assert_eq!(s.handle(Event::TimerExpired(Timer::Ongoing)), Step::default());
-    assert_eq!(s.state(), State::ChargeParametersDiscovered);
+    assert_eq!(s.state(), State::ScheduleExchanged);
 
     // The ongoing timer is cancelled once authorization finishes, too.
     let mut rig = Rig::new();
