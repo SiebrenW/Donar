@@ -67,7 +67,7 @@ impl Default for Config {
             offered_authorization: vec![Authorization::Eim],
             energy_services: vec![2],
             // Connector 1, ControlMode 2 (Dynamic), MobilityNeedsMode 1, Pricing 0; the
-            // numbers are unchecked (see `evcc_core::session::Config::DC_20`).
+            // numbers are those of ISO 15118-20:2022 Table 207.
             parameter_sets: vec![(
                 1,
                 vec![

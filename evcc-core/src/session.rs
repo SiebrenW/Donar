@@ -29,12 +29,14 @@ use crate::{Timer, TimerCmd, Timers};
 pub struct Config {
     /// The protocol offered in `SupportedAppProtocolReq`.
     pub offer: AppProtocol<'static>,
-    /// How long to wait for any response. 2 s is the SupportedAppProtocolReq timeout used by
-    /// EcoG's stack (requirement id: TODO, not yet identified). It is reused for every other
-    /// message until their individual ISO 15118-20:2022 timeouts are looked up.
+    /// How long to wait for a response: `V2G_EVCC_Msg_Timeout(MessageType)` is 2 s for every
+    /// message we send except `ServiceDetailReq` and `CertificateInstallationReq`
+    /// (ISO 15118-20:2022 Table 215). The charge loop has its own timing (added with it).
     pub response_timeout_ms: u32,
-    /// Upper bound on a repeated `Ongoing` exchange such as authorization polling. 60 s is
-    /// EcoG's `V2G_EVCC_ONGOING_TIMEOUT` (requirement id: TODO, not yet identified).
+    /// `V2G_EVCC_Msg_Timeout(ServiceDetailReq)`: 5 s (Table 215).
+    pub service_detail_timeout_ms: u32,
+    /// `V2G_EVCC_Ongoing_Timeout`: the bound on a repeated `Ongoing` exchange such as
+    /// authorization polling; 60 s (Table 215).
     pub ongoing_timeout_ms: u32,
     /// `MaximumSupportingPoints` of the schedule exchange: how many entries of a schedule the
     /// EV can take (12..=1024).
@@ -57,18 +59,18 @@ impl Config {
             priority: 1,
         },
         response_timeout_ms: 2000,
+        service_detail_timeout_ms: 5000,
         ongoing_timeout_ms: 60_000,
         maximum_supporting_points: 12,
         energy_service: SERVICE_ID_DC,
-        // ControlMode 2 = Dynamic, MobilityNeedsMode 1 = provided by the EVCC. The numbers are
-        // from memory of other open-source stacks, not checked against the standard's DC
-        // service parameter table (TODO). The `Connector` parameter is not matched yet: it
-        // should follow the vehicle's inlet (TODO, needs an `Ev` query).
+        // ISO 15118-20:2022 Table 207: ControlMode 2 = Dynamic, MobilityNeedsMode 1 = mobility
+        // needs provided by the EVCC. `Connector` follows the vehicle's inlet
+        // ([`Ev::dc_connector`]) and is matched separately.
         parameter_filter: &[("ControlMode", 2), ("MobilityNeedsMode", 1)],
     };
 }
 
-/// Service id of DC energy transfer (ISO 15118-20:2022 Table 204; via EcoG, unchecked).
+/// Service id of DC energy transfer (ISO 15118-20:2022 Table 204, V2G20-1355).
 pub const SERVICE_ID_DC: u16 = 2;
 
 /// Host-provided memory. Nothing is allocated by the core.
@@ -181,6 +183,9 @@ struct Machine<E, L> {
     session_id: [u8; 8],
     /// The `Ongoing` timer is armed once, when the first `Ongoing` response arrives.
     ongoing_armed: bool,
+    /// SECC time minus the vehicle's clock, learned from `SessionSetupRes` (V2G20-1536).
+    clock_offset: i128,
+    last_timestamp: u64,
     selected: SelectedService,
 }
 
@@ -199,6 +204,8 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 secured: false,
                 session_id: [0; 8],
                 ongoing_armed: false,
+                clock_offset: 0,
+                last_timestamp: 0,
                 selected: SelectedService { service_id: 0, parameter_set_id: 0 },
             },
         }
@@ -268,8 +275,17 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
     }
 }
 
+/// The `OK*` response codes (ISO 15118-20:2022 Annex A, response code table): which message
+/// may carry which is checked by the EVSE side; the EVCC accepts all of them.
 pub(crate) fn is_ok(code: ResponseCode) -> bool {
-    matches!(code, ResponseCode::Ok | ResponseCode::OkNewSessionEstablished | ResponseCode::OkOldSessionJoined)
+    matches!(
+        code,
+        ResponseCode::Ok
+            | ResponseCode::OkCertificateExpiresSoon
+            | ResponseCode::OkNewSessionEstablished
+            | ResponseCode::OkOldSessionJoined
+            | ResponseCode::OkPowerToleranceConfirmed
+    )
 }
 
 impl<E: Ev, L: LogSink> Machine<E, L> {
@@ -303,8 +319,19 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
     }
 
-    fn header(&self) -> MessageHeader {
-        MessageHeader { session_id: self.session_id, time_stamp: self.ev.header_timestamp() }
+    /// The header `TimeStamp`: microseconds in SECC time (V2G20-1534), increasing with every
+    /// message (V2G20-1537). Until the EVSE's clock is known (its `SessionSetupRes`) it is the
+    /// vehicle's own best guess of UTC, or zero (V2G20-1535).
+    fn timestamp(&mut self) -> u64 {
+        let local = i128::from(self.ev.now_micros());
+        let t = u64::try_from((local + self.clock_offset).max(0)).unwrap_or(u64::MAX);
+        let t = t.max(self.last_timestamp.saturating_add(1));
+        self.last_timestamp = t;
+        t
+    }
+
+    fn header(&mut self) -> MessageHeader {
+        MessageHeader { session_id: self.session_id, time_stamp: self.timestamp() }
     }
 
     /// Records the transmit and arms the response timer for a message framed by [`frame`].
@@ -313,7 +340,14 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         self.log.record(&Record::MsgTx { msg });
         Step {
             send: Some(len),
-            timers: Timers::one(TimerCmd::Arm { timer: Timer::Response, ms: self.config.response_timeout_ms }),
+            timers: Timers::one(TimerCmd::Arm {
+                timer: Timer::Response,
+                ms: if msg == MsgKind::ServiceDetailReq {
+                    self.config.service_detail_timeout_ms
+                } else {
+                    self.config.response_timeout_ms
+                },
+            }),
             ..Step::default()
         }
     }
@@ -356,6 +390,10 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                             return self.end(EndReason::Rejected(res.response_code));
                         }
                         self.session_id = res.header.session_id;
+                        self.clock_offset = i128::from(res.header.time_stamp) - i128::from(self.ev.now_micros());
+                        // Switching to EVSE time may move the stamps backwards: the first two
+                        // messages are exempt from "always increasing" (V2G20-1538).
+                        self.last_timestamp = 0;
                         self.log.record(&Record::SessionSetUp { session_id: self.session_id, evse_id: res.evseid });
                         let msg = AuthorizationSetupReq { header: self.header() };
                         let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
@@ -406,11 +444,11 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                                 }
                                 step
                             }
-                            // Ref: ISO 15118-20:2022 V2G20-1582 (as cited by EcoG, unchecked):
-                            // while EVSEProcessing is Ongoing the EVCC sends another AuthorizationReq,
-                            // unaltered except for the timestamp. The same is done for
-                            // Ongoing_WaitingForCustomerInteraction, which EcoG does not distinguish
-                            // (TODO: check the standard for any difference, e.g. pacing).
+                            // Ref: ISO 15118-20:2022 V2G20-1582: after an AuthorizationRes with
+                            // ResponseCode OK and EVSEProcessing Ongoing the EVCC sends another
+                            // unaltered AuthorizationReq (except TimeStamp) within
+                            // V2G_EVCC_Sequence_Performance_Time. Ongoing_WaitingForCustomerInteraction
+                            // is not in the 2022 text (only in the schema); it is treated the same.
                             Processing::Ongoing | Processing::OngoingWaitingForCustomerInteraction => {
                                 let step = self.send_authorization_req(State::AwaitAuthorizationRes, tx);
                                 self.arm_ongoing(step)
@@ -542,7 +580,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                                 }
                             }
                             // While the EVSE is still working the request is repeated, like
-                            // the AuthorizationReq (TODO: find the requirement id for this).
+                            // the AuthorizationReq (the 2022 text has no ScheduleExchange-specific requirement for it;
+                            // V2G_EVCC_Ongoing_Timeout covers any response with EVSEProcessing Ongoing).
                             Processing::Ongoing | Processing::OngoingWaitingForCustomerInteraction => {
                                 let step = self.send_schedule_exchange_req(tx);
                                 self.arm_ongoing(step)
@@ -603,11 +642,14 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             ParameterChoice::IntValue(v) => Some(v),
             _ => None,
         };
+        let connector = self.ev.dc_connector() as i32;
+        let has = |set: &ParameterSet<'_>, name: &str, want: i32| {
+            set.parameter.iter().any(|p| p.name == name && as_int(p.choice) == Some(want))
+        };
         sets.iter()
             .find(|set| {
-                self.config.parameter_filter.iter().all(|&(name, want)| {
-                    set.parameter.iter().any(|p| p.name == name && as_int(p.choice) == Some(want))
-                })
+                has(set, "Connector", connector)
+                    && self.config.parameter_filter.iter().all(|&(name, want)| has(set, name, want))
             })
             .map(|set| set.parameter_set_id)
     }
@@ -642,7 +684,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             return self.end(EndReason::NoCommonProtocol);
         }
         let msg = SessionSetupReq {
-            header: MessageHeader { session_id: [0; 8], time_stamp: self.ev.header_timestamp() },
+            header: MessageHeader { session_id: [0; 8], time_stamp: self.timestamp() },
             evccid: self.ev.evcc_id(),
         };
         let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));

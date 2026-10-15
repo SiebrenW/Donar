@@ -4,7 +4,7 @@
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 
-use evcc_core::ev::{DcLimits, Ev, ScheduleRequest};
+use evcc_core::ev::{DcConnector, DcLimits, Ev, ScheduleRequest};
 use evcc_core::log::NoLog;
 use evcc_core::session::{Buffers, Config, EndReason, Session, State as SessionState};
 use evcc_linux::{Outcome, run};
@@ -39,7 +39,10 @@ impl Ev for Car {
             target_soc: Some(80),
         }
     }
-    fn header_timestamp(&self) -> u64 {
+    fn dc_connector(&self) -> DcConnector {
+        DcConnector::Core
+    }
+    fn now_micros(&self) -> u64 {
         1_700_000_000
     }
 }
@@ -155,7 +158,10 @@ fn evse_with_only_scheduled_control_leaves_no_usable_parameter_set() {
 
 #[test]
 fn the_dynamic_parameter_set_is_chosen_among_several() {
-    let set = |id, control_mode| (id, vec![("ControlMode".to_string(), control_mode), ("MobilityNeedsMode".to_string(), 1)]);
+    let set = |id, control_mode| (
+        id,
+        vec![("Connector".to_string(), 1), ("ControlMode".to_string(), control_mode), ("MobilityNeedsMode".to_string(), 1)],
+    );
     let (addr, server) = start(evse_sim::Config { parameter_sets: vec![set(4, 1), set(9, 2)], ..Default::default() });
     let outcome = run_ev(addr, Config::DC_20);
     assert!(matches!(outcome, Outcome::Reached { .. }), "{outcome:?}");
@@ -198,4 +204,12 @@ fn refused_schedule_is_reported() {
         Outcome::Ended(EndReason::Rejected(ResponseCode::FailedScheduleSelectionInvalid))
     );
     server.join().unwrap().unwrap();
+}
+
+#[test]
+fn a_parameter_set_for_another_connector_is_not_chosen() {
+    let set = vec![("Connector".to_string(), 2), ("ControlMode".to_string(), 2), ("MobilityNeedsMode".to_string(), 1)];
+    let (addr, server) = start(evse_sim::Config { parameter_sets: vec![(1, set)], ..Default::default() });
+    assert_eq!(run_ev(addr, Config::DC_20), Outcome::Ended(EndReason::NoCompatibleParameterSet));
+    drop(server);
 }

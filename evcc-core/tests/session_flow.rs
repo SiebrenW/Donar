@@ -4,7 +4,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use evcc_core::ev::{DcLimits, Ev, ScheduleRequest};
+use evcc_core::ev::{DcConnector, DcLimits, Ev, ScheduleRequest};
 use evcc_core::log::{Level, LogSink, MsgKind, Record};
 use evcc_core::session::*;
 use evcc_core::{Timer, TimerCmd, Timers};
@@ -23,7 +23,7 @@ fn rn(exponent: i8, value: i16) -> RationalNumber {
     RationalNumber { exponent, value }
 }
 
-/// The vehicle. Every call to `header_timestamp` returns a larger value so tests can tell
+/// The vehicle. Every call to `now_micros` returns a larger value so tests can tell
 /// messages apart.
 #[derive(Clone)]
 struct TestEv(Rc<Cell<u64>>);
@@ -59,7 +59,10 @@ impl Ev for TestEv {
             minimum_energy: rn(0, 0),
         }
     }
-    fn header_timestamp(&self) -> u64 {
+    fn dc_connector(&self) -> DcConnector {
+        DcConnector::Core
+    }
+    fn now_micros(&self) -> u64 {
         let t = self.0.get();
         self.0.set(t + 1);
         t
@@ -482,7 +485,8 @@ fn full_flow_to_authorized() {
     });
 
     let step = deliver(&mut s, &discovery_res(ResponseCode::Ok, &[1, 2]));
-    assert_eq!(step.timers, response_timer());
+    // ServiceDetailReq has a longer response timeout: 5 s (Table 215).
+    assert_eq!(step.timers, Timers::one(TimerCmd::Arm { timer: Timer::Response, ms: 5000 }));
     sent_common(&s, &step, |m| {
         let common::Message::ServiceDetailReq(req) = m else { panic!("{m:?}") };
         assert_eq!(req.service_id, 2);
@@ -551,7 +555,7 @@ fn full_flow_to_authorized() {
     assert!(!seen.iter().any(|s| matches!(s, Seen::Error(_))), "{seen:?}");
 }
 
-/// Ref: ISO 15118-20:2022 V2G20-1582 (via EcoG, unchecked): while EVSEProcessing is Ongoing the
+/// Ref: ISO 15118-20:2022 V2G20-1582: while EVSEProcessing is Ongoing the
 /// EVCC repeats the AuthorizationReq, unaltered except for the timestamp.
 #[test]
 fn ongoing_authorization_repeats_the_request_with_a_new_timestamp() {
@@ -761,4 +765,34 @@ fn small_arena_is_a_decode_error_not_a_panic() {
     deliver(&mut s, &sap_res(SapCode::OkSuccessfulNegotiation, Some(1)));
     let step = deliver(&mut s, &setup_res(ResponseCode::OkNewSessionEstablished, SID));
     assert_eq!(step.end, Some(EndReason::Malformed(DecodeError::ArenaFull)));
+}
+
+/// Ref: ISO 15118-20:2022 V2G20-1534..1537: header time stamps are in EVSE time (microseconds),
+/// learned from the SessionSetupRes, and increase with every message.
+#[test]
+fn time_stamps_follow_the_evse_clock_and_increase() {
+    let mut rig = Rig::new();
+    let mut s = session(&mut rig, Capture::default());
+    let step = s.handle(Event::Start { secured: false });
+    let _ = step;
+    deliver(&mut s, &sap_res(SapCode::OkSuccessfulNegotiation, Some(1)));
+    let first = {
+        let step = deliver(&mut s, &setup_res(ResponseCode::OkNewSessionEstablished, SID));
+        let mut ts = 0;
+        sent_common(&s, &step, |m| {
+            let common::Message::AuthorizationSetupReq(r) = m else { panic!("{m:?}") };
+            ts = r.header.time_stamp;
+        });
+        ts
+    };
+    // The EVSE said 5 in SessionSetupRes (setup_res uses time stamp 5); the vehicle's own clock
+    // reads about 1.7e9, so only the learned offset can explain such small values.
+    assert!((5..1000).contains(&first), "{first}");
+    let step = deliver(&mut s, &auth_setup_res(ResponseCode::Ok, &[Authorization::Eim]));
+    let mut second = 0;
+    sent_common(&s, &step, |m| {
+        let common::Message::AuthorizationReq(r) = m else { panic!("{m:?}") };
+        second = r.header.time_stamp;
+    });
+    assert!(second > first && (5..1000).contains(&second), "{second}");
 }

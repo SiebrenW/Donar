@@ -20,8 +20,8 @@ pub struct DcLimits {
 /// What the vehicle tells the EVSE about its energy needs (Dynamic control mode).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScheduleRequest {
-    /// `DepartureTime` (`xs:unsignedInt`). Whether it is relative or absolute and in which
-    /// unit is not checked against the standard yet (TODO).
+    /// `DepartureTime`: seconds from the moment of sending the message (the `TimeStamp` in its
+    /// header), always larger than zero (V2G20-2103, V2G20-2104).
     pub departure_time: u32,
     pub minimum_soc: Option<u8>,
     pub target_soc: Option<u8>,
@@ -30,15 +30,27 @@ pub struct ScheduleRequest {
     pub minimum_energy: RationalNumber,
 }
 
+/// Value of the DC service parameter `Connector` (ISO 15118-20:2022 Table 207).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DcConnector {
+    Core = 1,
+    Extended = 2,
+    Dual2 = 3,
+    Dual4 = 4,
+}
+
 pub trait Ev {
     /// EVCCID sent in `SessionSetupReq` (at most 255 characters, usually the MAC address).
     fn evcc_id(&self) -> &str;
-    /// Value for the header `TimeStamp` (`xs:unsignedLong`) of messages the EV sends.
-    ///
-    /// Open question: the XSD gives no unit. EcoG's stack sends microseconds since the Unix
-    /// epoch; a plain "Unix time" reading would be seconds. The core passes the value through
-    /// unchanged, so the host decides until this is checked against ISO 15118-20:2022.
-    fn header_timestamp(&self) -> u64;
+    /// The vehicle's own clock in microseconds since the Unix epoch, or 0 if it has no idea of
+    /// the time (ISO 15118-20:2022 V2G20-1535). The session machine turns it into the header
+    /// `TimeStamp`, which must be in the EVSE's time (V2G20-1534): it learns the offset from
+    /// `SessionSetupRes` and keeps the stamps increasing (V2G20-1537), so a clock that is only
+    /// approximately right, or even a plain counter, works.
+    fn now_micros(&self) -> u64;
+    /// Which DC inlet the vehicle has; selects the matching `Connector` service parameter set.
+    fn dc_connector(&self) -> DcConnector;
     /// The vehicle's DC limits for this session. Static facts, so a plain call; live values
     /// (present voltage, target current) will come through events once the charge loop exists.
     fn dc_limits(&self) -> DcLimits;

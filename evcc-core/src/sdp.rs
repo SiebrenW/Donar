@@ -4,10 +4,11 @@
 //! `v2gtp::sdp::SDP_PORT` on the charging interface, feeds back datagrams that arrive on the
 //! same socket, and fires [`Event::TimerExpired`] when the armed timer elapses.
 //!
-//! Timing: 250 ms between requests and at most 50 requests per cycle (49 retries) are the
-//! values open-source stacks use for ISO 15118-2/-20 (EcoG's `SDP_REQ` timeout and
-//! `SDP_MAX_REQUEST_COUNTER`). Requirement ids: TODO, not yet identified in the standard.
-//! Both values are configurable in [`Config`].
+//! Timing (ISO 15118-20:2022): wait at least 250 ms for a response (V2G20-159), then send a
+//! new request (V2G20-160); stop after at most 50 consecutive requests (V2G20-161) and treat
+//! that as a timeout (V2G20-162). Both values are configurable in [`Config`]. Only a response
+//! with TCP and TLS makes -20 usable (V2G20-1804, V2G20-1805), hence `accept_other_security`
+//! is off by default.
 
 use v2gtp::sdp::{Request, Response, Security, Transport};
 use v2gtp::{BufferTooSmall, Parse, PayloadType, parse};
