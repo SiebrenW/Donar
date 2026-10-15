@@ -27,8 +27,9 @@ fn main() -> ExitCode {
         Some("gen") => generate(args.any(|a| a == "--force")),
         Some("vectors") => vectors(),
         Some("grammars") => grammars(),
+        Some("linux-test") => linux_test(args.collect()),
         _ => {
-            eprintln!("usage: cargo xtask setup [--force] | gen [--force] | vectors | grammars");
+            eprintln!("usage: cargo xtask setup [--force] | gen [--force] | vectors | grammars | linux-test [cargo test args]");
             return ExitCode::from(2);
         }
     };
@@ -189,6 +190,32 @@ fn vectors() -> Result<(), String> {
         println!("wrote vectors/{name}.hex");
     }
     Ok(())
+}
+
+/// Runs `cargo test` for the Linux-only tests (network namespaces, veth pairs, raw sockets)
+/// in a privileged container, so they work from macOS through Docker/Colima. The target
+/// directory and the cargo registry live in named volumes: the host's `target` holds macOS
+/// builds.
+fn linux_test(cargo_args: Vec<String>) -> Result<(), String> {
+    const IMAGE: &str = "evcc-rs-linux-test";
+    let root = workspace_root();
+    run(Command::new("docker")
+        .args(["build", "--quiet", "--tag", IMAGE, "--file"])
+        .arg(root.join("docker/linux-test.Dockerfile"))
+        .arg(root.join("docker")))?;
+    let mut cmd = Command::new("docker");
+    cmd.args(["run", "--rm", "--privileged"])
+        .arg("--volume")
+        .arg(format!("{}:/work", root.display()))
+        .args(["--volume", "evcc-rs-target:/target", "--volume", "evcc-rs-cargo:/usr/local/cargo/registry"])
+        .args(["--env", "CARGO_TARGET_DIR=/target", "--workdir", "/work", IMAGE])
+        .args(["cargo", "test"]);
+    if cargo_args.is_empty() {
+        cmd.args(["--workspace"]);
+    } else {
+        cmd.args(&cargo_args);
+    }
+    run(&mut cmd)
 }
 
 fn run(cmd: &mut Command) -> Result<(), String> {
