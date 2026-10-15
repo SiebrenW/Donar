@@ -19,6 +19,13 @@ use iso15118_20::common_types::{MessageHeader, Processing, RationalNumber, Respo
 use iso15118_20::dc;
 use v2gtp::{HEADER_LEN, PayloadType};
 
+thread_local! {
+    /// What the vehicle measures at its inlet (volts); tests set it to "settle" pre-charge.
+    static INLET: Cell<i16> = const { Cell::new(0) };
+}
+
+const BATTERY_V: i16 = 400;
+
 fn rn(exponent: i8, value: i16) -> RationalNumber {
     RationalNumber { exponent, value }
 }
@@ -48,6 +55,12 @@ impl Ev for TestEv {
             minimum_voltage: rn(0, 200),
             target_soc: Some(80),
         }
+    }
+    fn battery_voltage(&self) -> RationalNumber {
+        rn(0, BATTERY_V)
+    }
+    fn inlet_voltage(&self) -> RationalNumber {
+        rn(0, INLET.with(Cell::get))
     }
     fn schedule_request(&self) -> ScheduleRequest {
         ScheduleRequest {
@@ -108,7 +121,7 @@ type Sess<'a> = Session<'a, TestEv, Capture>;
 
 fn session<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
     let Rig { rx, tx, arena } = rig;
-    Session::new(Config::DC_20, TestEv::new(), log, Buffers { rx, tx, arena })
+    Session::new(Config { poll_interval_ms: 0, ..Config::DC_20 }, TestEv::new(), log, Buffers { rx, tx, arena })
 }
 
 /// Copies `bytes` into the session's RX buffer and reports them, like a socket read would.
@@ -323,11 +336,194 @@ fn se_res(code: ResponseCode, p: Processing) -> std::vec::Vec<u8> {
     })
 }
 
-fn up_to_schedule_exchanged<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
+fn cable_res(code: ResponseCode, p: Processing) -> std::vec::Vec<u8> {
+    framed(PayloadType::DC_MAINSTREAM, |out| {
+        dc::DcCableCheckRes { header: hdr(), response_code: code, evse_processing: p }.encode(out).unwrap()
+    })
+}
+
+fn precharge_res(code: ResponseCode, volts: i16) -> std::vec::Vec<u8> {
+    framed(PayloadType::DC_MAINSTREAM, |out| {
+        dc::DcPreChargeRes { header: hdr(), response_code: code, evse_present_voltage: rn(0, volts) }.encode(out).unwrap()
+    })
+}
+
+fn power_delivery_res(code: ResponseCode) -> std::vec::Vec<u8> {
+    framed(PayloadType::MAINSTREAM, |out| {
+        common::PowerDeliveryRes { header: hdr(), response_code: code, evse_status: None }.encode(out).unwrap()
+    })
+}
+
+/// The DC message the session wants to send.
+fn sent_dc(s: &Sess<'_>, step: &Step, f: impl FnOnce(dc::Message<'_>)) {
+    let (pt, payload) = sent(s, step);
+    assert_eq!(pt, PayloadType::DC_MAINSTREAM);
+    let mut mem = [0u8; 1024];
+    let arena = Arena::new(&mut mem);
+    f(dc::decode(&payload, &arena).unwrap());
+}
+
+/// Up to and including the first `DC_CableCheckReq`.
+fn up_to_cable_check<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
     let mut s = up_to_schedule_exchange(rig, log);
     deliver(&mut s, &se_res(ResponseCode::Ok, Processing::Finished));
-    assert_eq!(s.state(), State::ScheduleExchanged);
+    assert_eq!(s.state(), State::AwaitCableCheckRes);
     s
+}
+
+/// Up to and including the first `DC_PreChargeReq`.
+fn up_to_precharge<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
+    let mut s = up_to_cable_check(rig, log);
+    deliver(&mut s, &cable_res(ResponseCode::Ok, Processing::Finished));
+    assert_eq!(s.state(), State::AwaitPreChargeRes);
+    s
+}
+
+fn up_to_contactors<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
+    INLET.with(|i| i.set(BATTERY_V));
+    let mut s = up_to_precharge(rig, log);
+    deliver(&mut s, &precharge_res(ResponseCode::Ok, BATTERY_V)); // settled: sends the final request
+    deliver(&mut s, &precharge_res(ResponseCode::Ok, BATTERY_V)); // acknowledged
+    assert_eq!(s.state(), State::AwaitContactors);
+    s
+}
+
+fn up_to_power_delivering<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
+    let mut s = up_to_contactors(rig, log);
+    s.handle(Event::ContactorsClosed);
+    deliver(&mut s, &power_delivery_res(ResponseCode::Ok));
+    assert_eq!(s.state(), State::PowerDelivering);
+    s
+}
+
+#[test]
+fn cable_check_pre_charge_and_power_delivery() {
+    let mut rig = Rig::new();
+    let mut s = up_to_schedule_exchange(&mut rig, Capture::default());
+
+    // ScheduleExchange done: the cable check starts and its 40 s timer with it (V2G20-700).
+    let step = deliver(&mut s, &se_res(ResponseCode::Ok, Processing::Finished));
+    assert_eq!(step.notice, Some(Notice::ScheduleExchanged));
+    assert_eq!(step.timers, response_timer().with(TimerCmd::Arm { timer: Timer::Ongoing, ms: 40_000 }));
+    sent_dc(&s, &step, |m| assert!(matches!(m, dc::Message::DcCableCheckReq(_))));
+
+    // Cable check ongoing: repeated, the 40 s timer is not touched again.
+    let step = deliver(&mut s, &cable_res(ResponseCode::Ok, Processing::Ongoing));
+    assert_eq!(step.timers, response_timer());
+    sent_dc(&s, &step, |m| assert!(matches!(m, dc::Message::DcCableCheckReq(_))));
+
+    // Finished: pre-charge starts with its own 10 s timer (V2G20-704), EV voltage = battery.
+    let step = deliver(&mut s, &cable_res(ResponseCode::Ok, Processing::Finished));
+    assert_eq!(step.notice, Some(Notice::CableChecked));
+    assert_eq!(step.timers, response_timer().with(TimerCmd::Arm { timer: Timer::Ongoing, ms: 10_000 }));
+    sent_dc(&s, &step, |m| {
+        let dc::Message::DcPreChargeReq(r) = m else { panic!("{m:?}") };
+        assert_eq!(r.ev_processing, Processing::Ongoing);
+        assert_eq!(r.ev_target_voltage, rn(0, BATTERY_V));
+    });
+
+    // The inlet voltage is still far from the battery: ask again.
+    INLET.with(|i| i.set(300));
+    let step = deliver(&mut s, &precharge_res(ResponseCode::Ok, 300));
+    sent_dc(&s, &step, |m| {
+        let dc::Message::DcPreChargeReq(r) = m else { panic!("{m:?}") };
+        assert_eq!(r.ev_processing, Processing::Ongoing);
+    });
+
+    // Within 20 V (IEC 61851-23): the EV says it is finished ...
+    INLET.with(|i| i.set(BATTERY_V - 19));
+    let step = deliver(&mut s, &precharge_res(ResponseCode::Ok, BATTERY_V - 19));
+    sent_dc(&s, &step, |m| {
+        let dc::Message::DcPreChargeReq(r) = m else { panic!("{m:?}") };
+        assert_eq!(r.ev_processing, Processing::Finished);
+    });
+    // ... and when that is acknowledged the host is asked to close the contactors.
+    let step = deliver(&mut s, &precharge_res(ResponseCode::Ok, BATTERY_V - 19));
+    assert_eq!(step.notice, Some(Notice::CloseContactors));
+    assert_eq!(step.send, None);
+    assert_eq!(step.timers, Timers::one(TimerCmd::Cancel(Timer::Response)).with(TimerCmd::Cancel(Timer::Ongoing)));
+    assert_eq!(s.state(), State::AwaitContactors);
+
+    // Only then does the EV request power (V2G20-1546: with a power profile).
+    let step = s.handle(Event::ContactorsClosed);
+    assert_eq!(step.timers, response_timer());
+    sent_common(&s, &step, |m| {
+        let common::Message::PowerDeliveryReq(r) = m else { panic!("{m:?}") };
+        assert_eq!(r.charge_progress, common::ChargeProgress::Start);
+        assert_eq!(r.ev_processing, Processing::Finished);
+        let profile = r.ev_power_profile.expect("profile accompanies Start");
+        assert_eq!(profile.ev_power_profile_entries.ev_power_profile_entry[0].power, rn(3, 100));
+    });
+    let step = deliver(&mut s, &power_delivery_res(ResponseCode::Ok));
+    assert_eq!(step.notice, Some(Notice::EnergyTransferStarted));
+    assert!(s.state().is_resting());
+}
+
+#[test]
+fn contactors_are_only_closed_when_asked() {
+    let mut rig = Rig::new();
+    let mut s = up_to_precharge(&mut rig, Capture::default());
+    assert_eq!(s.handle(Event::ContactorsClosed), Step::default());
+    assert_eq!(s.state(), State::AwaitPreChargeRes);
+}
+
+#[test]
+fn cable_check_and_pre_charge_have_their_own_timeouts() {
+    let mut rig = Rig::new();
+    let mut s = up_to_cable_check(&mut rig, Capture::default());
+    deliver(&mut s, &cable_res(ResponseCode::Ok, Processing::Ongoing));
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Ongoing)).end, Some(EndReason::Timeout));
+
+    let mut rig = Rig::new();
+    let mut s = up_to_precharge(&mut rig, Capture::default());
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Ongoing)).end, Some(EndReason::Timeout));
+    let mut rig = Rig::new();
+    let mut s = up_to_precharge(&mut rig, Capture::default());
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Response)).end, Some(EndReason::Timeout));
+}
+
+#[test]
+fn dc_failures_end_the_session() {
+    let mut rig = Rig::new();
+    let mut s = up_to_cable_check(&mut rig, Capture::default());
+    let step = deliver(&mut s, &cable_res(ResponseCode::Failed, Processing::Finished));
+    assert_eq!(step.end, Some(EndReason::Rejected(ResponseCode::Failed)));
+
+    let mut rig = Rig::new();
+    let mut s = up_to_precharge(&mut rig, Capture::default());
+    let step = deliver(&mut s, &precharge_res(ResponseCode::FailedSequenceError, 0));
+    assert_eq!(step.end, Some(EndReason::Rejected(ResponseCode::FailedSequenceError)));
+
+    let mut rig = Rig::new();
+    let mut s = up_to_contactors(&mut rig, Capture::default());
+    s.handle(Event::ContactorsClosed);
+    let step = deliver(&mut s, &power_delivery_res(ResponseCode::FailedPowerDeliveryNotApplied));
+    assert_eq!(step.end, Some(EndReason::Rejected(ResponseCode::FailedPowerDeliveryNotApplied)));
+}
+
+/// With a poll interval the repeat waits for the poll timer instead of going out at once.
+#[test]
+fn ongoing_answers_are_polled_at_the_configured_pace() {
+    let mut rig = Rig::new();
+    let Rig { rx, tx, arena } = &mut rig;
+    let mut s = Session::new(Config::DC_20, TestEv::new(), Capture::default(), Buffers { rx, tx, arena });
+    s.handle(Event::Start { secured: false });
+    deliver(&mut s, &sap_res(SapCode::OkSuccessfulNegotiation, Some(1)));
+    deliver(&mut s, &setup_res(ResponseCode::OkNewSessionEstablished, SID));
+    deliver(&mut s, &auth_setup_res(ResponseCode::Ok, &[Authorization::Eim]));
+
+    let step = deliver(&mut s, &auth_res(ResponseCode::Ok, Processing::Ongoing));
+    assert_eq!(step.send, None, "the repeat waits");
+    assert_eq!(
+        step.timers,
+        Timers::one(TimerCmd::Cancel(Timer::Response)).with(TimerCmd::Arm { timer: Timer::Poll, ms: 200 })
+    );
+    // When the pause is over the request goes out, with the response and ongoing timers.
+    let step = s.handle(Event::TimerExpired(Timer::Poll));
+    assert_eq!(step.timers, response_timer().with(TimerCmd::Arm { timer: Timer::Ongoing, ms: 60_000 }));
+    sent_common(&s, &step, |m| assert!(matches!(m, common::Message::AuthorizationReq(_))));
+    // A stray poll expiry does nothing.
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Poll)), Step::default());
 }
 
 #[test]
@@ -349,8 +545,9 @@ fn schedule_exchange_repeats_while_ongoing_then_finishes() {
     assert!(stamps.windows(2).all(|w| w[0] < w[1]));
     let step = deliver(&mut s, &se_res(ResponseCode::Ok, Processing::Finished));
     assert_eq!(step.notice, Some(Notice::ScheduleExchanged));
-    assert_eq!(step.timers, Timers::one(TimerCmd::Cancel(Timer::Response)).with(TimerCmd::Cancel(Timer::Ongoing)));
-    assert!(s.state().is_resting());
+    // The cable check follows at once, and its own bound replaces the ongoing timer.
+    assert_eq!(step.timers, response_timer().with(TimerCmd::Arm { timer: Timer::Ongoing, ms: 40_000 }));
+    assert_eq!(s.state(), State::AwaitCableCheckRes);
 }
 
 #[test]
@@ -532,8 +729,7 @@ fn full_flow_to_authorized() {
 
     let step = deliver(&mut s, &se_res(ResponseCode::Ok, Processing::Finished));
     assert_eq!(step.notice, Some(Notice::ScheduleExchanged));
-    assert_eq!(step.send, None);
-    assert!(s.state().is_resting());
+    assert_eq!(s.state(), State::AwaitCableCheckRes);
 
     let seen = seen.borrow();
     for (kind, tx) in [
@@ -605,11 +801,12 @@ fn ongoing_forever_hits_the_ongoing_timeout() {
 #[test]
 fn stale_timers_are_ignored() {
     let mut rig = Rig::new();
-    let mut s = up_to_schedule_exchanged(&mut rig, Capture::default());
+    let mut s = up_to_power_delivering(&mut rig, Capture::default());
     // Both timers were cancelled, but an expiry may already have been in flight.
     assert_eq!(s.handle(Event::TimerExpired(Timer::Response)), Step::default());
     assert_eq!(s.handle(Event::TimerExpired(Timer::Ongoing)), Step::default());
-    assert_eq!(s.state(), State::ScheduleExchanged);
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Poll)), Step::default());
+    assert_eq!(s.state(), State::PowerDelivering);
 
     // The ongoing timer is cancelled once authorization finishes, too.
     let mut rig = Rig::new();

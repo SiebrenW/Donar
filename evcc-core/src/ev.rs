@@ -54,6 +54,12 @@ pub trait Ev {
     /// The vehicle's DC limits for this session. Static facts, so a plain call; live values
     /// (present voltage, target current) will come through events once the charge loop exists.
     fn dc_limits(&self) -> DcLimits;
+    /// The voltage of the vehicle's battery system (read when the cable check is done and
+    /// during pre-charge).
+    fn battery_voltage(&self) -> RationalNumber;
+    /// The voltage the vehicle measures at its inlet (side B); during pre-charge it follows the
+    /// EVSE's output. Read each time a `DC_PreChargeRes` arrives.
+    fn inlet_voltage(&self) -> RationalNumber;
     /// The vehicle's energy needs for the schedule exchange.
     fn schedule_request(&self) -> ScheduleRequest;
 }

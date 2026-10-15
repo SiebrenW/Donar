@@ -51,6 +51,15 @@ pub struct Config {
     pub schedule_ongoing_responses: u32,
     /// Response code of the `ScheduleExchangeRes` that finishes the exchange.
     pub schedule_code: ResponseCode,
+    /// How many `DC_CableCheckRes` carry `Ongoing` before one says `Finished`.
+    pub cable_check_ongoing_responses: u32,
+    /// Response code of the `DC_CableCheckRes` that finishes the check.
+    pub cable_check_code: ResponseCode,
+    /// How many `DC_PreChargeReq` the EVSE answers before the EV considers the voltage reached
+    /// (the simulator only reports the target voltage once this many arrived).
+    pub precharge_requests_to_settle: u32,
+    /// Response code of the `PowerDeliveryRes`.
+    pub power_delivery_code: ResponseCode,
 }
 
 impl Default for Config {
@@ -81,6 +90,10 @@ impl Default for Config {
             cpd_code: ResponseCode::Ok,
             schedule_ongoing_responses: 0,
             schedule_code: ResponseCode::Ok,
+            cable_check_ongoing_responses: 0,
+            cable_check_code: ResponseCode::Ok,
+            precharge_requests_to_settle: 1,
+            power_delivery_code: ResponseCode::Ok,
         }
     }
 }
@@ -96,8 +109,11 @@ pub enum State {
     AwaitServiceSelectionReq,
     AwaitChargeParameterDiscoveryReq,
     AwaitScheduleExchangeReq,
-    /// The schedule exchange is finished.
-    ScheduleExchanged,
+    AwaitCableCheckReq,
+    AwaitPreChargeReq,
+    AwaitPowerDeliveryReq,
+    /// Energy transfer was enabled.
+    PowerDelivering,
     Closed,
 }
 
@@ -117,11 +133,13 @@ pub struct Evse {
     schema_id: u8,
     authorization_reqs_seen: u32,
     schedule_reqs_seen: u32,
+    cable_reqs_seen: u32,
+    precharge_reqs_seen: u32,
 }
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0 }
+        Self { config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0 }
     }
 
     pub fn state(&self) -> State {
@@ -340,9 +358,64 @@ impl Evse {
                 };
                 let ongoing = processing == Processing::Ongoing;
                 if !ongoing && is_ok(code) {
-                    self.state = State::ScheduleExchanged;
+                    self.state = State::AwaitCableCheckReq;
                 }
                 Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: !ongoing && !is_ok(code) }
+            }
+            State::AwaitCableCheckReq if payload_type == PayloadType::DC_MAINSTREAM => {
+                let Ok(dc::Message::DcCableCheckReq(req)) = dc::decode(payload, &arena) else { return closed };
+                self.cable_reqs_seen += 1;
+                let (processing, code) = if req.header.session_id != self.config.session_id {
+                    (Processing::Finished, ResponseCode::FailedUnknownSession)
+                } else if self.cable_reqs_seen <= self.config.cable_check_ongoing_responses {
+                    (Processing::Ongoing, ResponseCode::Ok)
+                } else {
+                    (Processing::Finished, self.config.cable_check_code)
+                };
+                let res = dc::DcCableCheckRes { header: self.header(), response_code: code, evse_processing: processing };
+                let ongoing = processing == Processing::Ongoing;
+                if !ongoing && is_ok(code) {
+                    self.state = State::AwaitPreChargeReq;
+                }
+                Output { send: frame(PayloadType::DC_MAINSTREAM, |out| res.encode(out)), close: !ongoing && !is_ok(code) }
+            }
+            State::AwaitPreChargeReq if payload_type == PayloadType::DC_MAINSTREAM => {
+                let Ok(dc::Message::DcPreChargeReq(req)) = dc::decode(payload, &arena) else { return closed };
+                let code = if req.header.session_id != self.config.session_id {
+                    ResponseCode::FailedUnknownSession
+                } else {
+                    ResponseCode::Ok
+                };
+                self.precharge_reqs_seen += 1;
+                // Until "settled" the output is 100 V away from the EV's target.
+                let settled = self.precharge_reqs_seen >= self.config.precharge_requests_to_settle;
+                let target = req.ev_target_voltage;
+                let voltage = if settled {
+                    target
+                } else {
+                    RationalNumber { exponent: target.exponent, value: target.value.saturating_sub(100) }
+                };
+                let res = dc::DcPreChargeRes { header: self.header(), response_code: code, evse_present_voltage: voltage };
+                if is_ok(code) && req.ev_processing == Processing::Finished {
+                    self.state = State::AwaitPowerDeliveryReq;
+                }
+                Output { send: frame(PayloadType::DC_MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) }
+            }
+            State::AwaitPowerDeliveryReq if payload_type == PayloadType::MAINSTREAM => {
+                let Ok(common::Message::PowerDeliveryReq(req)) = common::decode(payload, &arena) else { return closed };
+                let code = if req.header.session_id != self.config.session_id {
+                    ResponseCode::FailedUnknownSession
+                } else if req.charge_progress != common::ChargeProgress::Start || req.ev_power_profile.is_none() {
+                    // V2G20-1546: the profile must accompany Start.
+                    ResponseCode::FailedPowerDeliveryNotApplied
+                } else {
+                    self.config.power_delivery_code
+                };
+                let res = common::PowerDeliveryRes { header: self.header(), response_code: code, evse_status: None };
+                if is_ok(code) {
+                    self.state = State::PowerDelivering;
+                }
+                Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) }
             }
             // The rest of the flow is added with the later slices.
             _ => closed,

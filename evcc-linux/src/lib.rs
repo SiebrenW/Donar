@@ -25,8 +25,13 @@ pub enum Outcome {
 /// Runs `session` over `stream` until it reaches a result. A peer that hangs up, cleanly or
 /// by resetting the connection, is reported as [`Outcome::ConnectionClosed`]; other I/O
 /// errors are returned.
-pub fn run<E: Ev, L: LogSink>(stream: &mut TcpStream, session: &mut Session<'_, E, L>, secured: bool) -> io::Result<Outcome> {
-    match drive(stream, session, secured) {
+pub fn run<E: Ev, L: LogSink>(
+    stream: &mut TcpStream,
+    session: &mut Session<'_, E, L>,
+    secured: bool,
+    host: &mut impl FnMut(&Notice) -> Option<Event>,
+) -> io::Result<Outcome> {
+    match drive(stream, session, secured, host) {
         Err(e) if is_hang_up(&e) => Ok(Outcome::ConnectionClosed),
         other => other,
     }
@@ -39,7 +44,12 @@ fn is_hang_up(e: &io::Error) -> bool {
     )
 }
 
-fn drive<E: Ev, L: LogSink>(stream: &mut TcpStream, session: &mut Session<'_, E, L>, secured: bool) -> io::Result<Outcome> {
+fn drive<E: Ev, L: LogSink>(
+    stream: &mut TcpStream,
+    session: &mut Session<'_, E, L>,
+    secured: bool,
+    host: &mut impl FnMut(&Notice) -> Option<Event>,
+) -> io::Result<Outcome> {
     let mut deadlines = Deadlines::default();
     let mut session_id = [0u8; 8];
     let mut step = session.handle(Event::Start { secured });
@@ -53,8 +63,15 @@ fn drive<E: Ev, L: LogSink>(stream: &mut TcpStream, session: &mut Session<'_, E,
         if let Some(reason) = step.end {
             return Ok(Outcome::Ended(reason));
         }
-        if let Some(Notice::SessionSetUp { session_id: id }) = step.notice {
-            session_id = id;
+        if let Some(notice) = step.notice {
+            if let Notice::SessionSetUp { session_id: id } = notice {
+                session_id = id;
+            }
+            // The host may act on a notice (close the contactors) and answer with an event.
+            if let Some(event) = host(&notice) {
+                step = session.handle(event);
+                continue;
+            }
         }
         if session.state().is_resting() {
             return Ok(Outcome::Reached { session_id, state: session.state() });
@@ -68,7 +85,7 @@ fn drive<E: Ev, L: LogSink>(stream: &mut TcpStream, session: &mut Session<'_, E,
 
 /// Pending expiry per timer.
 #[derive(Default)]
-struct Deadlines([Option<Instant>; 3]);
+struct Deadlines([Option<Instant>; 4]);
 
 impl Deadlines {
     fn slot(timer: Timer) -> usize {
@@ -76,6 +93,7 @@ impl Deadlines {
             Timer::Sdp => 0,
             Timer::Response => 1,
             Timer::Ongoing => 2,
+            Timer::Poll => 3,
         }
     }
 
@@ -90,7 +108,7 @@ impl Deadlines {
 
     /// The earliest pending expiry and its timer.
     fn next(&self) -> Option<(Timer, Instant)> {
-        [Timer::Sdp, Timer::Response, Timer::Ongoing]
+        [Timer::Sdp, Timer::Response, Timer::Ongoing, Timer::Poll]
             .into_iter()
             .filter_map(|t| self.0[Self::slot(t)].map(|d| (t, d)))
             .min_by_key(|&(_, d)| d)

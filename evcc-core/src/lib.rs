@@ -23,6 +23,8 @@ pub enum Timer {
     Response,
     /// Upper bound on the time spent in a repeated `Ongoing` exchange (e.g. authorization).
     Ongoing,
+    /// Pause before repeating a request while the EVSE answers `Ongoing`.
+    Poll,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -38,6 +38,16 @@ pub struct Config {
     /// `V2G_EVCC_Ongoing_Timeout`: the bound on a repeated `Ongoing` exchange such as
     /// authorization polling; 60 s (Table 215).
     pub ongoing_timeout_ms: u32,
+    /// Pause between repeats of a request while the EVSE answers `Ongoing` (0: repeat at
+    /// once). The standard only bounds the time (V2G20-1582); this keeps the line quiet.
+    pub poll_interval_ms: u32,
+    /// `V2G_EVCC_DC_CableCheck_Timeout`: 40 s from the first request (Table 223, V2G20-700).
+    pub cable_check_timeout_ms: u32,
+    /// `V2G_EVCC_DC_PreCharge_Timeout`: 10 s from the first request (Table 223, V2G20-704).
+    pub precharge_timeout_ms: u32,
+    /// Pre-charge is done when the voltage at the inlet differs less than this from the battery
+    /// voltage (IEC 61851-23:2023 CC.5.1 / t9: 20 V).
+    pub precharge_tolerance_v: u16,
     /// `MaximumSupportingPoints` of the schedule exchange: how many entries of a schedule the
     /// EV can take (12..=1024).
     pub maximum_supporting_points: u16,
@@ -61,6 +71,10 @@ impl Config {
         response_timeout_ms: 2000,
         service_detail_timeout_ms: 5000,
         ongoing_timeout_ms: 60_000,
+        poll_interval_ms: 200,
+        cable_check_timeout_ms: 40_000,
+        precharge_timeout_ms: 10_000,
+        precharge_tolerance_v: 20,
         maximum_supporting_points: 12,
         energy_service: SERVICE_ID_DC,
         // ISO 15118-20:2022 Table 207: ControlMode 2 = Dynamic, MobilityNeedsMode 1 = mobility
@@ -68,6 +82,19 @@ impl Config {
         // ([`Ev::dc_connector`]) and is matched separately.
         parameter_filter: &[("ControlMode", 2), ("MobilityNeedsMode", 1)],
     };
+}
+
+/// A `RationalNumber` (value * 10^exponent) in volts, for comparisons.
+fn rational_to_volts(r: iso15118_20::common_types::RationalNumber) -> f32 {
+    f32::from(r.value) * pow10(r.exponent)
+}
+
+fn pow10(exp: i8) -> f32 {
+    let mut v = 1.0f32;
+    for _ in 0..exp.unsigned_abs() {
+        v = if exp < 0 { v / 10.0 } else { v * 10.0 };
+    }
+    v
 }
 
 /// Service id of DC energy transfer (ISO 15118-20:2022 Table 204, V2G20-1355).
@@ -95,9 +122,14 @@ pub enum State {
     AwaitServiceSelectionRes,
     AwaitChargeParameterDiscoveryRes,
     AwaitScheduleExchangeRes,
-    /// Energy needs and schedule are exchanged; the rest of the flow is added with the later
-    /// slices.
-    ScheduleExchanged,
+    AwaitCableCheckRes,
+    AwaitPreChargeRes,
+    /// Pre-charge is finished; the host closes the contactors and reports
+    /// [`Event::ContactorsClosed`].
+    AwaitContactors,
+    AwaitPowerDeliveryRes,
+    /// Energy transfer is enabled; the charge loop is added with the next slice.
+    PowerDelivering,
     Ended,
 }
 
@@ -105,7 +137,7 @@ impl State {
     /// True when the session waits for nothing from the EVSE and has not ended: a point where
     /// the part of the flow implemented so far is complete.
     pub fn is_resting(self) -> bool {
-        matches!(self, State::ScheduleExchanged)
+        matches!(self, State::PowerDelivering)
     }
 }
 
@@ -140,6 +172,8 @@ pub enum Event {
     /// `n` bytes were written into [`Session::rx_space`].
     Received(usize),
     TimerExpired(Timer),
+    /// The host closed the vehicle's contactors after [`Notice::CloseContactors`].
+    ContactorsClosed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +188,13 @@ pub enum Notice {
     ChargeParametersDiscovered(dc::DcChargeParameterDiscoveryRes),
     /// The EVSE finished the schedule exchange.
     ScheduleExchanged,
+    /// The cable check finished successfully.
+    CableChecked,
+    /// Pre-charge is finished: close the EV's contactors, then send
+    /// [`Event::ContactorsClosed`] (IEC 61851-23 t9).
+    CloseContactors,
+    /// The EVSE enabled the energy transfer.
+    EnergyTransferStarted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -183,6 +224,10 @@ struct Machine<E, L> {
     session_id: [u8; 8],
     /// The `Ongoing` timer is armed once, when the first `Ongoing` response arrives.
     ongoing_armed: bool,
+    /// A poll pause is running; when it ends the request of the current state is repeated.
+    poll_pending: bool,
+    /// The last `DC_PreChargeReq` carried `EVProcessing = Finished`.
+    precharge_finishing: bool,
     /// SECC time minus the vehicle's clock, learned from `SessionSetupRes` (V2G20-1536).
     clock_offset: i128,
     last_timestamp: u64,
@@ -204,6 +249,8 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 secured: false,
                 session_id: [0; 8],
                 ongoing_armed: false,
+                poll_pending: false,
+                precharge_finishing: false,
                 clock_offset: 0,
                 last_timestamp: 0,
                 selected: SelectedService { service_id: 0, parameter_set_id: 0 },
@@ -241,10 +288,26 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
             }
             Event::TimerExpired(timer) => match (timer, m.state) {
                 (Timer::Response, s) if m.is_awaiting(s) => m.end(EndReason::Timeout),
-                (Timer::Ongoing, State::AwaitAuthorizationRes | State::AwaitScheduleExchangeRes) => m.end(EndReason::Timeout),
+                (
+                    Timer::Ongoing,
+                    State::AwaitAuthorizationRes
+                    | State::AwaitScheduleExchangeRes
+                    | State::AwaitCableCheckRes
+                    | State::AwaitPreChargeRes,
+                ) => m.end(EndReason::Timeout),
+                (Timer::Poll, _) if m.poll_pending => {
+                    m.poll_pending = false;
+                    m.repeat(tx)
+                }
                 // A timer that was cancelled in the same moment it fired.
                 _ => Step::default(),
             },
+            Event::ContactorsClosed => {
+                if m.state != State::AwaitContactors {
+                    return Step::default();
+                }
+                m.send_power_delivery_start(tx)
+            }
             Event::Received(n) => {
                 *rx_len = (*rx_len + n).min(rx.len());
                 let mut step = Step::default();
@@ -301,6 +364,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 | State::AwaitServiceSelectionRes
                 | State::AwaitChargeParameterDiscoveryRes
                 | State::AwaitScheduleExchangeRes
+                | State::AwaitCableCheckRes
+                | State::AwaitPreChargeRes
+                | State::AwaitPowerDeliveryRes
         )
     }
 
@@ -450,8 +516,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                             // V2G_EVCC_Sequence_Performance_Time. Ongoing_WaitingForCustomerInteraction
                             // is not in the 2022 text (only in the schema); it is treated the same.
                             Processing::Ongoing | Processing::OngoingWaitingForCustomerInteraction => {
-                                let step = self.send_authorization_req(State::AwaitAuthorizationRes, tx);
-                                self.arm_ongoing(step)
+                                self.ongoing_repeat(tx)
                             }
                         }
                     }
@@ -570,22 +635,91 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         }
                         match res.evse_processing {
                             Processing::Finished => {
-                                self.goto(State::ScheduleExchanged);
                                 self.ongoing_armed = false;
-                                Step {
-                                    timers: Timers::one(TimerCmd::Cancel(Timer::Response))
-                                        .with(TimerCmd::Cancel(Timer::Ongoing)),
-                                    notice: Some(Notice::ScheduleExchanged),
-                                    ..Step::default()
+                                self.poll_pending = false;
+                                let mut step = self.send_cable_check_req(tx);
+                                if step.end.is_none() {
+                                    step.notice = Some(Notice::ScheduleExchanged);
                                 }
+                                step
                             }
                             // While the EVSE is still working the request is repeated, like
                             // the AuthorizationReq (the 2022 text has no ScheduleExchange-specific requirement for it;
                             // V2G_EVCC_Ongoing_Timeout covers any response with EVSEProcessing Ongoing).
                             Processing::Ongoing | Processing::OngoingWaitingForCustomerInteraction => {
-                                let step = self.send_schedule_exchange_req(tx);
-                                self.arm_ongoing(step)
+                                self.ongoing_repeat(tx)
                             }
+                        }
+                    }
+                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Err(e) => self.malformed(e),
+                }
+            }
+            State::AwaitCableCheckRes if payload_type == PayloadType::DC_MAINSTREAM => {
+                match dc::decode(payload, arena) {
+                    Ok(dc::Message::DcCableCheckRes(res)) => {
+                        if let Some(end) = self.received(MsgKind::DcCableCheckRes, res.response_code) {
+                            return end;
+                        }
+                        self.log.record(&Record::EvseProcessing { processing: res.evse_processing });
+                        match res.evse_processing {
+                            // V2G20-1397: wait for ResponseCode OK and EVSEProcessing Finished.
+                            Processing::Finished => {
+                                self.ongoing_armed = false;
+                                let mut step = self.send_precharge_req(false, tx);
+                                if step.end.is_none() {
+                                    step.notice = Some(Notice::CableChecked);
+                                }
+                                step
+                            }
+                            _ => self.ongoing_repeat(tx),
+                        }
+                    }
+                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Err(e) => self.malformed(e),
+                }
+            }
+            State::AwaitPreChargeRes if payload_type == PayloadType::DC_MAINSTREAM => {
+                match dc::decode(payload, arena) {
+                    Ok(dc::Message::DcPreChargeRes(res)) => {
+                        if let Some(end) = self.received(MsgKind::DcPreChargeRes, res.response_code) {
+                            return end;
+                        }
+                        if self.precharge_finishing {
+                            // The EVSE acknowledged the end of pre-charge: close the contactors.
+                            self.precharge_finishing = false;
+                            self.ongoing_armed = false;
+                            self.goto(State::AwaitContactors);
+                            return Step {
+                                timers: Timers::one(TimerCmd::Cancel(Timer::Response))
+                                    .with(TimerCmd::Cancel(Timer::Ongoing)),
+                                notice: Some(Notice::CloseContactors),
+                                ..Step::default()
+                            };
+                        }
+                        let inlet = rational_to_volts(self.ev.inlet_voltage());
+                        let battery = rational_to_volts(self.ev.battery_voltage());
+                        if (inlet - battery).abs() < f32::from(self.config.precharge_tolerance_v) {
+                            self.precharge_finishing = true;
+                            return self.send_precharge_req(true, tx);
+                        }
+                        self.ongoing_repeat(tx)
+                    }
+                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Err(e) => self.malformed(e),
+                }
+            }
+            State::AwaitPowerDeliveryRes if payload_type == PayloadType::MAINSTREAM => {
+                match common::decode(payload, arena) {
+                    Ok(M::PowerDeliveryRes(res)) => {
+                        if let Some(end) = self.received(MsgKind::PowerDeliveryRes, res.response_code) {
+                            return end;
+                        }
+                        self.goto(State::PowerDelivering);
+                        Step {
+                            timers: Timers::one(TimerCmd::Cancel(Timer::Response)),
+                            notice: Some(Notice::EnergyTransferStarted),
+                            ..Step::default()
                         }
                     }
                     Ok(_) => self.end(EndReason::UnexpectedMessage),
@@ -594,6 +728,97 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             }
             _ => self.end(EndReason::UnexpectedMessage),
         }
+    }
+
+    /// The EVSE answered `Ongoing`: pause for the poll interval (if any), then repeat the
+    /// request of the current state.
+    fn ongoing_repeat(&mut self, tx: &mut [u8]) -> Step {
+        if self.config.poll_interval_ms == 0 {
+            return self.repeat(tx);
+        }
+        self.poll_pending = true;
+        Step {
+            timers: Timers::one(TimerCmd::Cancel(Timer::Response))
+                .with(TimerCmd::Arm { timer: Timer::Poll, ms: self.config.poll_interval_ms }),
+            ..Step::default()
+        }
+    }
+
+    /// Sends the request of the current state again and makes sure the `Ongoing` bound runs.
+    fn repeat(&mut self, tx: &mut [u8]) -> Step {
+        let step = match self.state {
+            State::AwaitAuthorizationRes => self.send_authorization_req(State::AwaitAuthorizationRes, tx),
+            State::AwaitScheduleExchangeRes => self.send_schedule_exchange_req(tx),
+            State::AwaitCableCheckRes => self.send_cable_check_req(tx),
+            State::AwaitPreChargeRes => self.send_precharge_req(false, tx),
+            _ => return Step::default(),
+        };
+        self.arm_ongoing(step)
+    }
+
+    fn send_cable_check_req(&mut self, tx: &mut [u8]) -> Step {
+        let msg = dc::DcCableCheckReq { header: self.header() };
+        let framed = frame(tx, PayloadType::DC_MAINSTREAM, |out| msg.encode(out));
+        if self.state == State::AwaitCableCheckRes {
+            return self.sent(MsgKind::DcCableCheckReq, framed);
+        }
+        let mut step = self.send_then(State::AwaitCableCheckRes, MsgKind::DcCableCheckReq, framed);
+        // V2G20-700: the cable check timer starts with the first request.
+        if step.end.is_none() {
+            self.ongoing_armed = true;
+            step.timers = step.timers.with(TimerCmd::Arm { timer: Timer::Ongoing, ms: self.config.cable_check_timeout_ms });
+        }
+        step
+    }
+
+    /// One `DC_PreChargeReq`; `finished` is the EV's `EVProcessing`.
+    fn send_precharge_req(&mut self, finished: bool, tx: &mut [u8]) -> Step {
+        let battery = self.ev.battery_voltage();
+        let msg = dc::DcPreChargeReq {
+            header: self.header(),
+            ev_processing: if finished { Processing::Finished } else { Processing::Ongoing },
+            ev_present_voltage: battery,
+            ev_target_voltage: battery,
+        };
+        let framed = frame(tx, PayloadType::DC_MAINSTREAM, |out| msg.encode(out));
+        if self.state == State::AwaitPreChargeRes {
+            return self.sent(MsgKind::DcPreChargeReq, framed);
+        }
+        let mut step = self.send_then(State::AwaitPreChargeRes, MsgKind::DcPreChargeReq, framed);
+        // V2G20-704: the pre-charge timer starts with the first request (arming replaces the
+        // cable check timer).
+        if step.end.is_none() {
+            self.ongoing_armed = true;
+            step.timers = step.timers.with(TimerCmd::Arm { timer: Timer::Ongoing, ms: self.config.precharge_timeout_ms });
+        }
+        step
+    }
+
+    fn send_power_delivery_start(&mut self, tx: &mut [u8]) -> Step {
+        let r = self.ev.schedule_request();
+        let limits = self.ev.dc_limits();
+        // A single-entry profile at the vehicle's maximum charge power until departure: the
+        // "fastest charging" simulation the standard asks for is simplified (TODO).
+        let entries = [common::PowerScheduleEntry {
+            duration: r.departure_time,
+            power: limits.maximum_charge_power,
+            power_l2: None,
+            power_l3: None,
+        }];
+        let time_anchor = self.timestamp();
+        let msg = common::PowerDeliveryReq {
+            header: self.header(),
+            ev_processing: Processing::Finished,
+            charge_progress: common::ChargeProgress::Start,
+            ev_power_profile: Some(common::EvPowerProfile {
+                time_anchor,
+                evppt_control_mode: common::EvpptControlModeChoice::Dynamic(common::DynamicEvpptControlMode {}),
+                ev_power_profile_entries: common::EvPowerProfileEntryList { ev_power_profile_entry: &entries },
+            }),
+            bpt_channel_selection: None,
+        };
+        let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
+        self.send_then(State::AwaitPowerDeliveryRes, MsgKind::PowerDeliveryReq, framed)
     }
 
     /// Arms the overall `Ongoing` bound once, when the first `Ongoing` answer arrives.

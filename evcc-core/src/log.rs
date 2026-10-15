@@ -39,6 +39,12 @@ pub enum MsgKind {
     DcChargeParameterDiscoveryRes,
     ScheduleExchangeReq,
     ScheduleExchangeRes,
+    DcCableCheckReq,
+    DcCableCheckRes,
+    DcPreChargeReq,
+    DcPreChargeRes,
+    PowerDeliveryReq,
+    PowerDeliveryRes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
