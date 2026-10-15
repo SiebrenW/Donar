@@ -25,7 +25,7 @@ Prerequisites: Docker (Docker Desktop, Colima or similar) in your `PATH`, and an
 
 Zed ignores the `customizations.vscode` block (extensions, settings) of `devcontainer.json` and brings its own rust-analyzer. The setup has been tried with VS Code's settings format and the plain Docker commands; the Zed route is untested, in particular whether Zed passes `--privileged` from `runArgs`. If the namespace tests fail with "Operation not permitted" in a Zed container, run them from a normal terminal with `cargo xtask linux-test`.
 
-The container is **privileged** (the namespace tests need it), so use it on a machine and Docker VM you trust. Build output lives in the named volume `evcc-rs-target` (`CARGO_TARGET_DIR=/target`), so it never mixes with a `target/` directory made on macOS.
+You work as the user `developer` (UID 1000) with passwordless `sudo`. Only the test binaries run as root: the image sets `CARGO_TARGET_*_RUNNER` to `docker/test-runner.sh`, which starts programs from cargo's `deps` directory through `sudo`, so the namespace and raw-socket tests get their privileges while building and `cargo xtask` stay unprivileged. The container is **privileged** (the namespace tests need it), so use it on a machine and Docker VM you trust. Build output lives in the named volume `evcc-rs-target` (`CARGO_TARGET_DIR=/target`), so it never mixes with a `target/` directory made on macOS.
 
 ## Local setup
 
@@ -92,4 +92,6 @@ docker/, .devcontainer the Linux test environment
 - **OpenSSL not found (macOS)**: `export OPENSSL_DIR=$(brew --prefix openssl@3)`.
 - **`cargo xtask linux-test` cannot reach Docker**: start your Docker VM (`colima start` or Docker Desktop). With Colima the repository must be below your home directory, which it shares by default.
 - **Namespace tests fail with "Operation not permitted"**: the container is not privileged; use `cargo xtask linux-test` or the dev container as configured.
+- **"Permission denied" writing in the repository from the container (Linux host)**: the image's `developer` has UID 1000; the dev container adjusts it to your UID (`updateRemoteUserUID`), `cargo xtask linux-test` does not. If your UID is not 1000, run `docker run --user $(id -u) ...` yourself or use the dev container. On macOS with Colima or Docker Desktop this does not occur.
+- **Build output owned by root after an older image**: the container runs `own-volumes` (a `chown` of the two volumes) on start, in the dev container and in `cargo xtask linux-test`.
 - **Leftover namespaces after an aborted run**: `ip netns list` inside the container shows them; they vanish when the container ends.

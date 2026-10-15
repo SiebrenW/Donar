@@ -1,10 +1,31 @@
 # Test environment for the Linux-only network tests (network namespaces, veth, raw sockets).
 # Used by `cargo xtask linux-test` and by the dev container (.devcontainer/devcontainer.json);
-# needs a privileged container. The JDK is for `cargo xtask vectors` (EXIficient reference
-# vectors), iproute2 for the namespaces.
+# the container has to be privileged. The JDK is for `cargo xtask vectors` (EXIficient
+# reference vectors), iproute2 and sudo for the namespaces.
 FROM rust:1
 # The generator formats its output with rustfmt; clippy is for the editor.
 RUN rustup component add rustfmt clippy
 RUN apt-get update -qq \
- && apt-get install -y -qq --no-install-recommends iproute2 default-jdk-headless \
+ && apt-get install -y -qq --no-install-recommends iproute2 default-jdk-headless sudo \
  && rm -rf /var/lib/apt/lists/*
+
+# Everything runs as `developer`, who may use sudo without a password.
+RUN useradd --create-home --uid 1000 --shell /bin/bash developer \
+ && echo 'developer ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/developer \
+ && chmod 0440 /etc/sudoers.d/developer
+
+# Named volumes for the build output and the cargo registry start out empty and take the
+# ownership of these directories; `own-volumes` repairs volumes made by older images.
+RUN mkdir -p /target \
+ && chown -R developer:developer /target /usr/local/cargo
+COPY own-volumes.sh /usr/local/bin/own-volumes
+COPY test-runner.sh /usr/local/bin/test-runner
+RUN chmod 0755 /usr/local/bin/own-volumes /usr/local/bin/test-runner
+
+# Test binaries run as root through sudo (namespaces, raw sockets); everything else, such as
+# `cargo xtask`, runs as `developer` and does not leave root-owned files in the repository.
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER=/usr/local/bin/test-runner \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER=/usr/local/bin/test-runner \
+    CARGO_TARGET_DIR=/target
+
+USER developer

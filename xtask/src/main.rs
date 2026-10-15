@@ -195,7 +195,7 @@ fn vectors() -> Result<(), String> {
 /// Runs `cargo test` for the Linux-only tests (network namespaces, veth pairs, raw sockets)
 /// in a privileged container, so they work from macOS through Docker/Colima. The target
 /// directory and the cargo registry live in named volumes: the host's `target` holds macOS
-/// builds.
+/// builds. Inside, `developer` builds and the test binaries run as root through sudo.
 fn linux_test(cargo_args: Vec<String>) -> Result<(), String> {
     const IMAGE: &str = "evcc-rs-linux-test";
     let root = workspace_root();
@@ -208,8 +208,9 @@ fn linux_test(cargo_args: Vec<String>) -> Result<(), String> {
         .arg("--volume")
         .arg(format!("{}:/work", root.display()))
         .args(["--volume", "evcc-rs-target:/target", "--volume", "evcc-rs-cargo:/usr/local/cargo/registry"])
-        .args(["--env", "CARGO_TARGET_DIR=/target", "--workdir", "/work", IMAGE])
-        .args(["cargo", "test"]);
+        .args(["--workdir", "/work", IMAGE])
+        // `own-volumes` first: volumes made by an older image belong to root.
+        .args(["bash", "-c", r#"own-volumes && exec cargo "$@""#, "cargo", "test"]);
     if cargo_args.is_empty() {
         cmd.args(["--workspace"]);
     } else {
