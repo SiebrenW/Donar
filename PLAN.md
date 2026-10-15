@@ -173,3 +173,24 @@ Where code implements a specific, citable behaviour (timers, mandated message ha
 - **Stack use**: the generated messages are small (`size_of` of the largest, `ScheduleExchangeRes`, is 224 bytes; `tests/sizes.rs` keeps them under 2 KiB) because lists live in the arena.
 - **Fuzzing**: `tests/vectors.rs` flips bits in valid streams and requires that decoding returns. A real fuzz target (cargo-fuzz) is still to do.
 - **Open**: empty string elements (EXIficient's event code for them is not understood; both directions refuse); choice enum names such as `AReqAuthorizationModeChoice` are mechanical (override table if they bother anyone); the wrapper types (`ServiceList { service: &[..] }`) are not flattened; AC, ACDP and WPT are not generated yet (add them to `ISO20.files/modules` and decide the module names).
+
+## Compliance review against ISO 15118-20:2022 (2026-10-15)
+
+The standard text is in `standards/`. Reading the EVCC requirements of clause 8.5/8.6 and 7.7 against what is built shows the happy path is right but several mandatory behaviours are missing or wrong. Ordered by priority.
+
+**Wrong or missing, to fix before TLS:**
+
+1. **`DC_WeldingDetection` is mandatory** (V2G20-1448, 1573, 1461, 1462): after `PowerDeliveryRes(OK)` to `Stop` the EVCC sends `DC_WeldingDetectionReq`, repeats it with `EVProcessing = Ongoing` until the EV is done, sends `Finished`, and only then `SessionStopReq`. The session machine skips it, so a real EVSE would answer `SessionStopReq` with a sequence error.
+2. **Invalid messages are ignored, not fatal** (V2G20-440): a message that is not a valid response (wrong type, malformed, wrong payload type) must be ignored and the response timer keeps running. The machine ends the session (`UnexpectedMessage`, `Malformed`).
+3. **Communication setup timeout** (V2G20-2298, 448; Table 223: 20 s): from the connection being established until `SessionSetupRes` arrives. Not armed.
+4. **-20 only over TLS 1.3** (V2G20-1235, 1237, 2646): the EVCC must not offer -20 in `SupportedAppProtocolReq` over plain TCP. The machine offers it regardless of `secured`. Plain TCP stays as an explicit test mode (`Config` flag, off by default).
+5. **`WARNING_*` is not fatal** (8.6.3, V2G20-2201): it needs a per-message reaction. All non-OK codes end the session now. At least `PowerDeliveryRes` with `WARNING_PowerToleranceNotConfirmed` must continue into the charge loop (V2G20-1438); `AuthorizationRes` with `WARNING_*` (V2G20-1583) allows stopping.
+6. **Sequence performance time** (Table 215: 40 s, Table 217: 0.25 s for the charge loop): the EVCC must send its next request within this time. Slow host actions (`CloseContactors`, `StopEnergyTransfer`) are not bounded.
+
+**Decided, not yet built:** `SessionStopReq` on error exits (V2G20-2644 for non-critical stops before `Start`), standby/pause, service renegotiation (V2G20-1476), `MeteringConfirmation` on side stream `0x8102` when the EVSE asks (V2G20-1621), resumed sessions (V2G20-2098), the other `EVSENotification` values.
+
+**TLS (slice 5) is bigger than planned** (7.7): TLS 1.3 with *mutual* authentication must be supported (V2G20-1264) so the EVCC needs a client certificate chain; cipher suites `TLS_AES_256_GCM_SHA384` then `TLS_CHACHA20_POLY1305_SHA256` (Table 6, V2G20-1858); named groups `secp521r1` / `x448` in the order of Table 7. rustls with the `aws-lc-rs` provider covers the suites and `secp521r1`; `x448` is probably missing. EVSE and EVCC test certificates are needed in the loopback and `unshare` tests.
+
+**Verification gaps:** the grammar of every message equals EXIficient's, but value-level vectors exist only for the messages the session uses; the PnC types, BPT and the scheduled-mode types are generated but untested. The empty-string EXI question is still open.
+
+**Verdict:** on track structurally (architecture, generator, simulator and test approach hold), but milestone 1 is not done: items 1 to 6 above come before TLS/SDP/SLAC.
