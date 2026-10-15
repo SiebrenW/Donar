@@ -1,4 +1,7 @@
-//! Shared by the TCP and TLS end-to-end tests.
+//! Shared by the end-to-end tests; each test crate uses only part of it.
+#![allow(dead_code)]
+
+pub mod pki;
 
 use evcc_core::ev::{DcConnector, DcLimits, Ev, ScheduleRequest};
 use evcc_core::log::NoLog;

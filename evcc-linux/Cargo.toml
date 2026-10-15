@@ -9,6 +9,7 @@ evcc-core = { path = "../evcc-core" }
 openssl = "0.10"
 libc = "0.2"
 v2gtp = { path = "../v2gtp" }
+homeplug = { path = "../homeplug" }
 
 [dev-dependencies]
 evse-sim = { path = "../evse-sim" }

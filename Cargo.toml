@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["xtask", "exi-gen", "codecs/exi", "codecs/app-protocol", "codecs/iso15118-20", "v2gtp", "evcc-core", "evse-sim", "evcc-linux"]
+members = ["xtask", "exi-gen", "codecs/exi", "codecs/app-protocol", "codecs/iso15118-20", "v2gtp", "homeplug", "evcc-core", "evse-sim", "evcc-linux"]
 
 [workspace.package]
 version = "0.1.0"

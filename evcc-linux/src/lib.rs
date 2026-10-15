@@ -3,6 +3,8 @@
 //! async runtime is needed. The stream is a plain `TcpStream` or an OpenSSL TLS stream (see
 //! [`tls`]). (SLAC is added later.)
 
+#[cfg(target_os = "linux")]
+pub mod slac;
 pub mod sdp;
 pub mod tls;
 
@@ -95,12 +97,24 @@ fn drive<E: Ev, L: LogSink>(
     }
 }
 
+const ALL_TIMERS: [Timer; 9] = [
+    Timer::Sdp,
+    Timer::Response,
+    Timer::Ongoing,
+    Timer::Poll,
+    Timer::Setup,
+    Timer::Sequence,
+    Timer::Slac,
+    Timer::SlacResults,
+    Timer::SlacOverall,
+];
+
 /// Pending expiry per timer.
 #[derive(Default)]
-struct Deadlines([Option<Instant>; 6]);
+pub(crate) struct Deadlines([Option<Instant>; 9]);
 
 impl Deadlines {
-    fn slot(timer: Timer) -> usize {
+    pub(crate) fn slot(timer: Timer) -> usize {
         match timer {
             Timer::Sdp => 0,
             Timer::Response => 1,
@@ -108,10 +122,13 @@ impl Deadlines {
             Timer::Poll => 3,
             Timer::Setup => 4,
             Timer::Sequence => 5,
+            Timer::Slac => 6,
+            Timer::SlacResults => 7,
+            Timer::SlacOverall => 8,
         }
     }
 
-    fn apply(&mut self, cmd: TimerCmd) {
+    pub(crate) fn apply(&mut self, cmd: TimerCmd) {
         match cmd {
             TimerCmd::Arm { timer, ms } => {
                 self.0[Self::slot(timer)] = Some(Instant::now() + Duration::from_millis(u64::from(ms)));
@@ -121,14 +138,14 @@ impl Deadlines {
     }
 
     /// The earliest pending expiry and its timer.
-    fn next(&self) -> Option<(Timer, Instant)> {
-        [Timer::Sdp, Timer::Response, Timer::Ongoing, Timer::Poll, Timer::Setup, Timer::Sequence]
+    pub(crate) fn next(&self) -> Option<(Timer, Instant)> {
+        ALL_TIMERS
             .into_iter()
             .filter_map(|t| self.0[Self::slot(t)].map(|d| (t, d)))
             .min_by_key(|&(_, d)| d)
     }
 
-    fn clear(&mut self, timer: Timer) {
+    pub(crate) fn clear(&mut self, timer: Timer) {
         self.0[Self::slot(timer)] = None;
     }
 }

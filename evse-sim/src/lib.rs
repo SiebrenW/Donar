@@ -3,6 +3,8 @@
 //! ([`serve_one`]) for end-to-end tests. Its knobs inject the faults an EVSE test platform
 //! needs: rejections, failing response codes and silence.
 
+pub mod slac;
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::time::{SystemTime, UNIX_EPOCH};

@@ -11,6 +11,7 @@ extern crate std;
 pub mod ev;
 pub mod log;
 pub mod sdp;
+pub mod slac;
 pub mod session;
 
 /// The timers the machines use. Each is independent; the host keeps at most one pending
@@ -30,6 +31,12 @@ pub enum Timer {
     /// `V2G_EVCC_Sequence_Timer`: how long the EVCC may take before its next request while it
     /// waits for the vehicle (contactors, ramp-down).
     Sequence,
+    /// The wait of the current SLAC step: response, batch interval, link-up or retry pause.
+    Slac,
+    /// `TT_EV_atten_results`: how long the EV collects attenuation reports.
+    SlacResults,
+    /// `TT_matching_repetition`: how long a failed SLAC run is repeated.
+    SlacOverall,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
