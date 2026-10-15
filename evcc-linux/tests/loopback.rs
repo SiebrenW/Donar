@@ -6,7 +6,7 @@ use std::thread;
 
 use evcc_core::ev::{DcConnector, DcLimits, Ev, ScheduleRequest};
 use evcc_core::log::NoLog;
-use evcc_core::session::{Buffers, Config, EndReason, Event, Notice, Session, State as SessionState};
+use evcc_core::session::{Buffers, Config, EndReason, Event, Notice, Session};
 use evcc_linux::{Outcome, run};
 use evse_sim::State as EvseState;
 use iso15118_20::common_types::{RationalNumber, ResponseCode};
@@ -15,7 +15,7 @@ use iso15118_20::common_types::{RationalNumber, ResponseCode};
 /// (the simulator reports the target voltage once it has "settled").
 /// The default configuration with a short poll pause, so polling tests stay quick.
 fn fast() -> Config {
-    Config { poll_interval_ms: 10, ..Config::DC_20 }
+    Config { poll_interval_ms: 10, charge_loop_interval_ms: 10, ..Config::DC_20 }
 }
 
 struct Car(std::cell::Cell<u32>);
@@ -70,12 +70,24 @@ fn start(config: evse_sim::Config) -> (std::net::SocketAddr, thread::JoinHandle<
 }
 
 fn run_ev(addr: std::net::SocketAddr, config: Config) -> Outcome {
+    run_ev_stopping_after(addr, config, Some(3))
+}
+
+/// Runs the car; after `stop_after` charge loop answers it asks to stop (None: never).
+fn run_ev_stopping_after(addr: std::net::SocketAddr, config: Config, stop_after: Option<u32>) -> Outcome {
     let mut stream = TcpStream::connect(addr).unwrap();
     let (mut rx, mut tx, mut arena) = ([0u8; 1024], [0u8; 1024], [0u8; 4096]);
     let mut session = Session::new(config, Car(Default::default()), NoLog, Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
-    run(&mut stream, &mut session, false, &mut |n| {
-        // The car closes its contactors as soon as it is asked to.
-        matches!(n, Notice::CloseContactors).then_some(Event::ContactorsClosed)
+    let mut loops = 0;
+    run(&mut stream, &mut session, false, &mut |n| match n {
+        // The car closes its contactors and stops drawing current as soon as it is asked to.
+        Notice::CloseContactors => Some(Event::ContactorsClosed),
+        Notice::StopEnergyTransfer { .. } => Some(Event::EnergyTransferStopped),
+        Notice::ChargeLoop(_) => {
+            loops += 1;
+            (Some(loops) == stop_after).then_some(Event::StopRequested)
+        }
+        _ => None,
     })
     .unwrap()
 }
@@ -83,10 +95,9 @@ fn run_ev(addr: std::net::SocketAddr, config: Config) -> Outcome {
 #[test]
 fn session_is_set_up_over_tcp() {
     let evse = evse_sim::Config::default();
-    let want = evse.session_id;
     let (addr, server) = start(evse);
-    assert_eq!(run_ev(addr, fast()), Outcome::Reached { session_id: want, state: SessionState::PowerDelivering });
-    assert_eq!(server.join().unwrap().unwrap(), EvseState::PowerDelivering);
+    assert_eq!(run_ev(addr, fast()), Outcome::Ended(EndReason::Completed));
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
 }
 
 #[test]
@@ -127,8 +138,8 @@ fn evse_hanging_up_is_reported() {
 fn authorization_polling_ends_when_the_evse_finishes() {
     let (addr, server) = start(evse_sim::Config { authorization_ongoing_responses: 3, ..Default::default() });
     let outcome = run_ev(addr, fast());
-    assert!(matches!(outcome, Outcome::Reached { .. }), "{outcome:?}");
-    assert_eq!(server.join().unwrap().unwrap(), EvseState::PowerDelivering);
+    assert!(outcome == Outcome::Ended(EndReason::Completed), "{outcome:?}");
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
 }
 
 #[test]
@@ -183,7 +194,7 @@ fn the_dynamic_parameter_set_is_chosen_among_several() {
     );
     let (addr, server) = start(evse_sim::Config { parameter_sets: vec![set(4, 1), set(9, 2)], ..Default::default() });
     let outcome = run_ev(addr, fast());
-    assert!(matches!(outcome, Outcome::Reached { .. }), "{outcome:?}");
+    assert!(outcome == Outcome::Ended(EndReason::Completed), "{outcome:?}");
     server.join().unwrap().unwrap();
 }
 
@@ -211,8 +222,8 @@ fn refused_charge_parameters_are_reported() {
 fn schedule_exchange_polling_ends_when_the_evse_finishes() {
     let (addr, server) = start(evse_sim::Config { schedule_ongoing_responses: 3, ..Default::default() });
     let outcome = run_ev(addr, fast());
-    assert!(matches!(outcome, Outcome::Reached { state: SessionState::PowerDelivering, .. }), "{outcome:?}");
-    assert_eq!(server.join().unwrap().unwrap(), EvseState::PowerDelivering);
+    assert!(outcome == Outcome::Ended(EndReason::Completed), "{outcome:?}");
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
 }
 
 #[test]
@@ -237,8 +248,8 @@ fn a_parameter_set_for_another_connector_is_not_chosen() {
 fn cable_check_and_pre_charge_run_to_power_delivery() {
     let (addr, server) = start(evse_sim::Config { cable_check_ongoing_responses: 3, ..Default::default() });
     let outcome = run_ev(addr, fast());
-    assert!(matches!(outcome, Outcome::Reached { state: SessionState::PowerDelivering, .. }), "{outcome:?}");
-    assert_eq!(server.join().unwrap().unwrap(), EvseState::PowerDelivering);
+    assert!(outcome == Outcome::Ended(EndReason::Completed), "{outcome:?}");
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
 }
 
 #[test]
@@ -256,4 +267,11 @@ fn refused_power_delivery_is_reported() {
         Outcome::Ended(EndReason::Rejected(ResponseCode::FailedPowerDeliveryNotApplied))
     );
     server.join().unwrap().unwrap();
+}
+
+#[test]
+fn the_evse_can_end_the_charge() {
+    let (addr, server) = start(evse_sim::Config { terminate_after_loops: Some(4), ..Default::default() });
+    assert_eq!(run_ev_stopping_after(addr, fast(), None), Outcome::Ended(EndReason::Completed));
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
 }

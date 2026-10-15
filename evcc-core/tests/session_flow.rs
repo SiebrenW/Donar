@@ -388,12 +388,150 @@ fn up_to_contactors<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
     s
 }
 
-fn up_to_power_delivering<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
+/// Up to and including the first `DC_ChargeLoopReq`.
+fn up_to_charge_loop<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
     let mut s = up_to_contactors(rig, log);
     s.handle(Event::ContactorsClosed);
     deliver(&mut s, &power_delivery_res(ResponseCode::Ok));
-    assert_eq!(s.state(), State::PowerDelivering);
+    assert_eq!(s.state(), State::AwaitChargeLoopRes);
     s
+}
+
+fn loop_res(notification: Option<iso15118_20::common_types::EvseNotification>) -> std::vec::Vec<u8> {
+    framed(PayloadType::DC_MAINSTREAM, |out| {
+        let msg = dc::DcChargeLoopRes {
+            header: hdr(),
+            response_code: ResponseCode::Ok,
+            evse_status: notification.map(|n| iso15118_20::common_types::EvseStatus { notification_max_delay: 7, evse_notification: n }),
+            meter_info: None,
+            receipt: None,
+            evse_present_current: rn(0, 100),
+            evse_present_voltage: rn(0, 398),
+            evse_power_limit_achieved: false,
+            evse_current_limit_achieved: true,
+            evse_voltage_limit_achieved: false,
+            cl_res_control_mode: dc::ClResControlModeChoice::DynamicDc(dc::DynamicDcClResControlMode {
+                departure_time: None,
+                minimum_soc: None,
+                target_soc: None,
+                ack_max_delay: None,
+                evse_maximum_charge_power: rn(3, 150),
+                evse_minimum_charge_power: rn(0, 100),
+                evse_maximum_charge_current: rn(0, 300),
+                evse_maximum_voltage: rn(0, 920),
+            }),
+        };
+        msg.encode(out).unwrap()
+    })
+}
+
+fn session_stop_res(code: ResponseCode) -> std::vec::Vec<u8> {
+    framed(PayloadType::MAINSTREAM, |out| {
+        common::SessionStopRes { header: hdr(), response_code: code }.encode(out).unwrap()
+    })
+}
+
+fn loop_timer() -> Timers {
+    Timers::one(TimerCmd::Arm { timer: Timer::Response, ms: 500 })
+}
+
+/// The shutdown after a stop trigger: ramp down, PowerDeliveryReq(Stop), SessionStopReq.
+fn finish_shutdown(s: &mut Sess<'_>) {
+    let step = s.handle(Event::EnergyTransferStopped);
+    sent_common(s, &step, |m| {
+        let common::Message::PowerDeliveryReq(r) = m else { panic!("{m:?}") };
+        assert_eq!(r.charge_progress, common::ChargeProgress::Stop);
+        assert!(r.ev_power_profile.is_some(), "V2G20-1546: a profile accompanies Stop");
+    });
+    assert_eq!(s.state(), State::AwaitPowerDeliveryStopRes);
+    let step = deliver(s, &power_delivery_res(ResponseCode::Ok));
+    assert_eq!(step.notice, Some(Notice::OpenContactors));
+    sent_common(s, &step, |m| {
+        let common::Message::SessionStopReq(r) = m else { panic!("{m:?}") };
+        assert_eq!(r.charging_session, common::ChargingSession::Terminate);
+    });
+    let step = deliver(s, &session_stop_res(ResponseCode::Ok));
+    assert_eq!(step.end, Some(EndReason::Completed));
+}
+
+#[test]
+fn the_charge_loop_cycles_and_stops_on_request() {
+    let mut rig = Rig::new();
+    let mut s = up_to_charge_loop(&mut rig, Capture::default());
+    // A response: the loop interval (100 ms) passes, then the next request goes out (0.5 s timeout).
+    for _ in 0..3 {
+        let step = deliver(&mut s, &loop_res(None));
+        assert_eq!(step.send, None);
+        assert_eq!(
+            step.timers,
+            Timers::one(TimerCmd::Cancel(Timer::Response)).with(TimerCmd::Arm { timer: Timer::Poll, ms: 100 })
+        );
+        let Some(Notice::ChargeLoop(status)) = step.notice else { panic!("{step:?}") };
+        assert_eq!(status.present_current, rn(0, 100));
+        assert!(status.current_limit_achieved);
+        assert_eq!(status.maximum_charge_current, rn(0, 300));
+        let step = s.handle(Event::TimerExpired(Timer::Poll));
+        assert_eq!(step.timers, loop_timer());
+        sent_dc(&s, &step, |m| {
+            let dc::Message::DcChargeLoopReq(r) = m else { panic!("{m:?}") };
+            assert_eq!(r.ev_present_voltage, rn(0, BATTERY_V));
+            let dc::ClReqControlModeChoice::DynamicDc(mode) = r.cl_req_control_mode else { panic!() };
+            assert_eq!(mode.ev_maximum_charge_current, rn(0, 200));
+        });
+    }
+    // The vehicle wants to stop while the request is outstanding: acted on at the response.
+    assert_eq!(s.handle(Event::StopRequested), Step::default());
+    let step = deliver(&mut s, &loop_res(None));
+    assert_eq!(step.notice, Some(Notice::StopEnergyTransfer { within_s: None }));
+    assert_eq!(s.state(), State::AwaitCurrentStopped);
+    finish_shutdown(&mut s);
+}
+
+#[test]
+fn a_stop_request_during_the_loop_interval_acts_at_once() {
+    let mut rig = Rig::new();
+    let mut s = up_to_charge_loop(&mut rig, Capture::default());
+    deliver(&mut s, &loop_res(None)); // now waiting for the poll timer
+    let step = s.handle(Event::StopRequested);
+    assert_eq!(step.notice, Some(Notice::StopEnergyTransfer { within_s: None }));
+    assert_eq!(step.timers, Timers::one(TimerCmd::Cancel(Timer::Response)).with(TimerCmd::Cancel(Timer::Poll)));
+    // The poll timer may already have fired: it must not resume the loop.
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Poll)), Step::default());
+    finish_shutdown(&mut s);
+}
+
+#[test]
+fn the_evse_can_terminate_the_charge() {
+    // V2G20-1416, V2G20-1960
+    let mut rig = Rig::new();
+    let mut s = up_to_charge_loop(&mut rig, Capture::default());
+    let step = deliver(&mut s, &loop_res(Some(iso15118_20::common_types::EvseNotification::Terminate)));
+    assert_eq!(step.notice, Some(Notice::StopEnergyTransfer { within_s: Some(7) }));
+    finish_shutdown(&mut s);
+
+    // Other notifications are not handled yet: the loop just goes on.
+    let mut rig = Rig::new();
+    let mut s = up_to_charge_loop(&mut rig, Capture::default());
+    let step = deliver(&mut s, &loop_res(Some(iso15118_20::common_types::EvseNotification::MeteringConfirmation)));
+    assert!(matches!(step.notice, Some(Notice::ChargeLoop(_))));
+    assert_eq!(s.state(), State::AwaitChargeLoopRes);
+}
+
+#[test]
+fn the_charge_loop_has_a_half_second_timeout_and_no_ongoing_bound() {
+    let mut rig = Rig::new();
+    let mut s = up_to_charge_loop(&mut rig, Capture::default());
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Ongoing)), Step::default());
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Response)).end, Some(EndReason::Timeout));
+}
+
+#[test]
+fn stop_events_are_ignored_when_they_do_not_apply() {
+    let mut rig = Rig::new();
+    let mut s = up_to_precharge(&mut rig, Capture::default());
+    assert_eq!(s.handle(Event::StopRequested), Step::default());
+    assert_eq!(s.handle(Event::EnergyTransferStopped), Step::default());
+    assert_eq!(s.state(), State::AwaitPreChargeRes);
 }
 
 #[test]
@@ -456,7 +594,10 @@ fn cable_check_pre_charge_and_power_delivery() {
     });
     let step = deliver(&mut s, &power_delivery_res(ResponseCode::Ok));
     assert_eq!(step.notice, Some(Notice::EnergyTransferStarted));
-    assert!(s.state().is_resting());
+    // Power is on: the charge loop starts at once, with its half second timeout (Table 217).
+    assert_eq!(step.timers, loop_timer());
+    sent_dc(&s, &step, |m| assert!(matches!(m, dc::Message::DcChargeLoopReq(_))));
+    assert_eq!(s.state(), State::AwaitChargeLoopRes);
 }
 
 #[test]
@@ -801,12 +942,14 @@ fn ongoing_forever_hits_the_ongoing_timeout() {
 #[test]
 fn stale_timers_are_ignored() {
     let mut rig = Rig::new();
-    let mut s = up_to_power_delivering(&mut rig, Capture::default());
-    // Both timers were cancelled, but an expiry may already have been in flight.
+    let mut s = up_to_charge_loop(&mut rig, Capture::default());
+    deliver(&mut s, &loop_res(Some(iso15118_20::common_types::EvseNotification::Terminate)));
+    assert_eq!(s.state(), State::AwaitCurrentStopped);
+    // All timers were cancelled, but an expiry may already have been in flight.
     assert_eq!(s.handle(Event::TimerExpired(Timer::Response)), Step::default());
     assert_eq!(s.handle(Event::TimerExpired(Timer::Ongoing)), Step::default());
     assert_eq!(s.handle(Event::TimerExpired(Timer::Poll)), Step::default());
-    assert_eq!(s.state(), State::PowerDelivering);
+    assert_eq!(s.state(), State::AwaitCurrentStopped);
 
     // The ongoing timer is cancelled once authorization finishes, too.
     let mut rig = Rig::new();

@@ -9,13 +9,10 @@ use std::time::{Duration, Instant};
 use evcc_core::{Timer, TimerCmd};
 use evcc_core::ev::Ev;
 use evcc_core::log::LogSink;
-use evcc_core::session::{EndReason, Event, Notice, Session, State, Step};
+use evcc_core::session::{EndReason, Event, Notice, Session, Step};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// The part of the flow implemented so far finished: the session machine reached a
-    /// resting state ([`evcc_core::session::State::is_resting`]).
-    Reached { session_id: [u8; 8], state: State },
     /// The session machine ended.
     Ended(EndReason),
     /// The peer closed the connection while the session was still running.
@@ -51,7 +48,6 @@ fn drive<E: Ev, L: LogSink>(
     host: &mut impl FnMut(&Notice) -> Option<Event>,
 ) -> io::Result<Outcome> {
     let mut deadlines = Deadlines::default();
-    let mut session_id = [0u8; 8];
     let mut step = session.handle(Event::Start { secured });
     loop {
         if let Some(n) = step.send {
@@ -64,17 +60,11 @@ fn drive<E: Ev, L: LogSink>(
             return Ok(Outcome::Ended(reason));
         }
         if let Some(notice) = step.notice {
-            if let Notice::SessionSetUp { session_id: id } = notice {
-                session_id = id;
-            }
             // The host may act on a notice (close the contactors) and answer with an event.
             if let Some(event) = host(&notice) {
                 step = session.handle(event);
                 continue;
             }
-        }
-        if session.state().is_resting() {
-            return Ok(Outcome::Reached { session_id, state: session.state() });
         }
         match next_step(stream, session, &mut deadlines)? {
             Next::Step(next) => step = next,

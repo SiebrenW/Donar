@@ -48,6 +48,12 @@ pub struct Config {
     /// Pre-charge is done when the voltage at the inlet differs less than this from the battery
     /// voltage (IEC 61851-23:2023 CC.5.1 / t9: 20 V).
     pub precharge_tolerance_v: u16,
+    /// `V2G_EVCC_Msg_Timeout(DC_ChargeLoopReq)`: 0.5 s (Table 217).
+    pub charge_loop_timeout_ms: u32,
+    /// Pause between a `DC_ChargeLoopRes` and the next request. The next request has to go out
+    /// within `V2G_EVCC_Sequence_Performance_Time(DC_ChargeLoopReq)`, 0.25 s (Table 217), so
+    /// keep this well below that.
+    pub charge_loop_interval_ms: u32,
     /// `MaximumSupportingPoints` of the schedule exchange: how many entries of a schedule the
     /// EV can take (12..=1024).
     pub maximum_supporting_points: u16,
@@ -75,6 +81,8 @@ impl Config {
         cable_check_timeout_ms: 40_000,
         precharge_timeout_ms: 10_000,
         precharge_tolerance_v: 20,
+        charge_loop_timeout_ms: 500,
+        charge_loop_interval_ms: 100,
         maximum_supporting_points: 12,
         energy_service: SERVICE_ID_DC,
         // ISO 15118-20:2022 Table 207: ControlMode 2 = Dynamic, MobilityNeedsMode 1 = mobility
@@ -127,18 +135,17 @@ pub enum State {
     /// Pre-charge is finished; the host closes the contactors and reports
     /// [`Event::ContactorsClosed`].
     AwaitContactors,
+    /// `PowerDeliveryReq(Start)` is out.
     AwaitPowerDeliveryRes,
-    /// Energy transfer is enabled; the charge loop is added with the next slice.
-    PowerDelivering,
+    /// Energy is flowing: `DC_ChargeLoopReq`s go out in a cycle.
+    AwaitChargeLoopRes,
+    /// Shutting down: the host stops drawing current and reports
+    /// [`Event::EnergyTransferStopped`].
+    AwaitCurrentStopped,
+    /// `PowerDeliveryReq(Stop)` is out.
+    AwaitPowerDeliveryStopRes,
+    AwaitSessionStopRes,
     Ended,
-}
-
-impl State {
-    /// True when the session waits for nothing from the EVSE and has not ended: a point where
-    /// the part of the flow implemented so far is complete.
-    pub fn is_resting(self) -> bool {
-        matches!(self, State::PowerDelivering)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,6 +181,12 @@ pub enum Event {
     TimerExpired(Timer),
     /// The host closed the vehicle's contactors after [`Notice::CloseContactors`].
     ContactorsClosed,
+    /// The vehicle wants to stop charging (user, full battery, fault). Only acted on while the
+    /// charge loop runs.
+    StopRequested,
+    /// The host reduced the current to zero after [`Notice::StopEnergyTransfer`]
+    /// (V2G20-1310 asks for this before `PowerDeliveryReq(Stop)`).
+    EnergyTransferStopped,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,8 +206,28 @@ pub enum Notice {
     /// Pre-charge is finished: close the EV's contactors, then send
     /// [`Event::ContactorsClosed`] (IEC 61851-23 t9).
     CloseContactors,
-    /// The EVSE enabled the energy transfer.
+    /// The EVSE enabled the energy transfer: the vehicle may draw current.
     EnergyTransferStarted,
+    /// What the EVSE reported in the latest `DC_ChargeLoopRes`.
+    ChargeLoop(ChargeLoopStatus),
+    /// Stop drawing current (ramp down), then report [`Event::EnergyTransferStopped`]. When the
+    /// EVSE asked for the stop, `within_s` is its `NotificationMaxDelay` (V2G20-1416).
+    StopEnergyTransfer { within_s: Option<u16> },
+    /// The EVSE acknowledged the stop: the contactors may open.
+    OpenContactors,
+}
+
+/// The EVSE's side of one charge loop exchange (Dynamic control mode).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChargeLoopStatus {
+    pub present_current: iso15118_20::common_types::RationalNumber,
+    pub present_voltage: iso15118_20::common_types::RationalNumber,
+    pub power_limit_achieved: bool,
+    pub current_limit_achieved: bool,
+    pub voltage_limit_achieved: bool,
+    pub maximum_charge_power: iso15118_20::common_types::RationalNumber,
+    pub maximum_charge_current: iso15118_20::common_types::RationalNumber,
+    pub maximum_voltage: iso15118_20::common_types::RationalNumber,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -228,6 +261,8 @@ struct Machine<E, L> {
     poll_pending: bool,
     /// The last `DC_PreChargeReq` carried `EVProcessing = Finished`.
     precharge_finishing: bool,
+    /// The vehicle asked to stop while a charge loop request was outstanding.
+    stop_requested: bool,
     /// SECC time minus the vehicle's clock, learned from `SessionSetupRes` (V2G20-1536).
     clock_offset: i128,
     last_timestamp: u64,
@@ -251,6 +286,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 ongoing_armed: false,
                 poll_pending: false,
                 precharge_finishing: false,
+                stop_requested: false,
                 clock_offset: 0,
                 last_timestamp: 0,
                 selected: SelectedService { service_id: 0, parameter_set_id: 0 },
@@ -306,7 +342,24 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 if m.state != State::AwaitContactors {
                     return Step::default();
                 }
-                m.send_power_delivery_start(tx)
+                m.send_power_delivery(common::ChargeProgress::Start, tx)
+            }
+            Event::StopRequested => match m.state {
+                State::AwaitChargeLoopRes if m.poll_pending => {
+                    m.poll_pending = false;
+                    m.begin_stop(None)
+                }
+                State::AwaitChargeLoopRes => {
+                    m.stop_requested = true;
+                    Step::default()
+                }
+                _ => Step::default(),
+            },
+            Event::EnergyTransferStopped => {
+                if m.state != State::AwaitCurrentStopped {
+                    return Step::default();
+                }
+                m.send_power_delivery(common::ChargeProgress::Stop, tx)
             }
             Event::Received(n) => {
                 *rx_len = (*rx_len + n).min(rx.len());
@@ -367,6 +420,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 | State::AwaitCableCheckRes
                 | State::AwaitPreChargeRes
                 | State::AwaitPowerDeliveryRes
+                | State::AwaitChargeLoopRes
+                | State::AwaitPowerDeliveryStopRes
+                | State::AwaitSessionStopRes
         )
     }
 
@@ -410,6 +466,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 timer: Timer::Response,
                 ms: if msg == MsgKind::ServiceDetailReq {
                     self.config.service_detail_timeout_ms
+                } else if msg == MsgKind::DcChargeLoopReq {
+                    self.config.charge_loop_timeout_ms
                 } else {
                     self.config.response_timeout_ms
                 },
@@ -715,12 +773,90 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         if let Some(end) = self.received(MsgKind::PowerDeliveryRes, res.response_code) {
                             return end;
                         }
-                        self.goto(State::PowerDelivering);
-                        Step {
-                            timers: Timers::one(TimerCmd::Cancel(Timer::Response)),
-                            notice: Some(Notice::EnergyTransferStarted),
-                            ..Step::default()
+                        // V2G20-1615/1616: with OK the energy transfer starts; the charge loop
+                        // begins at once.
+                        let mut step = self.send_charge_loop_req(tx);
+                        if step.end.is_none() {
+                            step.notice = Some(Notice::EnergyTransferStarted);
                         }
+                        step
+                    }
+                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Err(e) => self.malformed(e),
+                }
+            }
+            State::AwaitChargeLoopRes if payload_type == PayloadType::DC_MAINSTREAM => {
+                match dc::decode(payload, arena) {
+                    Ok(dc::Message::DcChargeLoopRes(res)) => {
+                        if let Some(end) = self.received(MsgKind::DcChargeLoopRes, res.response_code) {
+                            return end;
+                        }
+                        let dc::ClResControlModeChoice::DynamicDc(mode) = res.cl_res_control_mode else {
+                            // We asked for Dynamic control.
+                            return self.end(EndReason::UnexpectedMessage);
+                        };
+                        let status = ChargeLoopStatus {
+                            present_current: res.evse_present_current,
+                            present_voltage: res.evse_present_voltage,
+                            power_limit_achieved: res.evse_power_limit_achieved,
+                            current_limit_achieved: res.evse_current_limit_achieved,
+                            voltage_limit_achieved: res.evse_voltage_limit_achieved,
+                            maximum_charge_power: mode.evse_maximum_charge_power,
+                            maximum_charge_current: mode.evse_maximum_charge_current,
+                            maximum_voltage: mode.evse_maximum_voltage,
+                        };
+                        // V2G20-1416, V2G20-1960: Terminate means shut down and stop the session.
+                        // The other notifications (pause, renegotiation, metering) are not
+                        // handled yet (TODO) and are ignored.
+                        let terminate = res.evse_status.filter(|s| {
+                            s.evse_notification == iso15118_20::common_types::EvseNotification::Terminate
+                        });
+                        if let Some(status) = terminate {
+                            return self.begin_stop(Some(status.notification_max_delay));
+                        }
+                        if core::mem::take(&mut self.stop_requested) {
+                            return self.begin_stop(None);
+                        }
+                        let mut step = self.pace_charge_loop(tx);
+                        step.notice = Some(Notice::ChargeLoop(status));
+                        step
+                    }
+                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Err(e) => self.malformed(e),
+                }
+            }
+            State::AwaitPowerDeliveryStopRes if payload_type == PayloadType::MAINSTREAM => {
+                match common::decode(payload, arena) {
+                    Ok(M::PowerDeliveryRes(res)) => {
+                        if let Some(end) = self.received(MsgKind::PowerDeliveryRes, res.response_code) {
+                            return end;
+                        }
+                        // The energy flow is over: the contactors may open, the session ends.
+                        let msg = common::SessionStopReq {
+                            header: self.header(),
+                            charging_session: common::ChargingSession::Terminate,
+                            ev_termination_code: None,
+                            ev_termination_explanation: None,
+                        };
+                        let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
+                        let mut step = self.send_then(State::AwaitSessionStopRes, MsgKind::SessionStopReq, framed);
+                        if step.end.is_none() {
+                            step.notice = Some(Notice::OpenContactors);
+                        }
+                        step
+                    }
+                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Err(e) => self.malformed(e),
+                }
+            }
+            State::AwaitSessionStopRes if payload_type == PayloadType::MAINSTREAM => {
+                match common::decode(payload, arena) {
+                    Ok(M::SessionStopRes(res)) => {
+                        if let Some(end) = self.received(MsgKind::SessionStopRes, res.response_code) {
+                            return end;
+                        }
+                        // V2G20-1463: after SessionStopRes OK the EVCC terminates the connection.
+                        self.end(EndReason::Completed)
                     }
                     Ok(_) => self.end(EndReason::UnexpectedMessage),
                     Err(e) => self.malformed(e),
@@ -751,6 +887,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             State::AwaitScheduleExchangeRes => self.send_schedule_exchange_req(tx),
             State::AwaitCableCheckRes => self.send_cable_check_req(tx),
             State::AwaitPreChargeRes => self.send_precharge_req(false, tx),
+            // The charge loop has its own cycle and no `Ongoing` bound.
+            State::AwaitChargeLoopRes => return self.send_charge_loop_req(tx),
             _ => return Step::default(),
         };
         self.arm_ongoing(step)
@@ -794,7 +932,57 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         step
     }
 
-    fn send_power_delivery_start(&mut self, tx: &mut [u8]) -> Step {
+    fn send_charge_loop_req(&mut self, tx: &mut [u8]) -> Step {
+        let r = self.ev.schedule_request();
+        let l = self.ev.dc_limits();
+        let msg = dc::DcChargeLoopReq {
+            header: self.header(),
+            display_parameters: None,
+            meter_info_requested: false,
+            ev_present_voltage: self.ev.battery_voltage(),
+            cl_req_control_mode: dc::ClReqControlModeChoice::DynamicDc(dc::DynamicDcClReqControlMode {
+                departure_time: None,
+                ev_target_energy_request: r.target_energy,
+                ev_maximum_energy_request: r.maximum_energy,
+                ev_minimum_energy_request: r.minimum_energy,
+                ev_maximum_charge_power: l.maximum_charge_power,
+                ev_minimum_charge_power: l.minimum_charge_power,
+                ev_maximum_charge_current: l.maximum_charge_current,
+                ev_maximum_voltage: l.maximum_voltage,
+                ev_minimum_voltage: l.minimum_voltage,
+            }),
+        };
+        let framed = frame(tx, PayloadType::DC_MAINSTREAM, |out| msg.encode(out));
+        if self.state == State::AwaitChargeLoopRes {
+            return self.sent(MsgKind::DcChargeLoopReq, framed);
+        }
+        self.send_then(State::AwaitChargeLoopRes, MsgKind::DcChargeLoopReq, framed)
+    }
+
+    /// After a `DC_ChargeLoopRes`: wait the loop interval, then send the next request.
+    fn pace_charge_loop(&mut self, tx: &mut [u8]) -> Step {
+        if self.config.charge_loop_interval_ms == 0 {
+            return self.send_charge_loop_req(tx);
+        }
+        self.poll_pending = true;
+        Step {
+            timers: Timers::one(TimerCmd::Cancel(Timer::Response))
+                .with(TimerCmd::Arm { timer: Timer::Poll, ms: self.config.charge_loop_interval_ms }),
+            ..Step::default()
+        }
+    }
+
+    /// Starts the shutdown: the host ramps the current down first (V2G20-1310).
+    fn begin_stop(&mut self, within_s: Option<u16>) -> Step {
+        self.goto(State::AwaitCurrentStopped);
+        Step {
+            timers: Timers::one(TimerCmd::Cancel(Timer::Response)).with(TimerCmd::Cancel(Timer::Poll)),
+            notice: Some(Notice::StopEnergyTransfer { within_s }),
+            ..Step::default()
+        }
+    }
+
+    fn send_power_delivery(&mut self, progress: common::ChargeProgress, tx: &mut [u8]) -> Step {
         let r = self.ev.schedule_request();
         let limits = self.ev.dc_limits();
         // A single-entry profile at the vehicle's maximum charge power until departure: the
@@ -809,7 +997,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         let msg = common::PowerDeliveryReq {
             header: self.header(),
             ev_processing: Processing::Finished,
-            charge_progress: common::ChargeProgress::Start,
+            charge_progress: progress,
             ev_power_profile: Some(common::EvPowerProfile {
                 time_anchor,
                 evppt_control_mode: common::EvpptControlModeChoice::Dynamic(common::DynamicEvpptControlMode {}),
@@ -818,7 +1006,12 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             bpt_channel_selection: None,
         };
         let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
-        self.send_then(State::AwaitPowerDeliveryRes, MsgKind::PowerDeliveryReq, framed)
+        let next = if progress == common::ChargeProgress::Stop {
+            State::AwaitPowerDeliveryStopRes
+        } else {
+            State::AwaitPowerDeliveryRes
+        };
+        self.send_then(next, MsgKind::PowerDeliveryReq, framed)
     }
 
     /// Arms the overall `Ongoing` bound once, when the first `Ongoing` answer arrives.

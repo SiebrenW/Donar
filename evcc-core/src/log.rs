@@ -45,6 +45,10 @@ pub enum MsgKind {
     DcPreChargeRes,
     PowerDeliveryReq,
     PowerDeliveryRes,
+    DcChargeLoopReq,
+    DcChargeLoopRes,
+    SessionStopReq,
+    SessionStopRes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

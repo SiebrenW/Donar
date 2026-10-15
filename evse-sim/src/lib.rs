@@ -15,7 +15,7 @@ use iso15118_20::common::{
     Service, ServiceDetailRes, ServiceDiscoveryRes, ServiceList, ServiceParameterList, ServiceSelectionRes,
     SessionSetupRes,
 };
-use iso15118_20::common_types::{MessageHeader, Processing, RationalNumber, ResponseCode};
+use iso15118_20::common_types::{self, MessageHeader, Processing, RationalNumber, ResponseCode};
 use iso15118_20::dc;
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
@@ -58,8 +58,10 @@ pub struct Config {
     /// How many `DC_PreChargeReq` the EVSE answers before the EV considers the voltage reached
     /// (the simulator only reports the target voltage once this many arrived).
     pub precharge_requests_to_settle: u32,
-    /// Response code of the `PowerDeliveryRes`.
+    /// Response code of the `PowerDeliveryRes` to `Start`.
     pub power_delivery_code: ResponseCode,
+    /// After this many `DC_ChargeLoopRes` the EVSE asks the EV to terminate (`EVSENotification`).
+    pub terminate_after_loops: Option<u32>,
 }
 
 impl Default for Config {
@@ -94,6 +96,7 @@ impl Default for Config {
             cable_check_code: ResponseCode::Ok,
             precharge_requests_to_settle: 1,
             power_delivery_code: ResponseCode::Ok,
+            terminate_after_loops: None,
         }
     }
 }
@@ -112,8 +115,11 @@ pub enum State {
     AwaitCableCheckReq,
     AwaitPreChargeReq,
     AwaitPowerDeliveryReq,
-    /// Energy transfer was enabled.
-    PowerDelivering,
+    /// Energy flows; charge loop requests and the stop are accepted.
+    ChargeLoop,
+    AwaitSessionStopReq,
+    /// The session was stopped properly.
+    Stopped,
     Closed,
 }
 
@@ -135,11 +141,12 @@ pub struct Evse {
     schedule_reqs_seen: u32,
     cable_reqs_seen: u32,
     precharge_reqs_seen: u32,
+    loops_seen: u32,
 }
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0 }
+        Self { config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0 }
     }
 
     pub fn state(&self) -> State {
@@ -160,7 +167,8 @@ impl Evse {
             let out = self.on_frame(payload_type, &payload);
             let close = out.close;
             outputs.push(out);
-            if close {
+            // A properly stopped session keeps that state (it is what the tests look at).
+            if close && self.state != State::Stopped {
                 self.state = State::Closed;
             }
         }
@@ -413,9 +421,76 @@ impl Evse {
                 };
                 let res = common::PowerDeliveryRes { header: self.header(), response_code: code, evse_status: None };
                 if is_ok(code) {
-                    self.state = State::PowerDelivering;
+                    self.state = State::ChargeLoop;
                 }
                 Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) }
+            }
+            State::ChargeLoop if payload_type == PayloadType::DC_MAINSTREAM => {
+                let Ok(dc::Message::DcChargeLoopReq(req)) = dc::decode(payload, &arena) else { return closed };
+                self.loops_seen += 1;
+                let code = if req.header.session_id != self.config.session_id {
+                    ResponseCode::FailedUnknownSession
+                } else if !matches!(req.cl_req_control_mode, dc::ClReqControlModeChoice::DynamicDc(_)) {
+                    ResponseCode::FailedWrongChargeParameter
+                } else {
+                    ResponseCode::Ok
+                };
+                let terminate = self.config.terminate_after_loops.is_some_and(|n| self.loops_seen >= n);
+                let rn = |value| RationalNumber { exponent: 0, value };
+                let res = dc::DcChargeLoopRes {
+                    header: self.header(),
+                    response_code: code,
+                    evse_status: terminate.then_some(common_types::EvseStatus {
+                        notification_max_delay: 5,
+                        evse_notification: common_types::EvseNotification::Terminate,
+                    }),
+                    meter_info: None,
+                    receipt: None,
+                    evse_present_current: rn(100),
+                    evse_present_voltage: req.ev_present_voltage,
+                    evse_power_limit_achieved: false,
+                    evse_current_limit_achieved: false,
+                    evse_voltage_limit_achieved: false,
+                    cl_res_control_mode: dc::ClResControlModeChoice::DynamicDc(dc::DynamicDcClResControlMode {
+                        departure_time: None,
+                        minimum_soc: None,
+                        target_soc: None,
+                        ack_max_delay: None,
+                        evse_maximum_charge_power: RationalNumber { exponent: 3, value: 150 },
+                        evse_minimum_charge_power: rn(100),
+                        evse_maximum_charge_current: rn(300),
+                        evse_maximum_voltage: rn(920),
+                    }),
+                };
+                Output { send: frame(PayloadType::DC_MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) }
+            }
+            State::ChargeLoop if payload_type == PayloadType::MAINSTREAM => {
+                let Ok(common::Message::PowerDeliveryReq(req)) = common::decode(payload, &arena) else { return closed };
+                let code = if req.header.session_id != self.config.session_id {
+                    ResponseCode::FailedUnknownSession
+                } else if req.charge_progress != common::ChargeProgress::Stop {
+                    ResponseCode::FailedPowerDeliveryNotApplied
+                } else {
+                    ResponseCode::Ok
+                };
+                let res = common::PowerDeliveryRes { header: self.header(), response_code: code, evse_status: None };
+                if is_ok(code) {
+                    self.state = State::AwaitSessionStopReq;
+                }
+                Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) }
+            }
+            State::AwaitSessionStopReq if payload_type == PayloadType::MAINSTREAM => {
+                let Ok(common::Message::SessionStopReq(req)) = common::decode(payload, &arena) else { return closed };
+                let code = if req.header.session_id != self.config.session_id {
+                    ResponseCode::FailedUnknownSession
+                } else {
+                    ResponseCode::Ok
+                };
+                let res = common::SessionStopRes { header: self.header(), response_code: code };
+                if is_ok(code) {
+                    self.state = State::Stopped;
+                }
+                Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: true }
             }
             // The rest of the flow is added with the later slices.
             _ => closed,

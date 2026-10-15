@@ -344,6 +344,108 @@ fn dc_charge_parameter_discovery() {
     }
 }
 
+fn charge_loop_req() -> dc::DcChargeLoopReq {
+    dc::DcChargeLoopReq {
+        header: hdr(),
+        display_parameters: None,
+        meter_info_requested: false,
+        ev_present_voltage: rn(0, 400),
+        cl_req_control_mode: dc::ClReqControlModeChoice::DynamicDc(dc::DynamicDcClReqControlMode {
+            departure_time: None,
+            ev_target_energy_request: rn(3, 40),
+            ev_maximum_energy_request: rn(3, 60),
+            ev_minimum_energy_request: rn(0, 0),
+            ev_maximum_charge_power: rn(3, 100),
+            ev_minimum_charge_power: rn(0, 100),
+            ev_maximum_charge_current: rn(0, 200),
+            ev_maximum_voltage: rn(0, 450),
+            ev_minimum_voltage: rn(0, 200),
+        }),
+    }
+}
+
+#[test]
+fn dc_charge_loop() {
+    let m = charge_loop_req();
+    check_dc("dc_charge_loop_req", dc::Message::DcChargeLoopReq(m), |o| m.encode(o));
+    for (name, status) in [
+        ("dc_charge_loop_res", None),
+        (
+            "dc_charge_loop_res_terminate",
+            Some(iso15118_20::common_types::EvseStatus {
+                notification_max_delay: 5,
+                evse_notification: iso15118_20::common_types::EvseNotification::Terminate,
+            }),
+        ),
+    ] {
+        let m = dc::DcChargeLoopRes {
+            header: hdr(),
+            response_code: ResponseCode::Ok,
+            evse_status: status,
+            meter_info: None,
+            receipt: None,
+            evse_present_current: rn(0, 120),
+            evse_present_voltage: rn(0, 398),
+            evse_power_limit_achieved: false,
+            evse_current_limit_achieved: true,
+            evse_voltage_limit_achieved: false,
+            cl_res_control_mode: dc::ClResControlModeChoice::DynamicDc(dc::DynamicDcClResControlMode {
+                departure_time: None,
+                minimum_soc: None,
+                target_soc: None,
+                ack_max_delay: None,
+                evse_maximum_charge_power: rn(3, 150),
+                evse_minimum_charge_power: rn(0, 100),
+                evse_maximum_charge_current: rn(0, 300),
+                evse_maximum_voltage: rn(0, 920),
+            }),
+        };
+        check_dc(name, dc::Message::DcChargeLoopRes(m), |o| m.encode(o));
+    }
+}
+
+#[test]
+fn power_delivery_and_session_stop() {
+    let entries = [PowerScheduleEntry { duration: 3600, power: rn(3, 100), power_l2: None, power_l3: None }];
+    for (name, progress) in [("power_delivery_req_start", ChargeProgress::Start), ("power_delivery_req_stop", ChargeProgress::Stop)] {
+        let m = PowerDeliveryReq {
+            header: hdr(),
+            ev_processing: Processing::Finished,
+            charge_progress: progress,
+            ev_power_profile: Some(EvPowerProfile {
+                time_anchor: TS,
+                evppt_control_mode: EvpptControlModeChoice::Dynamic(DynamicEvpptControlMode {}),
+                ev_power_profile_entries: EvPowerProfileEntryList { ev_power_profile_entry: &entries },
+            }),
+            bpt_channel_selection: None,
+        };
+        check(name, Message::PowerDeliveryReq(m), |o| m.encode(o));
+    }
+    let m = PowerDeliveryRes { header: hdr(), response_code: ResponseCode::Ok, evse_status: None };
+    check("power_delivery_res", Message::PowerDeliveryRes(m), |o| m.encode(o));
+    let m = PowerDeliveryRes {
+        header: hdr(),
+        response_code: ResponseCode::Ok,
+        evse_status: Some(iso15118_20::common_types::EvseStatus {
+            notification_max_delay: 1,
+            evse_notification: iso15118_20::common_types::EvseNotification::Pause,
+        }),
+    };
+    check("power_delivery_res_status", Message::PowerDeliveryRes(m), |o| m.encode(o));
+
+    let m = SessionStopReq { header: hdr(), charging_session: ChargingSession::Terminate, ev_termination_code: None, ev_termination_explanation: None };
+    check("session_stop_req", Message::SessionStopReq(m), |o| m.encode(o));
+    let m = SessionStopReq {
+        header: hdr(),
+        charging_session: ChargingSession::Terminate,
+        ev_termination_code: Some("urn:iso:std:iso:15118:-20:EVTerminationCode:Test"),
+        ev_termination_explanation: None,
+    };
+    check("session_stop_req_code", Message::SessionStopReq(m), |o| m.encode(o));
+    let m = SessionStopRes { header: hdr(), response_code: ResponseCode::Ok };
+    check("session_stop_res", Message::SessionStopRes(m), |o| m.encode(o));
+}
+
 #[test]
 fn target_soc_above_100_is_refused() {
     let m = dc::DcChargeParameterDiscoveryReq {
