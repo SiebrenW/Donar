@@ -56,6 +56,16 @@ cargo xtask linux-test -p evcc-linux --test netns   # only the namespace tests
 
 `cargo xtask linux-test [cargo test arguments]` builds the image, starts a privileged container with the repository mounted and runs `cargo test` in it. It is what you use from macOS without the dev container. In the dev container you run `cargo test` directly.
 
+### Interoperability with another charger implementation
+
+```sh
+cargo xtask interop --no-tls --connector extended    # what the open-source charger below offers
+cargo xtask interop --no-tls --connector extended --log debug
+INTEROP_SHOW_PARTNER_LOG=1 cargo xtask interop --no-tls --connector extended
+```
+
+This starts the `evcc` command (a simulated vehicle that does SLAC, SDP, optionally TLS, and a DC charging session) in one network namespace and an independent ISO 15118-20 charger in another: the open-source [`iso15118`](https://pypi.org/project/iso15118/) Python library, installed in the container. It prints the vehicle's log and exits with 0 when the session completed. Without arguments the car asks for a `--no-tls` session; `--connector core|extended|dual2|dual4` selects the inlet the car claims (this charger offers `Extended`). `evcc --help`-style usage is in `evcc-linux/src/bin/evcc.rs`.
+
 ### What the tests cover
 
 | Crate / file | What it checks | Needs Linux root |
@@ -81,8 +91,8 @@ exi-gen                the code generator (XSD to Rust)
 v2gtp, homeplug        V2GTP/SDP framing, SLAC messages (no_std)
 evcc-core              the sans-IO session, SDP and SLAC machines (no_std)
 evse-sim               a simulated charger for tests
-evcc-linux             host adapter: TCP, TLS (OpenSSL), UDP/SDP, raw sockets (SLAC)
-xtask                  `cargo xtask ...` automation
+evcc-linux             host adapter: TCP, TLS (OpenSSL), UDP/SDP, raw sockets (SLAC); the `evcc` command and a simulated car
+xtask                  `cargo xtask ...` automation (setup, gen, vectors, linux-test, interop)
 docker/, .devcontainer the Linux test environment
 ```
 

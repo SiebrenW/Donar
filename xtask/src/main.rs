@@ -28,8 +28,9 @@ fn main() -> ExitCode {
         Some("vectors") => vectors(),
         Some("grammars") => grammars(),
         Some("linux-test") => linux_test(args.collect()),
+        Some("interop") => interop(args.collect()),
         _ => {
-            eprintln!("usage: cargo xtask setup [--force] | gen [--force] | vectors | grammars | linux-test [cargo test args]");
+            eprintln!("usage: cargo xtask setup [--force] | gen [--force] | vectors | grammars | linux-test [cargo test args] | interop [partner] [evcc args]");
             return ExitCode::from(2);
         }
     };
@@ -201,6 +202,20 @@ fn vectors() -> Result<(), String> {
 /// directory and the cargo registry live in named volumes: the host's `target` holds macOS
 /// builds. Inside, `developer` builds and the test binaries run as root through sudo.
 fn linux_test(cargo_args: Vec<String>) -> Result<(), String> {
+    let mut cmd = linux_container()?;
+    // `own-volumes` first: volumes made by an older image belong to root.
+    cmd.args(["bash", "-c", r#"own-volumes && exec cargo "$@""#, "cargo", "test"]);
+    if cargo_args.is_empty() {
+        cmd.args(["--workspace"]);
+    } else {
+        cmd.args(&cargo_args);
+    }
+    run(&mut cmd)
+}
+
+/// The Linux container for `linux_test` and `interop`: builds the image and returns the
+/// `docker run` command up to the program to run.
+fn linux_container() -> Result<Command, String> {
     const IMAGE: &str = "evcc-rs-linux-test";
     let root = workspace_root();
     run(Command::new("docker")
@@ -212,14 +227,29 @@ fn linux_test(cargo_args: Vec<String>) -> Result<(), String> {
         .arg("--volume")
         .arg(format!("{}:/workspaces/evcc-rs", root.display()))
         .args(["--volume", "evcc-rs-target-v2:/target", "--volume", "evcc-rs-cargo-v2:/usr/local/cargo/registry"])
-        .args(["--workdir", "/workspaces/evcc-rs", IMAGE])
-        // `own-volumes` first: volumes made by an older image belong to root.
-        .args(["bash", "-c", r#"own-volumes && exec cargo "$@""#, "cargo", "test"]);
-    if cargo_args.is_empty() {
-        cmd.args(["--workspace"]);
-    } else {
-        cmd.args(&cargo_args);
+        // Lets `INTEROP_SHOW_PARTNER_LOG=1 cargo xtask interop` print the partner's log.
+        .args(["--env", "INTEROP_SHOW_PARTNER_LOG"])
+        .args(["--workdir", "/workspaces/evcc-rs", IMAGE]);
+    Ok(cmd)
+}
+
+/// Runs the `evcc` command against an independent charger implementation (default partner:
+/// `iso15118-python`) in the Linux container. Further arguments go to `evcc`; without any,
+/// the session runs over plain TCP (`--no-tls`).
+fn interop(args: Vec<String>) -> Result<(), String> {
+    let (partner, mut evcc_args) = match args.split_first() {
+        Some((p, rest)) if !p.starts_with("--") => (p.clone(), rest.to_vec()),
+        _ => ("iso15118-python".to_string(), args),
+    };
+    if evcc_args.is_empty() {
+        evcc_args.push("--no-tls".into());
     }
+    let mut cmd = linux_container()?;
+    // `own-volumes` first: volumes made by an older image belong to root.
+    cmd.args(["bash", "-c", r#"own-volumes && cargo build --quiet -p evcc-linux --bin evcc && exec sudo -E docker/interop.sh "$@""#, "interop"])
+        .arg(partner)
+        .arg("/target/debug/evcc")
+        .args(evcc_args);
     run(&mut cmd)
 }
 

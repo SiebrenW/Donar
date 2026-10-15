@@ -9,10 +9,10 @@ evcc-core = { path = "../evcc-core" }
 openssl = "0.10"
 libc = "0.2"
 v2gtp = { path = "../v2gtp" }
+iso15118-20 = { path = "../codecs/iso15118-20" }
 homeplug = { path = "../homeplug" }
 
 [dev-dependencies]
 evse-sim = { path = "../evse-sim" }
-iso15118-20 = { path = "../codecs/iso15118-20" }
 app-protocol = { path = "../codecs/app-protocol" }
 exi = { path = "../codecs/exi" }
