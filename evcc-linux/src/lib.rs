@@ -1,15 +1,36 @@
 //! Host adapter for std platforms: drives an [`evcc_core::session::Session`] over a blocking
 //! `TcpStream`. The core's timer commands become socket read timeouts, so no thread or
-//! async runtime is needed. (TLS, SDP sockets and SLAC are added later.)
+//! async runtime is needed. The stream is a plain `TcpStream` or an OpenSSL TLS stream (see
+//! [`tls`]). (SDP sockets and SLAC are added later.)
+
+pub mod tls;
 
 use std::io::{self, ErrorKind, Read, Write};
 use std::net::TcpStream;
+use openssl::ssl::SslStream;
 use std::time::{Duration, Instant};
 
 use evcc_core::{Timer, TimerCmd};
 use evcc_core::ev::Ev;
 use evcc_core::log::LogSink;
 use evcc_core::session::{EndReason, Event, Notice, Session, Step};
+
+/// A byte stream whose reads can time out, which is how the timer commands are served.
+pub trait Transport: Read + Write {
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()>;
+}
+
+impl Transport for TcpStream {
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        TcpStream::set_read_timeout(self, timeout)
+    }
+}
+
+impl Transport for SslStream<TcpStream> {
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        self.get_ref().set_read_timeout(timeout)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -23,7 +44,7 @@ pub enum Outcome {
 /// by resetting the connection, is reported as [`Outcome::ConnectionClosed`]; other I/O
 /// errors are returned.
 pub fn run<E: Ev, L: LogSink>(
-    stream: &mut TcpStream,
+    stream: &mut impl Transport,
     session: &mut Session<'_, E, L>,
     secured: bool,
     host: &mut impl FnMut(&Notice) -> Option<Event>,
@@ -42,7 +63,7 @@ fn is_hang_up(e: &io::Error) -> bool {
 }
 
 fn drive<E: Ev, L: LogSink>(
-    stream: &mut TcpStream,
+    stream: &mut impl Transport,
     session: &mut Session<'_, E, L>,
     secured: bool,
     host: &mut impl FnMut(&Notice) -> Option<Event>,
@@ -118,7 +139,7 @@ enum Next {
 
 /// Waits for the next socket data or timer expiry and feeds it to the session.
 fn next_step<E: Ev, L: LogSink>(
-    stream: &mut TcpStream,
+    stream: &mut impl Transport,
     session: &mut Session<'_, E, L>,
     deadlines: &mut Deadlines,
 ) -> io::Result<Next> {
@@ -135,7 +156,12 @@ fn next_step<E: Ev, L: LogSink>(
         }
         None => None,
     };
-    stream.set_read_timeout(timeout)?;
+    // macOS refuses to set an option on a socket the peer has already closed (EINVAL); that is
+    // a hang-up like any other.
+    match stream.set_read_timeout(timeout) {
+        Err(e) if e.kind() == ErrorKind::InvalidInput => return Err(ErrorKind::ConnectionAborted.into()),
+        other => other?,
+    }
     let space = session.rx_space();
     if space.is_empty() {
         return Err(io::Error::new(ErrorKind::OutOfMemory, "RX buffer full"));

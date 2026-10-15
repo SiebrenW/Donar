@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 evcc-core = { path = "../evcc-core" }
+openssl = "0.10"
 
 [dev-dependencies]
 evse-sim = { path = "../evse-sim" }

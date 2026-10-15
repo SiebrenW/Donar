@@ -623,6 +623,11 @@ fn frame(payload_type: PayloadType, encode: impl FnOnce(&mut [u8]) -> Result<usi
 /// Accepts one connection and serves it until it closes. Blocking.
 pub fn serve_one(listener: &TcpListener, config: Config) -> std::io::Result<State> {
     let (mut stream, _) = listener.accept()?;
+    serve(&mut stream, config)
+}
+
+/// Serves one connection on any byte stream (a TLS stream, say) until it closes. Blocking.
+pub fn serve(stream: &mut (impl Read + Write), config: Config) -> std::io::Result<State> {
     let mut evse = Evse::new(config);
     let mut buf = [0u8; 2048];
     loop {
