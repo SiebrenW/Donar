@@ -49,6 +49,8 @@ pub enum MsgKind {
     DcChargeLoopRes,
     SessionStopReq,
     SessionStopRes,
+    DcWeldingDetectionReq,
+    DcWeldingDetectionRes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +67,8 @@ pub enum Record<'a> {
     /// The energy transfer service and parameter set the EVSE accepted.
     ServiceSelected { service_id: u16, parameter_set_id: u16 },
     RxPayload { payload_type: u16, payload: &'a [u8] },
+    /// A frame that is not a valid response to the request in flight was dropped (V2G20-440).
+    Ignored { state: State, payload_type: u16 },
     DecodeFailed { state: State, error: DecodeError },
     Ended { reason: EndReason },
 }
@@ -82,6 +86,7 @@ impl Record<'_> {
             }
             Record::RxPayload { .. } => Level::Trace,
             Record::DecodeFailed { .. } => Level::Error,
+            Record::Ignored { .. } => Level::Info,
             Record::Ended { reason } => match reason {
                 EndReason::Completed => Level::Info,
                 _ => Level::Error,

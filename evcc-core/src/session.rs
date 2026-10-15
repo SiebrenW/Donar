@@ -54,6 +54,15 @@ pub struct Config {
     /// within `V2G_EVCC_Sequence_Performance_Time(DC_ChargeLoopReq)`, 0.25 s (Table 217), so
     /// keep this well below that.
     pub charge_loop_interval_ms: u32,
+    /// `V2G_EVCC_CommunicationSetup_Timeout`: 20 s from the connection until `SessionSetupRes`
+    /// (Table 223, V2G20-2298, V2G20-448).
+    pub communication_setup_timeout_ms: u32,
+    /// `V2G_EVCC_Sequence_Performance_Time`: 40 s (Table 215); the time the EVCC may spend on
+    /// the vehicle (closing contactors, ramping down, opening contactors) before its next request.
+    pub sequence_performance_ms: u32,
+    /// ISO 15118-20 runs over TLS 1.3 only (V2G20-1235, V2G20-1237): the EVCC must not offer it
+    /// on a plain connection. Set this for a test setup without TLS.
+    pub allow_unsecured: bool,
     /// `MaximumSupportingPoints` of the schedule exchange: how many entries of a schedule the
     /// EV can take (12..=1024).
     pub maximum_supporting_points: u16,
@@ -83,6 +92,9 @@ impl Config {
         precharge_tolerance_v: 20,
         charge_loop_timeout_ms: 500,
         charge_loop_interval_ms: 100,
+        communication_setup_timeout_ms: 20_000,
+        sequence_performance_ms: 40_000,
+        allow_unsecured: false,
         maximum_supporting_points: 12,
         energy_service: SERVICE_ID_DC,
         // ISO 15118-20:2022 Table 207: ControlMode 2 = Dynamic, MobilityNeedsMode 1 = mobility
@@ -144,6 +156,10 @@ pub enum State {
     AwaitCurrentStopped,
     /// `PowerDeliveryReq(Stop)` is out.
     AwaitPowerDeliveryStopRes,
+    /// The host opens the contactors and reports [`Event::ContactorsOpened`].
+    AwaitContactorsOpened,
+    /// `DC_WeldingDetectionReq` is out.
+    AwaitWeldingDetectionRes,
     AwaitSessionStopRes,
     Ended,
 }
@@ -166,8 +182,11 @@ pub enum EndReason {
     /// Bad V2GTP framing, or a frame larger than the RX buffer.
     Framing,
     Malformed(DecodeError),
-    /// A message the current state does not expect.
+    /// A valid response whose content this EV cannot work with (e.g. a Scheduled control mode
+    /// answer to a Dynamic request).
     UnexpectedMessage,
+    /// The connection is not secured and `Config::allow_unsecured` is off.
+    TlsRequired,
     /// The TX buffer cannot hold the outgoing message.
     TxBufferTooSmall,
 }
@@ -184,6 +203,8 @@ pub enum Event {
     /// The vehicle wants to stop charging (user, full battery, fault). Only acted on while the
     /// charge loop runs.
     StopRequested,
+    /// The host opened the vehicle's contactors after [`Notice::OpenContactors`].
+    ContactorsOpened,
     /// The host reduced the current to zero after [`Notice::StopEnergyTransfer`]
     /// (V2G20-1310 asks for this before `PowerDeliveryReq(Stop)`).
     EnergyTransferStopped,
@@ -213,7 +234,8 @@ pub enum Notice {
     /// Stop drawing current (ramp down), then report [`Event::EnergyTransferStopped`]. When the
     /// EVSE asked for the stop, `within_s` is its `NotificationMaxDelay` (V2G20-1416).
     StopEnergyTransfer { within_s: Option<u16> },
-    /// The EVSE acknowledged the stop: the contactors may open.
+    /// The EVSE acknowledged the stop: open the contactors, then send
+    /// [`Event::ContactorsOpened`]; welding detection follows.
     OpenContactors,
 }
 
@@ -261,6 +283,8 @@ struct Machine<E, L> {
     poll_pending: bool,
     /// The last `DC_PreChargeReq` carried `EVProcessing = Finished`.
     precharge_finishing: bool,
+    /// The last `DC_WeldingDetectionReq` carried `EVProcessing = Finished`.
+    welding_finishing: bool,
     /// The vehicle asked to stop while a charge loop request was outstanding.
     stop_requested: bool,
     /// SECC time minus the vehicle's clock, learned from `SessionSetupRes` (V2G20-1536).
@@ -286,6 +310,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 ongoing_armed: false,
                 poll_pending: false,
                 precharge_finishing: false,
+                welding_finishing: false,
                 stop_requested: false,
                 clock_offset: 0,
                 last_timestamp: 0,
@@ -320,7 +345,16 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 }
                 m.secured = secured;
                 m.log.record(&Record::Started { secured });
-                m.send_supported_app_protocol_req(tx)
+                if !secured && !m.config.allow_unsecured {
+                    return m.end(EndReason::TlsRequired);
+                }
+                let mut step = m.send_supported_app_protocol_req(tx);
+                if step.end.is_none() {
+                    step.timers = step
+                        .timers
+                        .with(TimerCmd::Arm { timer: Timer::Setup, ms: m.config.communication_setup_timeout_ms });
+                }
+                step
             }
             Event::TimerExpired(timer) => match (timer, m.state) {
                 (Timer::Response, s) if m.is_awaiting(s) => m.end(EndReason::Timeout),
@@ -329,7 +363,15 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                     State::AwaitAuthorizationRes
                     | State::AwaitScheduleExchangeRes
                     | State::AwaitCableCheckRes
-                    | State::AwaitPreChargeRes,
+                    | State::AwaitPreChargeRes
+                    | State::AwaitWeldingDetectionRes,
+                ) => m.end(EndReason::Timeout),
+                (Timer::Setup, State::AwaitSupportedAppProtocolRes | State::AwaitSessionSetupRes) => {
+                    m.end(EndReason::Timeout)
+                }
+                (
+                    Timer::Sequence,
+                    State::AwaitContactors | State::AwaitCurrentStopped | State::AwaitContactorsOpened,
                 ) => m.end(EndReason::Timeout),
                 (Timer::Poll, _) if m.poll_pending => {
                     m.poll_pending = false;
@@ -342,7 +384,15 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 if m.state != State::AwaitContactors {
                     return Step::default();
                 }
-                m.send_power_delivery(common::ChargeProgress::Start, tx)
+                let step = m.send_power_delivery(common::ChargeProgress::Start, tx);
+                m.sequence_done(step)
+            }
+            Event::ContactorsOpened => {
+                if m.state != State::AwaitContactorsOpened {
+                    return Step::default();
+                }
+                let step = m.send_welding_req(false, tx);
+                m.sequence_done(step)
             }
             Event::StopRequested => match m.state {
                 State::AwaitChargeLoopRes if m.poll_pending => {
@@ -359,7 +409,8 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 if m.state != State::AwaitCurrentStopped {
                     return Step::default();
                 }
-                m.send_power_delivery(common::ChargeProgress::Stop, tx)
+                let step = m.send_power_delivery(common::ChargeProgress::Stop, tx);
+                m.sequence_done(step)
             }
             Event::Received(n) => {
                 *rx_len = (*rx_len + n).min(rx.len());
@@ -422,6 +473,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 | State::AwaitPowerDeliveryRes
                 | State::AwaitChargeLoopRes
                 | State::AwaitPowerDeliveryStopRes
+                | State::AwaitWeldingDetectionRes
                 | State::AwaitSessionStopRes
         )
     }
@@ -501,7 +553,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         self.log.record(&Record::MsgRx { msg: MsgKind::SupportedAppProtocolRes });
                         self.on_supported_app_protocol_res(res, tx)
                     }
-                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Ok(_) => self.ignore(payload_type),
                     Err(e) => self.malformed(e),
                 }
             }
@@ -523,9 +575,12 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
                         let mut step = self.send_then(State::AwaitAuthorizationSetupRes, MsgKind::AuthorizationSetupReq, framed);
                         step.notice = Some(Notice::SessionSetUp { session_id: self.session_id });
+                        if step.end.is_none() {
+                            step.timers = step.timers.with(TimerCmd::Cancel(Timer::Setup));
+                        }
                         step
                     }
-                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Ok(_) => self.ignore(payload_type),
                     Err(e) => self.malformed(e),
                 }
             }
@@ -542,7 +597,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         }
                         self.send_authorization_req(State::AwaitAuthorizationRes, tx)
                     }
-                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Ok(_) => self.ignore(payload_type),
                     Err(e) => self.malformed(e),
                 }
             }
@@ -578,7 +633,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                             }
                         }
                     }
-                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Ok(_) => self.ignore(payload_type),
                     Err(e) => self.malformed(e),
                 }
             }
@@ -596,7 +651,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
                         self.send_then(State::AwaitServiceDetailRes, MsgKind::ServiceDetailReq, framed)
                     }
-                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Ok(_) => self.ignore(payload_type),
                     Err(e) => self.malformed(e),
                 }
             }
@@ -622,7 +677,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
                         self.send_then(State::AwaitServiceSelectionRes, MsgKind::ServiceSelectionReq, framed)
                     }
-                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Ok(_) => self.ignore(payload_type),
                     Err(e) => self.malformed(e),
                 }
             }
@@ -660,7 +715,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         }
                         step
                     }
-                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Ok(_) => self.ignore(payload_type),
                     Err(e) => self.malformed(e),
                 }
             }
@@ -676,7 +731,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         }
                         step
                     }
-                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Ok(_) => self.ignore(payload_type),
                     Err(e) => self.malformed(e),
                 }
             }
@@ -709,7 +764,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                             }
                         }
                     }
-                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Ok(_) => self.ignore(payload_type),
                     Err(e) => self.malformed(e),
                 }
             }
@@ -733,7 +788,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                             _ => self.ongoing_repeat(tx),
                         }
                     }
-                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Ok(_) => self.ignore(payload_type),
                     Err(e) => self.malformed(e),
                 }
             }
@@ -750,7 +805,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                             self.goto(State::AwaitContactors);
                             return Step {
                                 timers: Timers::one(TimerCmd::Cancel(Timer::Response))
-                                    .with(TimerCmd::Cancel(Timer::Ongoing)),
+                                    .with(TimerCmd::Cancel(Timer::Ongoing))
+                                    .with(self.arm_sequence()),
                                 notice: Some(Notice::CloseContactors),
                                 ..Step::default()
                             };
@@ -763,14 +819,16 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         }
                         self.ongoing_repeat(tx)
                     }
-                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Ok(_) => self.ignore(payload_type),
                     Err(e) => self.malformed(e),
                 }
             }
             State::AwaitPowerDeliveryRes if payload_type == PayloadType::MAINSTREAM => {
                 match common::decode(payload, arena) {
                     Ok(M::PowerDeliveryRes(res)) => {
-                        if let Some(end) = self.received(MsgKind::PowerDeliveryRes, res.response_code) {
+                        // V2G20-1438: WARNING_PowerToleranceNotConfirmed is not an error here.
+                        let tolerated = Some(ResponseCode::WarningPowerToleranceNotConfirmed);
+                        if let Some(end) = self.received_or(MsgKind::PowerDeliveryRes, res.response_code, tolerated) {
                             return end;
                         }
                         // V2G20-1615/1616: with OK the energy transfer starts; the charge loop
@@ -781,7 +839,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         }
                         step
                     }
-                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Ok(_) => self.ignore(payload_type),
                     Err(e) => self.malformed(e),
                 }
             }
@@ -821,7 +879,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         step.notice = Some(Notice::ChargeLoop(status));
                         step
                     }
-                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Ok(_) => self.ignore(payload_type),
                     Err(e) => self.malformed(e),
                 }
             }
@@ -831,21 +889,51 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         if let Some(end) = self.received(MsgKind::PowerDeliveryRes, res.response_code) {
                             return end;
                         }
-                        // The energy flow is over: the contactors may open, the session ends.
-                        let msg = common::SessionStopReq {
-                            header: self.header(),
-                            charging_session: common::ChargingSession::Terminate,
-                            ev_termination_code: None,
-                            ev_termination_explanation: None,
-                        };
-                        let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
-                        let mut step = self.send_then(State::AwaitSessionStopRes, MsgKind::SessionStopReq, framed);
-                        if step.end.is_none() {
-                            step.notice = Some(Notice::OpenContactors);
+                        // The energy flow is over. Contactors open, then welding detection
+                        // (V2G20-1448), then the session stops.
+                        self.goto(State::AwaitContactorsOpened);
+                        Step {
+                            timers: Timers::one(TimerCmd::Cancel(Timer::Response)).with(self.arm_sequence()),
+                            notice: Some(Notice::OpenContactors),
+                            ..Step::default()
                         }
-                        step
                     }
-                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Ok(_) => self.ignore(payload_type),
+                    Err(e) => self.malformed(e),
+                }
+            }
+            State::AwaitWeldingDetectionRes if payload_type == PayloadType::DC_MAINSTREAM => {
+                match dc::decode(payload, arena) {
+                    Ok(dc::Message::DcWeldingDetectionRes(res)) => {
+                        if let Some(end) = self.received(MsgKind::DcWeldingDetectionRes, res.response_code) {
+                            return end;
+                        }
+                        if self.welding_finishing {
+                            // V2G20-1462: OK to the final request: stop the session.
+                            self.welding_finishing = false;
+                            self.ongoing_armed = false;
+                            let msg = common::SessionStopReq {
+                                header: self.header(),
+                                charging_session: common::ChargingSession::Terminate,
+                                ev_termination_code: None,
+                                ev_termination_explanation: None,
+                            };
+                            let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
+                            let mut step = self.send_then(State::AwaitSessionStopRes, MsgKind::SessionStopReq, framed);
+                            if step.end.is_none() {
+                                step.timers = step.timers.with(TimerCmd::Cancel(Timer::Ongoing));
+                            }
+                            return step;
+                        }
+                        // The EV decides when welding detection is over: once the voltage at its
+                        // inlet has dropped (IEC 61851-23: the EVSE discharges its output).
+                        if rational_to_volts(self.ev.inlet_voltage()).abs() < f32::from(self.config.precharge_tolerance_v) {
+                            self.welding_finishing = true;
+                            return self.send_welding_req(true, tx);
+                        }
+                        self.ongoing_repeat(tx)
+                    }
+                    Ok(_) => self.ignore(payload_type),
                     Err(e) => self.malformed(e),
                 }
             }
@@ -858,12 +946,19 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         // V2G20-1463: after SessionStopRes OK the EVCC terminates the connection.
                         self.end(EndReason::Completed)
                     }
-                    Ok(_) => self.end(EndReason::UnexpectedMessage),
+                    Ok(_) => self.ignore(payload_type),
                     Err(e) => self.malformed(e),
                 }
             }
-            _ => self.end(EndReason::UnexpectedMessage),
+            _ => self.ignore(payload_type),
         }
+    }
+
+    /// V2G20-440: a message that is not a valid response to the request in flight is ignored;
+    /// the response timer keeps running.
+    fn ignore(&mut self, payload_type: PayloadType) -> Step {
+        self.log.record(&Record::Ignored { state: self.state, payload_type: payload_type.0 });
+        Step::default()
     }
 
     /// The EVSE answered `Ongoing`: pause for the poll interval (if any), then repeat the
@@ -889,6 +984,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             State::AwaitPreChargeRes => self.send_precharge_req(false, tx),
             // The charge loop has its own cycle and no `Ongoing` bound.
             State::AwaitChargeLoopRes => return self.send_charge_loop_req(tx),
+            State::AwaitWeldingDetectionRes => self.send_welding_req(false, tx),
             _ => return Step::default(),
         };
         self.arm_ongoing(step)
@@ -928,6 +1024,26 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         if step.end.is_none() {
             self.ongoing_armed = true;
             step.timers = step.timers.with(TimerCmd::Arm { timer: Timer::Ongoing, ms: self.config.precharge_timeout_ms });
+        }
+        step
+    }
+
+    /// One `DC_WeldingDetectionReq`; `finished` is the EV's `EVProcessing`.
+    fn send_welding_req(&mut self, finished: bool, tx: &mut [u8]) -> Step {
+        let msg = dc::DcWeldingDetectionReq {
+            header: self.header(),
+            ev_processing: if finished { Processing::Finished } else { Processing::Ongoing },
+        };
+        let framed = frame(tx, PayloadType::DC_MAINSTREAM, |out| msg.encode(out));
+        if self.state == State::AwaitWeldingDetectionRes {
+            return self.sent(MsgKind::DcWeldingDetectionReq, framed);
+        }
+        let mut step = self.send_then(State::AwaitWeldingDetectionRes, MsgKind::DcWeldingDetectionReq, framed);
+        // The standard sets no timer of its own for welding detection; the generic bound on
+        // repeated `Ongoing` exchanges applies.
+        if step.end.is_none() {
+            self.ongoing_armed = true;
+            step.timers = step.timers.with(TimerCmd::Arm { timer: Timer::Ongoing, ms: self.config.ongoing_timeout_ms });
         }
         step
     }
@@ -976,7 +1092,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     fn begin_stop(&mut self, within_s: Option<u16>) -> Step {
         self.goto(State::AwaitCurrentStopped);
         Step {
-            timers: Timers::one(TimerCmd::Cancel(Timer::Response)).with(TimerCmd::Cancel(Timer::Poll)),
+            timers: Timers::one(TimerCmd::Cancel(Timer::Response))
+                .with(TimerCmd::Cancel(Timer::Poll))
+                .with(self.arm_sequence()),
             notice: Some(Notice::StopEnergyTransfer { within_s }),
             ..Step::default()
         }
@@ -1048,9 +1166,28 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
 
     /// Logs a received response and its code; returns the ending step if the code is a failure.
     fn received(&mut self, msg: MsgKind, code: ResponseCode) -> Option<Step> {
+        self.received_or(msg, code, None)
+    }
+
+    /// Like [`Self::received`], but `also_ok` (a `WARNING_*` code the message tolerates) does not
+    /// end the session. Every other WARNING is treated as an error: the standard lets the EVCC
+    /// stop where it does not define a remedy (V2G20-1583).
+    fn received_or(&mut self, msg: MsgKind, code: ResponseCode, also_ok: Option<ResponseCode>) -> Option<Step> {
         self.log.record(&Record::MsgRx { msg });
         self.log.record(&Record::Response { msg, code });
-        if is_ok(code) { None } else { Some(self.end(EndReason::Rejected(code))) }
+        if is_ok(code) || Some(code) == also_ok { None } else { Some(self.end(EndReason::Rejected(code))) }
+    }
+
+    fn arm_sequence(&self) -> TimerCmd {
+        TimerCmd::Arm { timer: Timer::Sequence, ms: self.config.sequence_performance_ms }
+    }
+
+    /// The vehicle answered: the sequence timer stops.
+    fn sequence_done(&mut self, mut step: Step) -> Step {
+        if step.end.is_none() {
+            step.timers = step.timers.with(TimerCmd::Cancel(Timer::Sequence));
+        }
+        step
     }
 
     fn pick_parameter_set(&self, sets: &[ParameterSet<'_>]) -> Option<u16> {
@@ -1088,9 +1225,11 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         self.send_then(next, MsgKind::AuthorizationReq, framed)
     }
 
+    /// A frame that does not decode is ignored like any other invalid message (V2G20-440);
+    /// only running out of arena is our own failure.
     fn malformed(&mut self, error: DecodeError) -> Step {
         self.log.record(&Record::DecodeFailed { state: self.state, error });
-        self.end(EndReason::Malformed(error))
+        if error == DecodeError::ArenaFull { self.end(EndReason::Malformed(error)) } else { Step::default() }
     }
 
     fn on_supported_app_protocol_res(&mut self, res: app_protocol::SupportedAppProtocolRes, tx: &mut [u8]) -> Step {

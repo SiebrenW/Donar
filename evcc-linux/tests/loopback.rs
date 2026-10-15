@@ -15,10 +15,14 @@ use iso15118_20::common_types::{RationalNumber, ResponseCode};
 /// (the simulator reports the target voltage once it has "settled").
 /// The default configuration with a short poll pause, so polling tests stay quick.
 fn fast() -> Config {
-    Config { poll_interval_ms: 10, charge_loop_interval_ms: 10, ..Config::DC_20 }
+    Config { poll_interval_ms: 10, charge_loop_interval_ms: 10, allow_unsecured: true, ..Config::DC_20 }
 }
 
-struct Car(std::cell::Cell<u32>);
+struct Car {
+    reads: std::cell::Cell<u32>,
+    /// Set by the host when the contactors are open: the inlet voltage then drops to zero.
+    open: std::rc::Rc<std::cell::Cell<bool>>,
+}
 impl Ev for Car {
     fn evcc_id(&self) -> &str {
         "WMIV1234567890ABCDEX"
@@ -50,9 +54,10 @@ impl Ev for Car {
         RationalNumber { exponent: 0, value: 400 }
     }
     fn inlet_voltage(&self) -> RationalNumber {
-        let reads = self.0.get();
-        self.0.set(reads + 1);
-        RationalNumber { exponent: 0, value: if reads == 0 { 300 } else { 400 } }
+        let reads = self.reads.get();
+        self.reads.set(reads + 1);
+        let value = if self.open.get() { 0 } else if reads == 0 { 300 } else { 400 };
+        RationalNumber { exponent: 0, value }
     }
     fn dc_connector(&self) -> DcConnector {
         DcConnector::Core
@@ -77,12 +82,18 @@ fn run_ev(addr: std::net::SocketAddr, config: Config) -> Outcome {
 fn run_ev_stopping_after(addr: std::net::SocketAddr, config: Config, stop_after: Option<u32>) -> Outcome {
     let mut stream = TcpStream::connect(addr).unwrap();
     let (mut rx, mut tx, mut arena) = ([0u8; 1024], [0u8; 1024], [0u8; 4096]);
-    let mut session = Session::new(config, Car(Default::default()), NoLog, Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
+    let open = std::rc::Rc::new(std::cell::Cell::new(false));
+    let car = Car { reads: Default::default(), open: open.clone() };
+    let mut session = Session::new(config, car, NoLog, Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
     let mut loops = 0;
     run(&mut stream, &mut session, false, &mut |n| match n {
         // The car closes its contactors and stops drawing current as soon as it is asked to.
         Notice::CloseContactors => Some(Event::ContactorsClosed),
         Notice::StopEnergyTransfer { .. } => Some(Event::EnergyTransferStopped),
+        Notice::OpenContactors => {
+            open.set(true);
+            Some(Event::ContactorsOpened)
+        }
         Notice::ChargeLoop(_) => {
             loops += 1;
             (Some(loops) == stop_after).then_some(Event::StopRequested)

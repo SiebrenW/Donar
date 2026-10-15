@@ -53,3 +53,6 @@ power_delivery_req_start V2G_CI_CommonMessages.xsd
 power_delivery_req_stop V2G_CI_CommonMessages.xsd
 power_delivery_res V2G_CI_CommonMessages.xsd
 power_delivery_res_status V2G_CI_CommonMessages.xsd
+dc_welding_req_ongoing V2G_CI_DC.xsd
+dc_welding_req_finished V2G_CI_DC.xsd
+dc_welding_res V2G_CI_DC.xsd

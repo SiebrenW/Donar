@@ -405,6 +405,16 @@ fn dc_charge_loop() {
 }
 
 #[test]
+fn dc_welding_detection() {
+    for (name, p) in [("dc_welding_req_ongoing", Processing::Ongoing), ("dc_welding_req_finished", Processing::Finished)] {
+        let m = dc::DcWeldingDetectionReq { header: hdr(), ev_processing: p };
+        check_dc(name, dc::Message::DcWeldingDetectionReq(m), |o| m.encode(o));
+    }
+    let m = dc::DcWeldingDetectionRes { header: hdr(), response_code: ResponseCode::Ok, evse_present_voltage: rn(0, 12) };
+    check_dc("dc_welding_res", dc::Message::DcWeldingDetectionRes(m), |o| m.encode(o));
+}
+
+#[test]
 fn power_delivery_and_session_stop() {
     let entries = [PowerScheduleEntry { duration: 3600, power: rn(3, 100), power_l2: None, power_l3: None }];
     for (name, progress) in [("power_delivery_req_start", ChargeProgress::Start), ("power_delivery_req_stop", ChargeProgress::Stop)] {

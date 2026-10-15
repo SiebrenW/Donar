@@ -62,6 +62,8 @@ pub struct Config {
     pub power_delivery_code: ResponseCode,
     /// After this many `DC_ChargeLoopRes` the EVSE asks the EV to terminate (`EVSENotification`).
     pub terminate_after_loops: Option<u32>,
+    /// Response code of the `DC_WeldingDetectionRes`.
+    pub welding_code: ResponseCode,
 }
 
 impl Default for Config {
@@ -97,6 +99,7 @@ impl Default for Config {
             precharge_requests_to_settle: 1,
             power_delivery_code: ResponseCode::Ok,
             terminate_after_loops: None,
+            welding_code: ResponseCode::Ok,
         }
     }
 }
@@ -117,6 +120,8 @@ pub enum State {
     AwaitPowerDeliveryReq,
     /// Energy flows; charge loop requests and the stop are accepted.
     ChargeLoop,
+    /// Welding detection after the stop (V2G20-1448); ends with a `Finished` request.
+    AwaitWeldingReq,
     AwaitSessionStopReq,
     /// The session was stopped properly.
     Stopped,
@@ -475,9 +480,26 @@ impl Evse {
                 };
                 let res = common::PowerDeliveryRes { header: self.header(), response_code: code, evse_status: None };
                 if is_ok(code) {
-                    self.state = State::AwaitSessionStopReq;
+                    self.state = State::AwaitWeldingReq;
                 }
                 Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) }
+            }
+            State::AwaitWeldingReq if payload_type == PayloadType::DC_MAINSTREAM => {
+                let Ok(dc::Message::DcWeldingDetectionReq(req)) = dc::decode(payload, &arena) else { return closed };
+                let code = if req.header.session_id != self.config.session_id {
+                    ResponseCode::FailedUnknownSession
+                } else {
+                    self.config.welding_code
+                };
+                let res = dc::DcWeldingDetectionRes {
+                    header: self.header(),
+                    response_code: code,
+                    evse_present_voltage: RationalNumber { exponent: 0, value: 5 },
+                };
+                if is_ok(code) && req.ev_processing == Processing::Finished {
+                    self.state = State::AwaitSessionStopReq;
+                }
+                Output { send: frame(PayloadType::DC_MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) }
             }
             State::AwaitSessionStopReq if payload_type == PayloadType::MAINSTREAM => {
                 let Ok(common::Message::SessionStopReq(req)) = common::decode(payload, &arena) else { return closed };

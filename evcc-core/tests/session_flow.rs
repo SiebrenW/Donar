@@ -121,7 +121,7 @@ type Sess<'a> = Session<'a, TestEv, Capture>;
 
 fn session<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
     let Rig { rx, tx, arena } = rig;
-    Session::new(Config { poll_interval_ms: 0, ..Config::DC_20 }, TestEv::new(), log, Buffers { rx, tx, arena })
+    Session::new(Config { poll_interval_ms: 0, allow_unsecured: true, ..Config::DC_20 }, TestEv::new(), log, Buffers { rx, tx, arena })
 }
 
 /// Copies `bytes` into the session's RX buffer and reports them, like a socket read would.
@@ -446,12 +446,46 @@ fn finish_shutdown(s: &mut Sess<'_>) {
     assert_eq!(s.state(), State::AwaitPowerDeliveryStopRes);
     let step = deliver(s, &power_delivery_res(ResponseCode::Ok));
     assert_eq!(step.notice, Some(Notice::OpenContactors));
+    assert_eq!(step.send, None, "welding detection waits for the open contactors");
+    assert_eq!(step.timers, Timers::one(TimerCmd::Cancel(Timer::Response)).with(sequence_timer()));
+    // V2G20-1448: after the stop the EVCC performs welding detection ...
+    let step = s.handle(Event::ContactorsOpened);
+    sent_dc(s, &step, |m| {
+        let dc::Message::DcWeldingDetectionReq(r) = m else { panic!("{m:?}") };
+        assert_eq!(r.ev_processing, Processing::Ongoing);
+    });
+    assert_eq!(s.state(), State::AwaitWeldingDetectionRes);
+    // ... repeating while the EV measures a voltage at its inlet (V2G20-1573) ...
+    INLET.with(|i| i.set(150));
+    let step = deliver(s, &welding_res(ResponseCode::Ok));
+    sent_dc(s, &step, |m| {
+        let dc::Message::DcWeldingDetectionReq(r) = m else { panic!("{m:?}") };
+        assert_eq!(r.ev_processing, Processing::Ongoing);
+    });
+    // ... until it is finished (V2G20-1461), and only then stops the session (V2G20-1462).
+    INLET.with(|i| i.set(3));
+    let step = deliver(s, &welding_res(ResponseCode::Ok));
+    sent_dc(s, &step, |m| {
+        let dc::Message::DcWeldingDetectionReq(r) = m else { panic!("{m:?}") };
+        assert_eq!(r.ev_processing, Processing::Finished);
+    });
+    let step = deliver(s, &welding_res(ResponseCode::Ok));
     sent_common(s, &step, |m| {
         let common::Message::SessionStopReq(r) = m else { panic!("{m:?}") };
         assert_eq!(r.charging_session, common::ChargingSession::Terminate);
     });
     let step = deliver(s, &session_stop_res(ResponseCode::Ok));
     assert_eq!(step.end, Some(EndReason::Completed));
+}
+
+fn sequence_timer() -> TimerCmd {
+    TimerCmd::Arm { timer: Timer::Sequence, ms: 40_000 }
+}
+
+fn welding_res(code: ResponseCode) -> std::vec::Vec<u8> {
+    framed(PayloadType::DC_MAINSTREAM, |out| {
+        dc::DcWeldingDetectionRes { header: hdr(), response_code: code, evse_present_voltage: rn(0, 5) }.encode(out).unwrap()
+    })
 }
 
 #[test]
@@ -494,7 +528,10 @@ fn a_stop_request_during_the_loop_interval_acts_at_once() {
     deliver(&mut s, &loop_res(None)); // now waiting for the poll timer
     let step = s.handle(Event::StopRequested);
     assert_eq!(step.notice, Some(Notice::StopEnergyTransfer { within_s: None }));
-    assert_eq!(step.timers, Timers::one(TimerCmd::Cancel(Timer::Response)).with(TimerCmd::Cancel(Timer::Poll)));
+    assert_eq!(
+        step.timers,
+        Timers::one(TimerCmd::Cancel(Timer::Response)).with(TimerCmd::Cancel(Timer::Poll)).with(sequence_timer())
+    );
     // The poll timer may already have fired: it must not resume the loop.
     assert_eq!(s.handle(Event::TimerExpired(Timer::Poll)), Step::default());
     finish_shutdown(&mut s);
@@ -579,12 +616,16 @@ fn cable_check_pre_charge_and_power_delivery() {
     let step = deliver(&mut s, &precharge_res(ResponseCode::Ok, BATTERY_V - 19));
     assert_eq!(step.notice, Some(Notice::CloseContactors));
     assert_eq!(step.send, None);
-    assert_eq!(step.timers, Timers::one(TimerCmd::Cancel(Timer::Response)).with(TimerCmd::Cancel(Timer::Ongoing)));
+    // The vehicle now has 40 s (V2G_EVCC_Sequence_Performance_Time) to close its contactors.
+    assert_eq!(
+        step.timers,
+        Timers::one(TimerCmd::Cancel(Timer::Response)).with(TimerCmd::Cancel(Timer::Ongoing)).with(sequence_timer())
+    );
     assert_eq!(s.state(), State::AwaitContactors);
 
     // Only then does the EV request power (V2G20-1546: with a power profile).
     let step = s.handle(Event::ContactorsClosed);
-    assert_eq!(step.timers, response_timer());
+    assert_eq!(step.timers, response_timer().with(TimerCmd::Cancel(Timer::Sequence)));
     sent_common(&s, &step, |m| {
         let common::Message::PowerDeliveryReq(r) = m else { panic!("{m:?}") };
         assert_eq!(r.charge_progress, common::ChargeProgress::Start);
@@ -647,7 +688,7 @@ fn dc_failures_end_the_session() {
 fn ongoing_answers_are_polled_at_the_configured_pace() {
     let mut rig = Rig::new();
     let Rig { rx, tx, arena } = &mut rig;
-    let mut s = Session::new(Config::DC_20, TestEv::new(), Capture::default(), Buffers { rx, tx, arena });
+    let mut s = Session::new(Config { allow_unsecured: true, ..Config::DC_20 }, TestEv::new(), Capture::default(), Buffers { rx, tx, arena });
     s.handle(Event::Start { secured: false });
     deliver(&mut s, &sap_res(SapCode::OkSuccessfulNegotiation, Some(1)));
     deliver(&mut s, &setup_res(ResponseCode::OkNewSessionEstablished, SID));
@@ -753,7 +794,7 @@ fn service_negotiation_failures_end_the_session() {
     let mut s = up_to_charge_parameters(&mut rig, Capture::default());
     let mut wrong = cpd_res(ResponseCode::Ok);
     wrong[2..4].copy_from_slice(&PayloadType::MAINSTREAM.0.to_be_bytes());
-    assert_eq!(deliver(&mut s, &wrong).end, Some(EndReason::UnexpectedMessage));
+    assert_eq!(deliver(&mut s, &wrong), Step::default());
 }
 
 #[test]
@@ -780,7 +821,8 @@ fn full_flow_to_authorized() {
     let mut s = session(&mut rig, log);
 
     let step = s.handle(Event::Start { secured: true });
-    assert_eq!(step.timers, response_timer());
+    // The 20 s communication setup timer runs until the SessionSetupRes (V2G20-2298).
+    assert_eq!(step.timers, response_timer().with(TimerCmd::Arm { timer: Timer::Setup, ms: 20_000 }));
     let (pt, payload) = sent(&s, &step);
     assert_eq!(pt, PayloadType::SAP);
     let mut mem = [0u8; 1024];
@@ -799,7 +841,7 @@ fn full_flow_to_authorized() {
     // SessionSetupRes: the EV learns the session id and moves on to AuthorizationSetupReq.
     let step = deliver(&mut s, &setup_res(ResponseCode::OkNewSessionEstablished, SID));
     assert_eq!(step.notice, Some(Notice::SessionSetUp { session_id: SID }));
-    assert_eq!(step.timers, response_timer());
+    assert_eq!(step.timers, response_timer().with(TimerCmd::Cancel(Timer::Setup)));
     sent_common(&s, &step, |m| {
         let common::Message::AuthorizationSetupReq(req) = m else { panic!("{m:?}") };
         assert_eq!(req.header.session_id, SID, "later messages carry the id the EVSE assigned");
@@ -1025,28 +1067,89 @@ fn failing_session_setup_code_is_reported() {
     assert_eq!(step.end, Some(EndReason::Rejected(ResponseCode::FailedSequenceError)));
 }
 
+/// Ref: ISO 15118-20:2022 V2G20-440: anything that is not a valid response to the request in
+/// flight is ignored, and the response timer keeps running.
 #[test]
-fn wrong_payload_type_or_message_ends_the_session() {
+fn messages_that_are_not_the_awaited_response_are_ignored() {
     // SessionSetupRes arriving while SupportedAppProtocolRes is expected.
     let mut rig = Rig::new();
     let mut s = session(&mut rig, Capture::default());
     s.handle(Event::Start { secured: false });
-    let step = deliver(&mut s, &setup_res(ResponseCode::OkNewSessionEstablished, SID));
-    assert_eq!(step.end, Some(EndReason::UnexpectedMessage));
+    assert_eq!(deliver(&mut s, &setup_res(ResponseCode::OkNewSessionEstablished, SID)), Step::default());
+    assert_eq!(s.state(), State::AwaitSupportedAppProtocolRes);
+    // The real answer is still accepted afterwards.
+    let step = deliver(&mut s, &sap_res(SapCode::OkSuccessfulNegotiation, Some(1)));
+    assert_eq!(s.state(), State::AwaitSessionSetupRes);
+    assert!(step.send.is_some());
 
     // A different common message than the one awaited.
     let mut rig = Rig::new();
     let mut s = up_to_authorization(&mut rig, Capture::default());
-    let step = deliver(&mut s, &setup_res(ResponseCode::OkNewSessionEstablished, SID));
-    assert_eq!(step.end, Some(EndReason::UnexpectedMessage));
-
+    assert_eq!(deliver(&mut s, &setup_res(ResponseCode::OkNewSessionEstablished, SID)), Step::default());
     // The right message under the wrong payload type.
-    let mut rig = Rig::new();
-    let mut s = up_to_authorization(&mut rig, Capture::default());
     let wrong = framed(PayloadType::DC_MAINSTREAM, |out| {
         AuthorizationRes { header: hdr(), response_code: ResponseCode::Ok, evse_processing: Processing::Finished }.encode(out).unwrap()
     });
-    assert_eq!(deliver(&mut s, &wrong).end, Some(EndReason::UnexpectedMessage));
+    assert_eq!(deliver(&mut s, &wrong), Step::default());
+    assert_eq!(s.state(), State::AwaitAuthorizationRes);
+    // Still waiting: the timeout ends it.
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Response)).end, Some(EndReason::Timeout));
+}
+
+#[test]
+fn the_communication_setup_timer_bounds_the_start_of_the_session() {
+    // V2G20-2298, V2G20-448: no SessionSetupRes within 20 s ends the session.
+    let mut rig = Rig::new();
+    let mut s = session(&mut rig, Capture::default());
+    s.handle(Event::Start { secured: false });
+    deliver(&mut s, &sap_res(SapCode::OkSuccessfulNegotiation, Some(1)));
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Setup)).end, Some(EndReason::Timeout));
+
+    // After SessionSetupRes the timer is cancelled and a late expiry is stale.
+    let mut rig = Rig::new();
+    let mut s = up_to_authorization_setup(&mut rig, Capture::default());
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Setup)), Step::default());
+}
+
+#[test]
+fn iso_15118_20_is_not_offered_without_tls() {
+    // V2G20-1235, V2G20-1237
+    let mut rig = Rig::new();
+    let Rig { rx, tx, arena } = &mut rig;
+    let mut s = Session::new(Config::DC_20, TestEv::new(), Capture::default(), Buffers { rx, tx, arena });
+    let step = s.handle(Event::Start { secured: false });
+    assert_eq!(step.end, Some(EndReason::TlsRequired));
+    assert_eq!(step.send, None);
+}
+
+#[test]
+fn power_tolerance_warning_does_not_stop_the_start_of_the_energy_transfer() {
+    // V2G20-1438
+    let mut rig = Rig::new();
+    let mut s = up_to_contactors(&mut rig, Capture::default());
+    s.handle(Event::ContactorsClosed);
+    let step = deliver(&mut s, &power_delivery_res(ResponseCode::WarningPowerToleranceNotConfirmed));
+    assert_eq!(step.notice, Some(Notice::EnergyTransferStarted));
+    assert_eq!(s.state(), State::AwaitChargeLoopRes);
+    // Other warnings are not tolerated.
+    let mut rig = Rig::new();
+    let mut s = up_to_contactors(&mut rig, Capture::default());
+    s.handle(Event::ContactorsClosed);
+    let step = deliver(&mut s, &power_delivery_res(ResponseCode::WarningStandbyNotAllowed));
+    assert_eq!(step.end, Some(EndReason::Rejected(ResponseCode::WarningStandbyNotAllowed)));
+}
+
+#[test]
+fn the_vehicle_has_a_bounded_time_for_its_own_actions() {
+    // V2G_EVCC_Sequence_Performance_Time: closing contactors, ramp-down, opening contactors.
+    let mut rig = Rig::new();
+    let mut s = up_to_contactors(&mut rig, Capture::default());
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Sequence)).end, Some(EndReason::Timeout));
+
+    let mut rig = Rig::new();
+    let mut s = up_to_charge_loop(&mut rig, Capture::default());
+    deliver(&mut s, &loop_res(Some(iso15118_20::common_types::EvseNotification::Terminate)));
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Sequence)).end, Some(EndReason::Timeout));
 }
 
 #[test]
@@ -1065,7 +1168,8 @@ fn garbage_is_rejected_without_panicking() {
         out[..3].copy_from_slice(&[0x80, 0xff, 0xff]);
         3
     });
-    assert!(matches!(deliver(&mut s, &bad).end, Some(EndReason::Malformed(_))));
+    assert_eq!(deliver(&mut s, &bad), Step::default(), "an undecodable payload is ignored (V2G20-440)");
+    assert_eq!(s.state(), State::AwaitSupportedAppProtocolRes);
 
     // A frame bigger than the RX buffer.
     let mut rig = Rig::new();
@@ -1091,7 +1195,7 @@ fn tiny_tx_buffer_ends_the_session() {
     let mut rx = [0u8; 256];
     let mut tx = [0u8; 12];
     let mut arena = [0u8; 512];
-    let mut s = Session::new(Config::DC_20, TestEv::new(), Capture::default(), Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
+    let mut s = Session::new(Config { allow_unsecured: true, ..Config::DC_20 }, TestEv::new(), Capture::default(), Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
     assert_eq!(s.handle(Event::Start { secured: false }).end, Some(EndReason::TxBufferTooSmall));
 }
 
@@ -1100,7 +1204,7 @@ fn small_arena_is_a_decode_error_not_a_panic() {
     let mut rx = [0u8; 256];
     let mut tx = [0u8; 256];
     let mut arena = [0u8; 8];
-    let mut s = Session::new(Config::DC_20, TestEv::new(), Capture::default(), Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
+    let mut s = Session::new(Config { allow_unsecured: true, ..Config::DC_20 }, TestEv::new(), Capture::default(), Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
     s.handle(Event::Start { secured: false });
     deliver(&mut s, &sap_res(SapCode::OkSuccessfulNegotiation, Some(1)));
     let step = deliver(&mut s, &setup_res(ResponseCode::OkNewSessionEstablished, SID));

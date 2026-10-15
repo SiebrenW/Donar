@@ -25,6 +25,11 @@ pub enum Timer {
     Ongoing,
     /// Pause before repeating a request while the EVSE answers `Ongoing`.
     Poll,
+    /// `V2G_EVCC_CommunicationSetup_Timer`: from the connection until `SessionSetupRes`.
+    Setup,
+    /// `V2G_EVCC_Sequence_Timer`: how long the EVCC may take before its next request while it
+    /// waits for the vehicle (contactors, ramp-down).
+    Sequence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,26 +39,26 @@ pub enum TimerCmd {
     Cancel(Timer),
 }
 
-/// The timer commands of one step (at most two: e.g. arm the response timer and the
-/// ongoing timer, or cancel both). Timers not mentioned keep running.
+/// The timer commands of one step (at most three, e.g. arm the response timer and the
+/// ongoing timer while cancelling the sequence timer). Timers not mentioned keep running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Timers {
-    cmds: [Option<TimerCmd>; 2],
+    cmds: [Option<TimerCmd>; 3],
 }
 
 impl Timers {
-    pub const NONE: Timers = Timers { cmds: [None, None] };
+    pub const NONE: Timers = Timers { cmds: [None; 3] };
 
     pub const fn one(cmd: TimerCmd) -> Self {
-        Self { cmds: [Some(cmd), None] }
+        Self { cmds: [Some(cmd), None, None] }
     }
 
-    /// Adds a command. A step never needs more than two; a third would be a bug in the
+    /// Adds a command. A step never needs more than three; a third would be a bug in the
     /// machine, so it panics in debug builds and is dropped in release builds.
     pub fn with(mut self, cmd: TimerCmd) -> Self {
         match self.cmds.iter_mut().find(|c| c.is_none()) {
             Some(slot) => *slot = Some(cmd),
-            None => debug_assert!(false, "more than two timer commands in one step"),
+            None => debug_assert!(false, "more than three timer commands in one step"),
         }
         self
     }

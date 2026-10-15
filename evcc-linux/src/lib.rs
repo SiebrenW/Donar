@@ -75,7 +75,7 @@ fn drive<E: Ev, L: LogSink>(
 
 /// Pending expiry per timer.
 #[derive(Default)]
-struct Deadlines([Option<Instant>; 4]);
+struct Deadlines([Option<Instant>; 6]);
 
 impl Deadlines {
     fn slot(timer: Timer) -> usize {
@@ -84,6 +84,8 @@ impl Deadlines {
             Timer::Response => 1,
             Timer::Ongoing => 2,
             Timer::Poll => 3,
+            Timer::Setup => 4,
+            Timer::Sequence => 5,
         }
     }
 
@@ -98,7 +100,7 @@ impl Deadlines {
 
     /// The earliest pending expiry and its timer.
     fn next(&self) -> Option<(Timer, Instant)> {
-        [Timer::Sdp, Timer::Response, Timer::Ongoing, Timer::Poll]
+        [Timer::Sdp, Timer::Response, Timer::Ongoing, Timer::Poll, Timer::Setup, Timer::Sequence]
             .into_iter()
             .filter_map(|t| self.0[Self::slot(t)].map(|d| (t, d)))
             .min_by_key(|&(_, d)| d)
@@ -128,7 +130,8 @@ fn next_step<E: Ev, L: LogSink>(
                 deadlines.clear(timer);
                 return Ok(Next::Step(session.handle(Event::TimerExpired(timer))));
             }
-            Some(left)
+            // A zero (or sub-millisecond) timeout is invalid for a socket.
+            Some(left.max(Duration::from_millis(1)))
         }
         None => None,
     };

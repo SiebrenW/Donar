@@ -178,14 +178,14 @@ Where code implements a specific, citable behaviour (timers, mandated message ha
 
 The standard text is in `standards/`. Reading the EVCC requirements of clause 8.5/8.6 and 7.7 against what is built shows the happy path is right but several mandatory behaviours are missing or wrong. Ordered by priority.
 
-**Wrong or missing, to fix before TLS:**
+**Fixed (all six, with tests):**
 
-1. **`DC_WeldingDetection` is mandatory** (V2G20-1448, 1573, 1461, 1462): after `PowerDeliveryRes(OK)` to `Stop` the EVCC sends `DC_WeldingDetectionReq`, repeats it with `EVProcessing = Ongoing` until the EV is done, sends `Finished`, and only then `SessionStopReq`. The session machine skips it, so a real EVSE would answer `SessionStopReq` with a sequence error.
-2. **Invalid messages are ignored, not fatal** (V2G20-440): a message that is not a valid response (wrong type, malformed, wrong payload type) must be ignored and the response timer keeps running. The machine ends the session (`UnexpectedMessage`, `Malformed`).
-3. **Communication setup timeout** (V2G20-2298, 448; Table 223: 20 s): from the connection being established until `SessionSetupRes` arrives. Not armed.
-4. **-20 only over TLS 1.3** (V2G20-1235, 1237, 2646): the EVCC must not offer -20 in `SupportedAppProtocolReq` over plain TCP. The machine offers it regardless of `secured`. Plain TCP stays as an explicit test mode (`Config` flag, off by default).
-5. **`WARNING_*` is not fatal** (8.6.3, V2G20-2201): it needs a per-message reaction. All non-OK codes end the session now. At least `PowerDeliveryRes` with `WARNING_PowerToleranceNotConfirmed` must continue into the charge loop (V2G20-1438); `AuthorizationRes` with `WARNING_*` (V2G20-1583) allows stopping.
-6. **Sequence performance time** (Table 215: 40 s, Table 217: 0.25 s for the charge loop): the EVCC must send its next request within this time. Slow host actions (`CloseContactors`, `StopEnergyTransfer`) are not bounded.
+1. `DC_WeldingDetection` (V2G20-1448, 1573, 1461, 1462): after `PowerDeliveryRes(Stop)` the session asks the host to open the contactors (`Notice::OpenContactors` / `Event::ContactorsOpened`), sends `DC_WeldingDetectionReq(Ongoing)` repeatedly while the voltage at the EV's inlet is still above 20 V, then `Finished`, then `SessionStopReq`. The generic 60 s `Ongoing` bound applies (the standard defines no welding timer).
+2. Invalid messages are ignored (V2G20-440): wrong message, wrong payload type or undecodable payload only logs `Record::Ignored`/`DecodeFailed`; the response timer keeps running. Still fatal: bad V2GTP framing, our own arena being full, and valid responses whose content we cannot use.
+3. `Timer::Setup`: 20 s from `Start` until `SessionSetupRes` (V2G20-2298, 448).
+4. `Config::allow_unsecured` (default false): without TLS the session ends with `EndReason::TlsRequired` instead of offering -20 (V2G20-1235, 1237).
+5. `WARNING_PowerToleranceNotConfirmed` is tolerated on `PowerDeliveryRes(Start)` (V2G20-1438). Other WARNING codes still end the session, which the standard allows where it defines no remedy (e.g. V2G20-1583 for `AuthorizationRes`); implement the remedies when PnC arrives.
+6. `Timer::Sequence` (`sequence_performance_ms`, 40 s): bounds the host actions closing contactors, ramp-down and opening contactors. The charge loop interval (default 100 ms) stays below the 0.25 s of Table 217. `Timers` now holds three commands per step.
 
 **Decided, not yet built:** `SessionStopReq` on error exits (V2G20-2644 for non-critical stops before `Start`), standby/pause, service renegotiation (V2G20-1476), `MeteringConfirmation` on side stream `0x8102` when the EVSE asks (V2G20-1621), resumed sessions (V2G20-2098), the other `EVSENotification` values.
 
@@ -193,4 +193,4 @@ The standard text is in `standards/`. Reading the EVCC requirements of clause 8.
 
 **Verification gaps:** the grammar of every message equals EXIficient's, but value-level vectors exist only for the messages the session uses; the PnC types, BPT and the scheduled-mode types are generated but untested. The empty-string EXI question is still open.
 
-**Verdict:** on track structurally (architecture, generator, simulator and test approach hold), but milestone 1 is not done: items 1 to 6 above come before TLS/SDP/SLAC.
+**Verdict:** on track. With items 1 to 6 fixed, the message flow of milestone 1 follows the standard; TLS, the SDP socket loop and SLAC remain.
