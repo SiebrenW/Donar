@@ -94,12 +94,19 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         // V2G20-1416, V2G20-1960: Terminate means shut down and stop the session.
         let notification = res.evse_status.map(|s| (s.evse_notification, s.notification_max_delay));
         if let Some((EvseNotification::Terminate, within_s)) = notification {
+            self.renegotiating = false;
             return self.begin_stop(Some(within_s));
         }
         if core::mem::take(&mut self.stop_requested) {
             return self.begin_stop(None);
         }
         match notification {
+            // V2G20-1651, V2G20-1652, V2G20-1661: when the EVSE offered it, an orderly stop
+            // (PowerDeliveryReq Stop, welding detection) and SessionStopReq(ServiceRenegotiation).
+            Some((EvseNotification::ServiceRenegotiation, within_s)) if self.renegotiation_supported == Some(true) => {
+                self.renegotiating = true;
+                return self.begin_stop(Some(within_s));
+            }
             // V2G20-1850: the EVSE wants a pause. A pause of the whole session (SessionStopReq
             // with Pause) is not implemented; a standby period is the other answer the standard
             // allows, and it keeps the session, the TLS connection and the contactors. The

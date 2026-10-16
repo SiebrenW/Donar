@@ -62,6 +62,11 @@ struct Machine<E, L> {
     welding_finishing: bool,
     /// The vehicle asked to stop while a charge loop request was outstanding.
     stop_requested: bool,
+    /// `ServiceRenegotiationSupported` of the first `ServiceDiscoveryRes` (V2G20-1480).
+    renegotiation_supported: Option<bool>,
+    /// The shutdown under way ends in `SessionStopReq(ServiceRenegotiation)` and a new
+    /// service discovery instead of the end of the session.
+    renegotiating: bool,
     /// The host is ramping the current down to enter a standby period.
     entering_standby: bool,
     /// A standby period is on (the EVSE accepted `PowerDeliveryReq(Standby)`).
@@ -91,6 +96,8 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 precharge_finishing: false,
                 welding_finishing: false,
                 stop_requested: false,
+                renegotiation_supported: None,
+                renegotiating: false,
                 entering_standby: false,
                 standby: false,
                 clock_offset: 0,
@@ -175,7 +182,9 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 let step = m.send_welding_req(false, tx);
                 m.sequence_done(step)
             }
-            Event::StopRequested => match m.state {
+            Event::StopRequested => {
+                m.renegotiating = false;
+                match m.state {
                 State::AwaitChargeLoopRes if m.poll_pending => {
                     m.poll_pending = false;
                     m.begin_stop(None)
@@ -190,7 +199,26 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                     Step::default()
                 }
                 _ => Step::default(),
-            },
+            }
+            }
+            Event::RenegotiateServices => {
+                if m.renegotiation_supported != Some(true) {
+                    return Step::default();
+                }
+                match m.state {
+                    State::AwaitChargeLoopRes if m.poll_pending => {
+                        m.poll_pending = false;
+                        m.renegotiating = true;
+                        m.begin_stop(None)
+                    }
+                    State::AwaitChargeLoopRes => {
+                        m.renegotiating = true;
+                        m.stop_requested = true;
+                        Step::default()
+                    }
+                    _ => Step::default(),
+                }
+            }
             Event::EnergyTransferStopped => {
                 if m.state != State::AwaitCurrentStopped {
                     return Step::default();

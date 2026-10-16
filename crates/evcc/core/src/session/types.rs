@@ -92,6 +92,10 @@ pub enum Event {
     StopRequested,
     /// The host opened the vehicle's contactors after [`Notice::OpenContactors`].
     ContactorsOpened,
+    /// The vehicle wants to change its service selection (V2G20-1661): the charge ends in an
+    /// orderly way, the session is not stopped, and service discovery starts over. Ignored
+    /// unless the EVSE offered service renegotiation in its first `ServiceDiscoveryRes`.
+    RenegotiateServices,
     /// The host reduced the current to zero after [`Notice::StopEnergyTransfer`]
     /// (V2G20-1310 asks for this before `PowerDeliveryReq(Stop)`).
     EnergyTransferStopped,
@@ -126,6 +130,9 @@ pub enum Notice {
     /// the charge loop goes on. [`Notice::EnergyTransferStarted`] follows when it ends (the
     /// EVSE sent `ExitStandby`) or when the EVSE refused the standby period.
     StandbyEntered,
+    /// The EVSE agreed to a service renegotiation: the session goes on with a new service
+    /// discovery, after which the usual notices follow again (pre-charge, close contactors).
+    ServicesRenegotiating,
     /// The EVSE acknowledged the stop: open the contactors, then send
     /// [`Event::ContactorsOpened`]; welding detection follows.
     OpenContactors,

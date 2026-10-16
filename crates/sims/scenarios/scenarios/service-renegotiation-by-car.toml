@@ -1,0 +1,21 @@
+name = "service-renegotiation-by-car"
+description = "The vehicle asks for a service renegotiation after two charge loop rounds (the charger offered it) and stops after six rounds in all."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session]
+service_renegotiation_supported = true
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+stop_after = 6
+renegotiate_after = 2
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)"]
+secc_log = ["session: Stopped"]

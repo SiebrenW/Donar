@@ -263,3 +263,80 @@ fn the_evse_can_terminate_during_a_standby_period() {
     assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
     assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
 }
+
+fn run_behaving(addr: std::net::SocketAddr, behaviour: evcc_sim::Behaviour) -> (Outcome, common::Recording) {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    common::run_behaving_car(&mut stream, fast(), behaviour)
+}
+
+const CAR: evcc_sim::Behaviour = evcc_sim::Behaviour {
+    connector: evcc_core::ev::DcConnector::Core,
+    stop_after: None,
+    renegotiate_after: None,
+};
+
+#[test]
+fn a_service_renegotiation_asked_by_the_evse_restarts_the_service_flow_in_the_same_session() {
+    let config = evse_sim::Config {
+        service_renegotiation_supported: true,
+        service_renegotiation_after_loops: Some(2),
+        terminate_after_loops: Some(3),
+        ..Default::default()
+    };
+    let (addr, server) = start(config);
+    let (outcome, log) = run_behaving(addr, CAR);
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    assert_eq!(log.count("SessionSetUp"), 1);
+    // Two service flows through the same authorization.
+    assert_eq!(log.count("MsgTx { msg: ServiceDiscoveryReq }"), 2);
+    assert_eq!(log.count("MsgTx { msg: DcCableCheckReq }"), 2);
+    // Start, Stop, Start, Stop; SessionStopReq for the renegotiation and for the end.
+    assert_eq!(log.count("MsgTx { msg: PowerDeliveryReq }"), 4);
+    assert_eq!(log.count("MsgTx { msg: SessionStopReq }"), 2);
+    assert_eq!(log.count("MsgTx { msg: AuthorizationReq }"), 1);
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+}
+
+#[test]
+fn a_service_renegotiation_asked_by_the_car_is_honoured_when_the_evse_offered_it() {
+    let config = evse_sim::Config { service_renegotiation_supported: true, ..Default::default() };
+    let (addr, server) = start(config);
+    let (outcome, log) = run_behaving(addr, evcc_sim::Behaviour { stop_after: Some(6), renegotiate_after: Some(2), ..CAR });
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    assert_eq!(log.count("MsgTx { msg: ServiceDiscoveryReq }"), 2);
+    assert_eq!(log.count("MsgTx { msg: PowerDeliveryReq }"), 4);
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+}
+
+#[test]
+fn without_the_evse_offering_it_service_renegotiation_is_neither_asked_for_nor_obeyed() {
+    // The charger asks for it anyway (V2G20-1652: the car does not initiate) and the car's
+    // own wish is dropped (V2G20-1476 needs the offer in the first ServiceDiscoveryRes).
+    let config = evse_sim::Config {
+        service_renegotiation_supported: false,
+        service_renegotiation_after_loops: Some(2),
+        ..Default::default()
+    };
+    let (addr, server) = start(config);
+    let (outcome, log) = run_behaving(addr, evcc_sim::Behaviour { stop_after: Some(6), renegotiate_after: Some(3), ..CAR });
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    assert_eq!(log.count("MsgTx { msg: ServiceDiscoveryReq }"), 1);
+    assert_eq!(log.count("MsgTx { msg: PowerDeliveryReq }"), 2);
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+}
+
+#[test]
+fn a_charger_that_refuses_the_renegotiation_it_offered_ends_the_session_with_the_response_code() {
+    // The car asks for a renegotiation the charger will refuse at SessionStopReq (it offered
+    // it in ServiceDiscoveryRes, then answers FAILED_NoServiceRenegotiationSupported).
+    // Built by lying in one place: offer it, then withdraw it before the stop.
+    let config = evse_sim::Config {
+        service_renegotiation_supported: true,
+        refuse_service_renegotiation: true,
+        ..Default::default()
+    };
+    let (addr, server) = start(config);
+    let (outcome, _) = run_behaving(addr, evcc_sim::Behaviour { stop_after: Some(6), renegotiate_after: Some(2), ..CAR });
+    assert_eq!(outcome, Outcome::Ended(EndReason::Rejected(ResponseCode::FailedNoServiceRenegotiationSupported)));
+    drop(server);
+}

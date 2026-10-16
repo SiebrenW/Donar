@@ -71,6 +71,9 @@ pub struct Settings {
     /// Charge loop rounds before the car stops; 0 charges until the charger ends the session.
     pub stop_after: u32,
     pub connector: Connector,
+    /// Ask for a service renegotiation after this many charge loop rounds (once; ignored by
+    /// the session unless the charger offered it).
+    pub renegotiate_after: Option<u32>,
     pub log: LogLevel,
     /// Overrides of the session timing (milliseconds), for quicker runs.
     pub poll_interval_ms: Option<u32>,
@@ -85,6 +88,7 @@ impl Default for Settings {
             tls: None,
             stop_after: 3,
             connector: Connector::Core,
+            renegotiate_after: None,
             log: LogLevel::Info,
             poll_interval_ms: None,
             charge_loop_interval_ms: None,

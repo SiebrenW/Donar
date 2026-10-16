@@ -56,10 +56,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
         match res.evse_processing {
             Processing::Finished => {
-                let msg = ServiceDiscoveryReq { header: self.header(), supported_service_ids: None };
-                let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
-                let mut step =
-                    self.send_then(State::AwaitServiceDiscoveryRes, MsgKind::ServiceDiscoveryReq, framed);
+                let mut step = self.send_service_discovery_req(tx);
                 if step.end.is_none() {
                     self.ongoing_armed = false;
                     step.timers = step.timers.with(TimerCmd::Cancel(Timer::Ongoing));
@@ -78,9 +75,19 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
     }
 
+    pub(super) fn send_service_discovery_req(&mut self, tx: &mut [u8]) -> Step {
+        let msg = ServiceDiscoveryReq { header: self.header(), supported_service_ids: None };
+        let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
+        self.send_then(State::AwaitServiceDiscoveryRes, MsgKind::ServiceDiscoveryReq, framed)
+    }
+
     pub(super) fn on_service_discovery_res(&mut self, res: ServiceDiscoveryRes<'_>, tx: &mut [u8]) -> Step {
         if let Some(end) = self.received(MsgKind::ServiceDiscoveryRes, res.response_code) {
             return end;
+        }
+        // V2G20-1480: only the first ServiceDiscoveryRes of the service session counts.
+        if self.renegotiation_supported.is_none() {
+            self.renegotiation_supported = Some(res.service_renegotiation_supported);
         }
         let wanted = self.config.energy_service;
         if !res.energy_transfer_service_list.service.iter().any(|s| s.service_id == wanted) {

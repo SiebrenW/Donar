@@ -37,7 +37,11 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             self.ongoing_armed = false;
             let msg = common::SessionStopReq {
                 header: self.header(),
-                charging_session: common::ChargingSession::Terminate,
+                charging_session: if self.renegotiating {
+                    common::ChargingSession::ServiceRenegotiation
+                } else {
+                    common::ChargingSession::Terminate
+                },
                 ev_termination_code: None,
                 ev_termination_explanation: None,
             };
@@ -59,9 +63,22 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         self.ongoing_repeat(tx)
     }
 
-    pub(super) fn on_session_stop_res(&mut self, res: SessionStopRes, _tx: &mut [u8]) -> Step {
+    pub(super) fn on_session_stop_res(&mut self, res: SessionStopRes, tx: &mut [u8]) -> Step {
         if let Some(end) = self.received(MsgKind::SessionStopRes, res.response_code) {
             return end;
+        }
+        if core::mem::take(&mut self.renegotiating) {
+            // V2G20-1477: after SessionStopRes OK the EVCC sends a ServiceDiscoveryReq; the
+            // connection and the authorization stay (V2G20-1643).
+            self.ongoing_armed = false;
+            self.poll_pending = false;
+            self.stop_requested = false;
+            self.standby = false;
+            let mut step = self.send_service_discovery_req(tx);
+            if step.end.is_none() {
+                step.notice = Some(Notice::ServicesRenegotiating);
+            }
+            return step;
         }
         // V2G20-1463: after SessionStopRes OK the EVCC terminates the connection.
         self.end(EndReason::Completed)

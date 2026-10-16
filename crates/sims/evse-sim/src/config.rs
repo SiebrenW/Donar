@@ -146,6 +146,15 @@ pub struct Config {
     /// How many `DC_ChargeLoopRes` a standby period lasts before the EVSE sends `ExitStandby`
     /// (V2G20-1854), repeated until the EV leaves it.
     pub standby_loops: u32,
+    /// `ServiceRenegotiationSupported` in `ServiceDiscoveryRes`.
+    pub service_renegotiation_supported: bool,
+    /// After this many `DC_ChargeLoopRes` the EVSE asks the EV for a service renegotiation
+    /// (`EVSENotification`, V2G20-1651) and repeats it until the EV reacts; once per session.
+    /// Sent even when not supported, to see the EV ignore it (V2G20-1652).
+    pub service_renegotiation_after_loops: Option<u32>,
+    /// Offer service renegotiation but answer `SessionStopReq(ServiceRenegotiation)` with
+    /// `FAILED_NoServiceRenegotiationSupported` (V2G20-1955).
+    pub refuse_service_renegotiation: bool,
     /// Response code of the `DC_WeldingDetectionRes`.
     #[serde(with = "code")]
     pub welding_code: ResponseCode,
@@ -184,6 +193,9 @@ impl Default for Config {
             precharge_requests_to_settle: 1,
             power_delivery_code: ResponseCode::Ok,
             terminate_after_loops: None,
+            service_renegotiation_supported: false,
+            service_renegotiation_after_loops: None,
+            refuse_service_renegotiation: false,
             pause_after_loops: None,
             standby_allowed: true,
             standby_loops: 2,

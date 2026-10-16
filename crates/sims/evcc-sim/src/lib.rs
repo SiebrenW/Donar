@@ -78,6 +78,17 @@ impl Ev for SimulatedEv {
     }
 }
 
+/// What the simulated car does besides charging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Behaviour {
+    pub connector: DcConnector,
+    /// After this many charge loop answers the car asks to stop (`None`: it never does, the
+    /// EVSE ends the charge).
+    pub stop_after: Option<u32>,
+    /// After this many charge loop answers the car asks for a service renegotiation, once.
+    pub renegotiate_after: Option<u32>,
+}
+
 /// Runs the simulated car over `stream`; after `stop_after` charge loop answers it asks to
 /// stop (`None`: it never does, the EVSE ends the charge).
 pub fn run_simulated_car(
@@ -88,11 +99,21 @@ pub fn run_simulated_car(
     connector: DcConnector,
     log: impl LogSink,
 ) -> io::Result<Outcome> {
+    run_car(stream, secured, config, Behaviour { connector, stop_after, renegotiate_after: None }, log)
+}
+
+pub fn run_car(
+    stream: &mut impl Transport,
+    secured: bool,
+    config: Config,
+    behaviour: Behaviour,
+    log: impl LogSink,
+) -> io::Result<Outcome> {
     let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
     let open = Rc::new(Cell::new(false));
-    let car = SimulatedEv::new(open.clone(), connector);
+    let car = SimulatedEv::new(open.clone(), behaviour.connector);
     let mut session = Session::new(config, car, log, Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
-    let mut loops = 0;
+    let (mut loops, mut renegotiated) = (0, false);
     run(stream, &mut session, secured, &mut |n| match n {
         // The car closes its contactors and stops drawing current as soon as it is asked to.
         Notice::CloseContactors => Some(Event::ContactorsClosed),
@@ -101,9 +122,21 @@ pub fn run_simulated_car(
             open.set(true);
             Some(Event::ContactorsOpened)
         }
+        // The charger's output is on again for the next pre-charge.
+        Notice::ServicesRenegotiating => {
+            open.set(false);
+            None
+        }
         Notice::ChargeLoop(_) => {
             loops += 1;
-            (Some(loops) == stop_after).then_some(Event::StopRequested)
+            if Some(loops) == behaviour.stop_after {
+                Some(Event::StopRequested)
+            } else if Some(loops) == behaviour.renegotiate_after && !renegotiated {
+                renegotiated = true;
+                Some(Event::RenegotiateServices)
+            } else {
+                None
+            }
         }
         _ => None,
     })

@@ -65,11 +65,14 @@ pub struct Evse {
     standby: Option<u32>,
     /// The EV answered the pause request (with standby or a refusal was sent).
     pause_answered: bool,
+    /// A service renegotiation was requested (and done) in this session.
+    renegotiation_requested: bool,
+    renegotiated: bool,
 }
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false }
+        Self { config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false }
     }
 
     pub fn state(&self) -> State {
@@ -361,6 +364,11 @@ impl Evse {
                 let terminate = self.config.terminate_after_loops.is_some_and(|n| self.loops_seen >= n);
                 let notification = if terminate {
                     Some((common_types::EvseNotification::Terminate, 5))
+                } else if !self.renegotiated
+                    && self.config.service_renegotiation_after_loops.is_some_and(|n| self.loops_seen >= n)
+                {
+                    self.renegotiation_requested = true;
+                    Some((common_types::EvseNotification::ServiceRenegotiation, 10))
                 } else if let Some(rounds) = &mut self.standby {
                     *rounds += 1;
                     (*rounds > self.config.standby_loops).then_some((common_types::EvseNotification::ExitStandby, 60))
@@ -453,7 +461,24 @@ impl Evse {
                 } else {
                     ResponseCode::Ok
                 };
+                let renegotiation = req.charging_session == common::ChargingSession::ServiceRenegotiation;
+                // V2G20-1643, V2G20-1955.
+                let code = if renegotiation && (!self.config.service_renegotiation_supported || self.config.refuse_service_renegotiation) && is_ok(code) {
+                    ResponseCode::FailedNoServiceRenegotiationSupported
+                } else {
+                    code
+                };
                 let res = common::SessionStopRes { header: self.header(), response_code: code };
+                if is_ok(code) && renegotiation {
+                    // The connection and the authorization stay; the service flow starts over.
+                    self.state = State::AwaitServiceDiscoveryReq;
+                    self.renegotiated = true;
+                    self.renegotiation_requested = false;
+                    (self.cable_reqs_seen, self.precharge_reqs_seen, self.loops_seen) = (0, 0, 0);
+                    self.standby = None;
+                    self.pause_answered = false;
+                    return Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: false };
+                }
                 if is_ok(code) {
                     self.state = State::Stopped;
                 }
@@ -473,7 +498,7 @@ impl Evse {
         let res = ServiceDiscoveryRes {
             header: self.header(),
             response_code: code,
-            service_renegotiation_supported: false,
+            service_renegotiation_supported: self.config.service_renegotiation_supported,
             energy_transfer_service_list: ServiceList { service: &list },
             vas_list: None,
         };

@@ -37,3 +37,10 @@ pub fn run_car_recorded(stream: &mut impl Transport, config: Config, stop_after:
     let outcome = run_simulated_car(stream, false, config, stop_after, DcConnector::Core, recording.clone()).unwrap();
     (outcome, recording)
 }
+
+/// Like [`run_car_recorded`] with the car's whole behaviour.
+pub fn run_behaving_car(stream: &mut impl Transport, config: Config, behaviour: evcc_sim::Behaviour) -> (Outcome, Recording) {
+    let recording = Recording::default();
+    let outcome = evcc_sim::run_car(stream, false, config, behaviour, recording.clone()).unwrap();
+    (outcome, recording)
+}

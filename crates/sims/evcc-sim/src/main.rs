@@ -17,7 +17,7 @@ use std::process::ExitCode;
 use evcc_core::sdp::Outcome as SdpOutcome;
 use evcc_core::session::EndReason;
 use evcc_linux::{Outcome, sdp, tls};
-use evcc_sim::{Connector, LogLevel, Settings, StderrLog, Tls, run_simulated_car};
+use evcc_sim::{Behaviour, Connector, LogLevel, Settings, StderrLog, Tls, run_car};
 use v2gtp::sdp::Security;
 
 const USAGE: &str = "usage: evcc-sim --interface IF [--config FILE] [--slac] [--no-tls | --chain F --key F --trust F [--key-password P] [--backwards-compatible]] [--stop-after N | --never-stop] [--connector INLET] [--log LEVEL]";
@@ -149,11 +149,11 @@ fn run(interface: &str, settings: &Settings) -> io::Result<bool> {
     let log = StderrLog {
         level: settings.log.into(),
     };
-    let (stop_after, connector) = (settings.stop_after(), settings.connector.into());
+    let behaviour = Behaviour { connector: settings.connector.into(), stop_after: settings.stop_after(), renegotiate_after: settings.renegotiate_after };
     let outcome = match &settings.tls {
         None => {
             let mut stream = tcp;
-            run_simulated_car(&mut stream, false, config, stop_after, connector, log)?
+            run_car(&mut stream, false, config, behaviour, log)?
         }
         Some(t) => {
             let (chain, key, trust) = (
@@ -175,7 +175,7 @@ fn run(interface: &str, settings: &Settings) -> io::Result<bool> {
                 stream.ssl().version_str(),
                 stream.ssl().current_cipher().map_or("?", |c| c.name())
             );
-            run_simulated_car(&mut stream, true, config, stop_after, connector, log)?
+            run_car(&mut stream, true, config, behaviour, log)?
         }
     };
     eprintln!("session: {outcome:?}");
