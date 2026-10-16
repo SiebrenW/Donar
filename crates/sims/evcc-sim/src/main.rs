@@ -198,12 +198,16 @@ fn run_slac(interface: &str, settings: &Settings) -> io::Result<bool> {
     use evcc_core::slac::Outcome as SlacOutcome;
     let socket = evcc_linux::slac::PacketSocket::open(interface)?;
     let run_id = std::array::from_fn(|i| (std::process::id() as u8).wrapping_add((i as u8).wrapping_mul(37)));
-    let outcome = evcc_linux::slac::run(
-        &socket,
-        settings.slac_config(),
-        run_id,
-        &mut evcc_linux::slac::NoModem,
-    )?;
+    let outcome = match &settings.control_pilot_file {
+        Some(path) => evcc_linux::slac::run_with_pilot(
+            &socket,
+            settings.slac_config(),
+            run_id,
+            &mut evcc_linux::slac::NoModem,
+            &mut evcc_sim::FilePilot(path.into()),
+        )?,
+        None => evcc_linux::slac::run(&socket, settings.slac_config(), run_id, &mut evcc_linux::slac::NoModem)?,
+    };
     eprintln!("slac: {outcome:?}");
     Ok(matches!(outcome, SlacOutcome::Matched { .. }))
 }

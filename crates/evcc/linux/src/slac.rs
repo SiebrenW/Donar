@@ -10,7 +10,7 @@ use std::io::{self, ErrorKind};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::time::{Duration, Instant};
 
-use evcc_core::slac::{Config, Event, Machine, Outcome};
+use evcc_core::slac::{Config, Event, Machine, Outcome, Toggle};
 use evcc_core::Timer;
 use homeplug::{ETHERTYPE, Mac, RunId};
 
@@ -135,11 +135,39 @@ impl Modem for NoModem {
     }
 }
 
+/// The EV's control pilot, for the validation by BCB-Toggle (ISO 15118-3 9.4).
+pub trait ControlPilot {
+    /// Makes the sequence of [`Toggle`]: from state B, `count` times state C and back to B,
+    /// every state `state_ms` long. Returns when the pilot is in state B again. Blocks, which is
+    /// fine: nothing else happens in SLAC while the charger counts.
+    fn toggle(&mut self, toggle: Toggle) -> io::Result<()>;
+}
+
+/// No access to the control pilot (a bench with a veth cable): validation cannot succeed.
+pub struct NoPilot;
+
+impl ControlPilot for NoPilot {
+    fn toggle(&mut self, _toggle: Toggle) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// How often the modem is asked whether the link is up.
 const LINK_POLL: Duration = Duration::from_millis(50);
 
 /// Runs SLAC on `socket` until the machine has an outcome.
 pub fn run(socket: &PacketSocket, config: Config, run_id: RunId, modem: &mut impl Modem) -> io::Result<Outcome> {
+    run_with_pilot(socket, config, run_id, modem, &mut NoPilot)
+}
+
+/// [`run`] for a vehicle that can toggle its control pilot, so that [`Config::validation`] works.
+pub fn run_with_pilot(
+    socket: &PacketSocket,
+    config: Config,
+    run_id: RunId,
+    modem: &mut impl Modem,
+    pilot: &mut impl ControlPilot,
+) -> io::Result<Outcome> {
     enum Next {
         Frame(usize),
         Timer(Timer),
@@ -167,6 +195,9 @@ pub fn run(socket: &PacketSocket, config: Config, run_id: RunId, modem: &mut imp
         }
         for cmd in step.timers.iter() {
             deadlines.apply(cmd);
+        }
+        if let Some(toggle) = step.toggle {
+            pilot.toggle(toggle)?;
         }
         if let Some((nid, nmk)) = step.set_key {
             modem.set_key(nid, nmk)?;

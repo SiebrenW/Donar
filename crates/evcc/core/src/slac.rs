@@ -15,9 +15,16 @@
 //!
 //! Choices the standard leaves open: the first valid CM_SLAC_PARM.CNF starts the measurement
 //! (V2G3-A09-25) and the EVs sends right away instead of waiting out `TP_match_sequence`, a
-//! maximum. The out-of-band validation by control pilot toggling (A.9.3) is not implemented:
-//! a charger whose attenuation is between the thresholds ("potentially found") is only used
-//! when [`Config::accept_potential`] allows it (V2G3-A09-49).
+//! maximum.
+//!
+//! Validation by control pilot toggling (A.9.3, ISO 15118-3 9.4), per [`Config::validation`]:
+//! a charger whose attenuation is between the thresholds ("potentially found"), or any chosen
+//! one when asked to, is asked with CM_VALIDATE.REQ (step 1) whether it can validate; when it
+//! is ready the EV sends the step 2 request with the time to listen and has the host toggle
+//! the control pilot B-C-B ([`Step::toggle`]); the charger answers with the number of toggles
+//! it counted, and only if that is the number made is the charger matched (V2G3-A09-73). Any
+//! other result moves on to the next candidate. Without validation a charger between the
+//! thresholds is only used when [`Config::accept_potential`] allows it (V2G3-A09-49).
 
 use homeplug::{BROADCAST, Frame, GROUPS, Mac, Message, RunId};
 
@@ -50,6 +57,24 @@ pub struct Config {
     pub indirect_db: u8,
     /// Use a charger between the thresholds without validating it by control pilot toggles.
     pub accept_potential: bool,
+    /// Whether to validate the match by control pilot toggles (needs a host that can toggle).
+    pub validation: Validation,
+    /// `C_EV_vald_nb_toggles` (1 to 3): the toggles made; 0 picks a number per run
+    /// ("chosen randomly", V2G3 9.4).
+    pub toggles: u8,
+    /// `TP_EV_vald_state_duration` (200 to 400 ms): how long each B or C state lasts.
+    pub toggle_state_ms: u32,
+}
+
+/// When the EV validates a match by control pilot toggles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Validation {
+    /// Never; chargers between the thresholds depend on [`Config::accept_potential`].
+    Never,
+    /// For chargers between the thresholds ("EVSE_POTENTIALLY_FOUND", V2G3-M09-07).
+    Ambiguous,
+    /// For every charger it is about to match with (V2G3-A09-48: "if the EV insists to").
+    Always,
 }
 
 impl Config {
@@ -66,6 +91,9 @@ impl Config {
         direct_db: 10,
         indirect_db: 20,
         accept_potential: false,
+        validation: Validation::Never,
+        toggles: 0,
+        toggle_state_ms: 300,
     };
 }
 
@@ -98,6 +126,8 @@ pub enum Failure {
     NoMatch,
     /// The link did not come up after the network parameters were set.
     JoinTimeout,
+    /// Every candidate failed the validation by control pilot toggles.
+    ValidationFailed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,8 +144,19 @@ pub struct Step {
     pub send: Option<usize>,
     /// Configure the local modem with this network ID and key (CM_SET_KEY.REQ).
     pub set_key: Option<([u8; 7], [u8; 16])>,
+    /// Toggle the control pilot now (the charger's validation window has begun).
+    pub toggle: Option<Toggle>,
     pub timers: Timers,
     pub outcome: Option<Outcome>,
+}
+
+/// The BCB-Toggle sequence of ISO 15118-3 Figure 12: from state B, `count` times C and B again,
+/// each state lasting `state_ms`. The host runs it while the machine's timer for the window
+/// runs; the pilot ends in state B.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Toggle {
+    pub count: u8,
+    pub state_ms: u32,
 }
 
 const MAX_EVSE: usize = 4;
@@ -137,6 +178,10 @@ enum State {
     Sounds { sent: u8 },
     /// All sounds sent; collecting reports until `SlacResults` expires or all arrived.
     Collecting,
+    /// Step 1 of the validation sent to `candidates[chosen]`; `left` retries remain.
+    Validate1 { left: u8, chosen: usize },
+    /// Step 2 sent: `window` while the toggles are made, then the answer is awaited.
+    Validate2 { chosen: usize, count: u8, window: bool },
     /// CM_SLAC_MATCH.REQ sent to `candidates[chosen]`.
     Match { left: u8, chosen: usize },
     Joining { chosen: usize, nid: [u8; 7], nmk: [u8; 16] },
@@ -155,6 +200,10 @@ pub struct Machine {
     candidates: [Option<Candidate>; MAX_EVSE],
     /// `TT_matching_repetition` has run out: the next failure is final.
     out_of_time: bool,
+    /// Candidates that were validated (or tried) and dropped in this run.
+    dropped: [bool; MAX_EVSE],
+    /// A validation was attempted in this run (decides which failure is reported).
+    validated: bool,
 }
 
 impl Machine {
@@ -168,6 +217,8 @@ impl Machine {
             run_id: [0; 8],
             candidates: [None; MAX_EVSE],
             out_of_time: false,
+            dropped: [false; MAX_EVSE],
+            validated: false,
         }
     }
 
@@ -211,6 +262,8 @@ impl Machine {
         self.run_id[7] = self.run_id[7].wrapping_add(self.attempt);
         self.attempt = self.attempt.wrapping_add(1);
         self.candidates = [None; MAX_EVSE];
+        self.dropped = [false; MAX_EVSE];
+        self.validated = false;
         self.state = State::Parm { left: self.config.retries };
         self.send(Message::ParmReq { run_id: self.run_id }, BROADCAST, tx)
             .arm(Timer::Slac, self.config.response_ms)
@@ -245,6 +298,21 @@ impl Machine {
                 // reports that arrive after the last sound are still collected.
                 Step::default()
             }
+            (Timer::Slac, State::Validate1 { left, chosen }) => {
+                if left == 0 {
+                    // V2G3-A09-63: no answer to any retry, the next candidate.
+                    return self.drop_candidate(chosen, tx);
+                }
+                self.state = State::Validate1 { left: left - 1, chosen };
+                self.validate_req(chosen, 0, tx).arm(Timer::Slac, self.config.response_ms)
+            }
+            // The toggling is over: wait for the answer (V2G3-A09-70).
+            (Timer::Slac, State::Validate2 { chosen, count, window: true }) => {
+                self.state = State::Validate2 { chosen, count, window: false };
+                Step::default().arm(Timer::Slac, self.config.response_ms)
+            }
+            // V2G3-A09-71.
+            (Timer::Slac, State::Validate2 { chosen, window: false, .. }) => self.drop_candidate(chosen, tx),
             (Timer::Slac, State::Match { left, chosen }) => {
                 if left == 0 {
                     return self.fail(Failure::NoMatch, tx);
@@ -294,6 +362,45 @@ impl Machine {
                 }
                 step
             }
+            (State::Validate1 { chosen, .. }, Message::ValidateCnf { toggle_num: 0, result }) if self.is_candidate(chosen, src) => {
+                use homeplug::validate_result::{FAILURE, NOT_READY, NOT_REQUIRED, READY};
+                let found = self.candidates[chosen].and_then(|c| c.attenuation).is_some_and(|a| a <= self.config.direct_db);
+                match result {
+                    // V2G3-A09-67: ready, so the toggling follows.
+                    READY => self.validate_step2(chosen, tx),
+                    // V2G3-A09-50: not required; a charger that is surely the one is taken at
+                    // its word, an uncertain one is made to do it.
+                    NOT_REQUIRED if found => self.begin_match(chosen, tx),
+                    NOT_REQUIRED => self.validate_step2(chosen, tx),
+                    // V2G3-A09-66: busy; ask again until the retries are used up.
+                    NOT_READY => {
+                        let left = match self.state {
+                            State::Validate1 { left, .. } => left,
+                            _ => 0,
+                        };
+                        if left == 0 {
+                            return self.drop_candidate(chosen, tx);
+                        }
+                        self.state = State::Validate1 { left: left - 1, chosen };
+                        self.validate_req(chosen, 0, tx).arm(Timer::Slac, self.config.response_ms)
+                    }
+                    // V2G3-A09-51: no validation here; what was obvious or allowed is used.
+                    FAILURE if found || self.config.accept_potential => self.begin_match(chosen, tx),
+                    // Success is not a step 1 answer (V2G3-A09-65), anything else is garbage.
+                    _ => self.drop_candidate(chosen, tx),
+                }
+            }
+            // A repeated step 1 answer ("ready") is not the step 2 answer.
+            (State::Validate2 { chosen, count, .. }, Message::ValidateCnf { toggle_num, result })
+                if self.is_candidate(chosen, src) && !(toggle_num == 0 && result == homeplug::validate_result::READY) =>
+            {
+                // V2G3-A09-73: only the number of toggles made confirms the match.
+                if result == homeplug::validate_result::SUCCESS && toggle_num == count {
+                    self.begin_match(chosen, tx)
+                } else {
+                    self.drop_candidate(chosen, tx)
+                }
+            }
             (State::Match { chosen, .. }, Message::MatchCnf { pev, evse, run_id, nid, nmk })
                 if run_id == self.run_id && pev == self.mac && self.candidates[chosen].is_some_and(|c| c.mac == evse && c.mac == src) =>
             {
@@ -306,24 +413,87 @@ impl Machine {
 
     /// Chooses the charger to match with once the reports are in (or time is up).
     fn decide(&mut self, tx: &mut [u8]) -> Step {
+        let reported = self.candidates.iter().flatten().any(|c| c.attenuation.is_some());
+        match self.best_candidate() {
+            Some(chosen) => self.proceed(chosen, tx).cancel(Timer::SlacResults),
+            None if reported => self.fail(Failure::NoDirectEvse, tx),
+            None => self.fail(Failure::NoAttenuation, tx),
+        }
+    }
+
+    /// The candidate with the lowest attenuation that may be used and was not dropped.
+    fn best_candidate(&self) -> Option<usize> {
         let mut best: Option<(usize, u8)> = None;
-        let mut reported = false;
         for (i, c) in self.candidates.iter().enumerate() {
             let Some(Candidate { attenuation: Some(a), .. }) = c else { continue };
-            reported = true;
-            let usable = *a <= self.config.direct_db || (self.config.accept_potential && *a <= self.config.indirect_db);
+            if self.dropped[i] {
+                continue;
+            }
+            let validating = self.config.validation != Validation::Never;
+            let usable = *a <= self.config.direct_db || *a <= self.config.indirect_db && (validating || self.config.accept_potential);
             if usable && best.is_none_or(|(_, b)| *a < b) {
                 best = Some((i, *a));
             }
         }
-        match best {
-            Some((chosen, _)) => {
-                self.state = State::Match { left: self.config.retries, chosen };
-                self.match_req(chosen, tx).arm(Timer::Slac, self.config.response_ms).cancel(Timer::SlacResults)
-            }
-            None if reported => self.fail(Failure::NoDirectEvse, tx),
-            None => self.fail(Failure::NoAttenuation, tx),
+        best.map(|(i, _)| i)
+    }
+
+    /// Validates the candidate first if the configuration asks for it, else matches.
+    fn proceed(&mut self, chosen: usize, tx: &mut [u8]) -> Step {
+        let attenuation = self.candidates[chosen].and_then(|c| c.attenuation).unwrap_or(u8::MAX);
+        let validate = match self.config.validation {
+            Validation::Never => false,
+            Validation::Ambiguous => attenuation > self.config.direct_db,
+            Validation::Always => true,
+        };
+        if !validate {
+            return self.begin_match(chosen, tx);
         }
+        self.validated = true;
+        self.state = State::Validate1 { left: self.config.retries, chosen };
+        self.validate_req(chosen, 0, tx).arm(Timer::Slac, self.config.response_ms)
+    }
+
+    fn begin_match(&mut self, chosen: usize, tx: &mut [u8]) -> Step {
+        self.state = State::Match { left: self.config.retries, chosen };
+        self.match_req(chosen, tx).arm(Timer::Slac, self.config.response_ms)
+    }
+
+    /// The validation of `chosen` did not confirm it: the next candidate, or the run fails.
+    fn drop_candidate(&mut self, chosen: usize, tx: &mut [u8]) -> Step {
+        self.dropped[chosen] = true;
+        match self.best_candidate() {
+            Some(next) => self.proceed(next, tx),
+            None => self.fail(Failure::ValidationFailed, tx),
+        }
+    }
+
+    fn is_candidate(&self, chosen: usize, src: Mac) -> bool {
+        self.candidates[chosen].is_some_and(|c| c.mac == src)
+    }
+
+    /// CM_VALIDATE.REQ: step 1 (unicast, timer 0) or step 2 (broadcast, the listening time).
+    fn validate_req(&self, chosen: usize, timer: u8, tx: &mut [u8]) -> Step {
+        let evse = self.candidates[chosen].map_or(BROADCAST, |c| c.mac);
+        let dst = if timer == 0 { evse } else { BROADCAST };
+        self.send(Message::ValidateReq { timer, result: homeplug::validate_result::READY }, dst, tx)
+    }
+
+    /// Step 2: the time to listen covers the whole sequence (V2G3-A09-67) and is the window
+    /// the host toggles in (V2G3-A09-68, 69).
+    fn validate_step2(&mut self, chosen: usize, tx: &mut [u8]) -> Step {
+        let count = match self.config.toggles {
+            0 => 1 + self.run_id[7] % 3,
+            n => n.clamp(1, 3),
+        };
+        let states = 2 * u32::from(count) + 1;
+        // The listening time is sent in units of 100 ms, with a margin of one unit.
+        let units = (states * self.config.toggle_state_ms).div_ceil(100) + 1;
+        let units = units.min(35) as u8;
+        self.state = State::Validate2 { chosen, count, window: true };
+        let mut step = self.validate_req(chosen, units, tx).arm(Timer::Slac, u32::from(units) * 100);
+        step.toggle = Some(Toggle { count, state_ms: self.config.toggle_state_ms });
+        step
     }
 
     /// Sends M-Sound number `sent` (0-based), counting down from `sounds - 1`.

@@ -61,6 +61,7 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
         sb.impair(&secc, impairment)?;
     }
     let mut evcc_settings = scenario.evcc_settings();
+    evcc_settings.control_pilot_file = evcc_settings.control_pilot_file.map(|p| sb.artifacts().join(p).display().to_string());
     let mut secc_args: Vec<String> = Vec::new();
     // Certificates: made for the run, or the partner's own.
     let mut partner_tls = None;
@@ -71,7 +72,8 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
             partner.process
         }
         Kind::EvseSim => {
-            let settings = scenario.secc_settings();
+            let mut settings = scenario.secc_settings();
+            settings.control_pilot_file = settings.control_pilot_file.map(|p| sb.artifacts().join(p).display().to_string());
             let config = sb.write_artifact("secc.toml", toml::to_string(&settings).map_err(io::Error::other)?.as_bytes())?;
             secc_args.extend(["--config".into(), config.display().to_string()]);
             if scenario.uses_tls() {

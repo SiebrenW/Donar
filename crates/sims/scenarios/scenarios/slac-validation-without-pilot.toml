@@ -1,0 +1,23 @@
+name = "slac-validation-without-pilot"
+description = "As slac-validation, but the vehicle's control pilot is not connected to the charger's (no toggles arrive): the charger counts none, the numbers differ and the vehicle does not match the charger."
+timeout_s = 40
+
+[secc]
+kind = "evse-sim"
+[secc.settings]
+slac_responder = true
+control_pilot_file = "cp"
+[secc.settings.slac]
+attenuation = 15
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+slac = true
+slac_validation = "ambiguous"
+slac_repetition_ms = 4000
+
+[expect]
+evcc_exit = 1
+evcc_log = ["slac: Failed(ValidationFailed)"]
+secc_log = ["slac: validation, 0 toggles counted"]

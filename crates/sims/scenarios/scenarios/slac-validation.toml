@@ -1,0 +1,26 @@
+name = "slac-validation"
+description = "The charger's modem measures 15 dB, between the thresholds, so the vehicle validates it: CM_VALIDATE exchange, a BCB-Toggle on the (simulated) control pilot, the charger counts the toggles and answers with the number; only then is the charger matched and a DC session runs."
+timeout_s = 40
+
+[secc]
+kind = "evse-sim"
+[secc.settings]
+slac_responder = true
+control_pilot_file = "cp"
+[secc.settings.slac]
+attenuation = 15
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+slac = true
+slac_validation = "ambiguous"
+slac_toggles = 2
+control_pilot_file = "cp"
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+
+[expect]
+secc_exit = 0
+evcc_log = ["slac: Matched", "session: Ended(Completed)"]
+secc_log = ["slac: validation, 2 toggles counted", "slac: matched", "session: Stopped"]

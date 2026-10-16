@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use evcc_core::slac::{Config, Event, Failure, Machine, Outcome};
+use evcc_core::slac::{Config, Event, Failure, Machine, Outcome, Toggle, Validation};
 use evcc_core::{Timer, TimerCmd};
 use evse_sim::slac::{Config as EvseConfig, Evse};
 use homeplug::{Frame, Mac, Message, mmtype};
@@ -16,6 +16,18 @@ struct Result {
     /// What the EV sent, with the time.
     sent: Vec<(u64, Message)>,
     set_key: Vec<([u8; 7], [u8; 16])>,
+    /// The control pilot toggles the EV asked for, with the time.
+    toggles: Vec<(u64, Toggle)>,
+}
+
+/// What the control pilot shows the charger: the toggles the EV made, plus `offset`.
+#[derive(Clone, Copy)]
+struct Pilot {
+    offset: i16,
+}
+
+impl Pilot {
+    const HONEST: Pilot = Pilot { offset: 0 };
 }
 
 fn evse_at(n: u8, attenuation: u8) -> Evse {
@@ -29,6 +41,10 @@ fn kinds(sent: &[(u64, Message)], t: u16) -> usize {
 /// Runs the machine until it has an outcome. `link_up_after_ms`: when the link comes up after
 /// the key is set (None: never). `noise` frames are delivered to the EV first.
 fn drive(config: Config, evses: &mut [Evse], link_up_after_ms: Option<u64>, noise: &[Vec<u8>]) -> Result {
+    drive_with(config, evses, link_up_after_ms, noise, Pilot::HONEST)
+}
+
+fn drive_with(config: Config, evses: &mut [Evse], link_up_after_ms: Option<u64>, noise: &[Vec<u8>], pilot: Pilot) -> Result {
     let mut m = Machine::new(config);
     let mut tx = [0u8; 128];
     let mut now = 0u64;
@@ -43,6 +59,9 @@ fn drive(config: Config, evses: &mut [Evse], link_up_after_ms: Option<u64>, nois
     let mut link: Option<u64> = None;
     let mut sent = Vec::new();
     let mut set_key = Vec::new();
+    let mut toggles: Vec<(u64, Toggle)> = Vec::new();
+    // Chargers counting toggles: (time the window ends, charger index).
+    let mut counting: Vec<(u64, usize)> = Vec::new();
     let mut event = Event::Start { mac: EV, run_id: RUN };
     let mut frame_storage;
     loop {
@@ -56,16 +75,24 @@ fn drive(config: Config, evses: &mut [Evse], link_up_after_ms: Option<u64>, nois
         if let Some(n) = step.send {
             let frame = tx[..n].to_vec();
             sent.push((now, Frame::parse(&frame).unwrap().message().unwrap()));
-            for evse in evses.iter_mut() {
+            for (i, evse) in evses.iter_mut().enumerate() {
                 queue.extend(evse.handle(&frame));
+                if let Some(ms) = evse.validation_window_ms()
+                    && !counting.iter().any(|&(_, j)| j == i)
+                {
+                    counting.push((now + u64::from(ms), i));
+                }
             }
+        }
+        if let Some(t) = step.toggle {
+            toggles.push((now, t));
         }
         if let Some(key) = step.set_key {
             set_key.push(key);
             link = link_up_after_ms.map(|d| now + d);
         }
         if let Some(outcome) = step.outcome {
-            return Result { outcome, elapsed_ms: now, sent, set_key };
+            return Result { outcome, elapsed_ms: now, sent, set_key, toggles };
         }
         if let Some(f) = queue.pop_front() {
             frame_storage = f;
@@ -74,6 +101,21 @@ fn drive(config: Config, evses: &mut [Evse], link_up_after_ms: Option<u64>, nois
         }
         // Nothing queued: advance to the earliest timer or the link coming up.
         let next_timer = timers.iter().enumerate().filter_map(|(i, t)| t.map(|t| (t, i))).min();
+        // A charger's listening window ends before anything later happens.
+        if let Some(pos) = counting.iter().enumerate().min_by_key(|(_, (t, _))| *t).map(|(p, _)| p) {
+            let (t, i) = counting[pos];
+            if next_timer.is_none_or(|(timer, _)| t <= timer) && link.is_none_or(|l| t <= l) {
+                counting.remove(pos);
+                now = now.max(t);
+                let made = toggles.last().map_or(0, |(_, t)| i16::from(t.count));
+                queue.extend(evses[i].finish_validation((made + pilot.offset).clamp(0, 255) as u8));
+                if let Some(f) = queue.pop_front() {
+                    frame_storage = f;
+                    event = Event::Frame(&frame_storage);
+                    continue;
+                }
+            }
+        }
         match (next_timer, link) {
             (Some((t, _)), Some(l)) if l <= t => {
                 now = now.max(l);
@@ -221,4 +263,136 @@ fn frames_for_others_and_garbage_are_ignored() {
     let r = drive(Config::DEFAULT, &mut evses, Some(10), &noise);
     let Outcome::Matched { evse, .. } = r.outcome else { panic!("{:?}", r.outcome) };
     assert_eq!(evse, evses[0].mac());
+}
+
+// ------------------------------------------------------- validation by control pilot toggles
+
+fn validating(validation: Validation) -> Config {
+    Config { validation, rate_ms: 100, repetition_ms: 3000, ..Config::DEFAULT }
+}
+
+fn validate_reqs(r: &Result) -> Vec<(u64, u8)> {
+    r.sent.iter().filter_map(|(t, m)| if let Message::ValidateReq { timer, .. } = m { Some((*t, *timer)) } else { None }).collect()
+}
+
+fn evse_with(n: u8, attenuation: u8, validation: evse_sim::slac::Validation) -> Evse {
+    Evse::new(EvseConfig { mac: [0x02, 0, 0, 0, 0, 0x10 + n], attenuation, validation, ..Default::default() })
+}
+
+#[test]
+fn an_ambiguous_charger_is_validated_by_toggling_the_control_pilot_and_then_matched() {
+    let mut evses = [evse_at(0, 15)];
+    let r = drive(validating(Validation::Ambiguous), &mut evses, Some(10), &[]);
+    assert!(matches!(r.outcome, Outcome::Matched { .. }), "{:?}", r.outcome);
+    // Step 1 (timer 0, unicast), step 2 (the listening time), then the match request.
+    let reqs = validate_reqs(&r);
+    assert_eq!(reqs.len(), 2, "{reqs:?}");
+    assert_eq!(reqs[0].1, 0);
+    let [(at, toggle)] = r.toggles[..] else { panic!("{:?}", r.toggles) };
+    assert!((1..=3).contains(&toggle.count) && toggle.state_ms == 300);
+    // The listening time covers the 2n+1 states of the sequence and is at most 3.5 s.
+    assert!(u32::from(reqs[1].1) * 100 >= (2 * u32::from(toggle.count) + 1) * 300);
+    assert!(reqs[1].1 <= 35);
+    assert_eq!(at, reqs[1].0);
+    // The match request follows the answer, which came when the listening time was over.
+    let match_at = r.sent.iter().find(|(_, m)| m.mmtype() == mmtype::SLAC_MATCH_REQ).unwrap().0;
+    assert_eq!(match_at, reqs[1].0 + u64::from(reqs[1].1) * 100);
+}
+
+#[test]
+fn a_charger_that_is_surely_the_one_is_not_validated_unless_asked_to() {
+    for (validation, expected) in [(Validation::Never, 0), (Validation::Ambiguous, 0), (Validation::Always, 2)] {
+        let mut evses = [evse_at(0, 5)];
+        let r = drive(validating(validation), &mut evses, Some(10), &[]);
+        assert!(matches!(r.outcome, Outcome::Matched { .. }), "{validation:?}: {:?}", r.outcome);
+        assert_eq!(validate_reqs(&r).len(), expected, "{validation:?}");
+    }
+}
+
+#[test]
+fn the_toggles_and_their_timing_follow_the_configuration() {
+    let mut evses = [evse_at(0, 15)];
+    let config = Config { toggles: 2, toggle_state_ms: 200, ..validating(Validation::Ambiguous) };
+    let r = drive(config, &mut evses, Some(10), &[]);
+    assert_eq!(r.toggles.iter().map(|(_, t)| (t.count, t.state_ms)).collect::<Vec<_>>(), [(2, 200)]);
+    // Five states of 200 ms, in units of 100 ms, and one more.
+    assert_eq!(validate_reqs(&r)[1].1, 11);
+}
+
+#[test]
+fn a_charger_that_counts_another_number_is_not_matched() {
+    for offset in [-1, 1] {
+        let mut evses = [evse_at(0, 15)];
+        let r = drive_with(validating(Validation::Ambiguous), &mut evses, Some(10), &[], Pilot { offset });
+        assert_eq!(r.outcome, Outcome::Failed(Failure::ValidationFailed), "offset {offset}");
+        assert_eq!(kinds(&r.sent, mmtype::SLAC_MATCH_REQ), 0);
+    }
+}
+
+#[test]
+fn the_next_candidate_is_validated_when_the_first_does_not_support_it() {
+    use evse_sim::slac::Validation as Evs;
+    // The closer one cannot validate and is only ambiguous; the other can and gets matched.
+    let mut evses = [evse_with(0, 12, Evs::Failure), evse_with(1, 18, Evs::Ready)];
+    let r = drive(validating(Validation::Ambiguous), &mut evses, Some(10), &[]);
+    assert_eq!(r.outcome, Outcome::Matched { evse: evses[1].mac(), nid: evse_sim::slac::nid(&[0x5A; 16]), nmk: [0x5A; 16] });
+    assert_eq!(r.toggles.len(), 1);
+    // Both were asked in step 1, only the second in step 2.
+    assert_eq!(validate_reqs(&r).iter().filter(|(_, t)| *t == 0).count(), 2);
+}
+
+#[test]
+fn a_charger_that_cannot_validate_is_used_if_it_is_surely_the_one() {
+    use evse_sim::slac::Validation as Evs;
+    // The attenuation is below the direct threshold: "failure" (no such feature) is no reason
+    // to refuse it (V2G3-A09-51, first option).
+    let mut evses = [evse_with(0, 5, Evs::Failure)];
+    let r = drive(validating(Validation::Always), &mut evses, Some(10), &[]);
+    assert!(matches!(r.outcome, Outcome::Matched { .. }), "{:?}", r.outcome);
+    assert!(r.toggles.is_empty());
+    // An ambiguous one is not, unless the vehicle accepts those anyway.
+    let mut evses = [evse_with(0, 15, Evs::Failure)];
+    let r = drive(validating(Validation::Ambiguous), &mut evses, Some(10), &[]);
+    assert_eq!(r.outcome, Outcome::Failed(Failure::ValidationFailed));
+    let mut evses = [evse_with(0, 15, Evs::Failure)];
+    let r = drive(Config { accept_potential: true, ..validating(Validation::Ambiguous) }, &mut evses, Some(10), &[]);
+    assert!(matches!(r.outcome, Outcome::Matched { .. }), "{:?}", r.outcome);
+}
+
+#[test]
+fn a_busy_charger_is_asked_again_and_a_silent_one_times_out() {
+    use evse_sim::slac::Validation as Evs;
+    let mut evses = [evse_with(0, 15, Evs::NotReady(1))];
+    let r = drive(validating(Validation::Ambiguous), &mut evses, Some(10), &[]);
+    assert!(matches!(r.outcome, Outcome::Matched { .. }), "{:?}", r.outcome);
+    assert_eq!(validate_reqs(&r).iter().filter(|(_, t)| *t == 0).count(), 2);
+
+    let mut evses = [evse_with(0, 15, Evs::Silent)];
+    let r = drive(validating(Validation::Ambiguous), &mut evses, Some(10), &[]);
+    assert_eq!(r.outcome, Outcome::Failed(Failure::ValidationFailed));
+    // The first request and the two retries, 200 ms apart (TT_match_response, C_EV_match_retry).
+    let firsts: Vec<u64> = validate_reqs(&r).iter().filter(|(_, t)| *t == 0).map(|(at, _)| *at).collect();
+    let first = firsts[0];
+    assert_eq!(firsts[..3], [first, first + 200, first + 400]);
+}
+
+#[test]
+fn not_required_is_followed_for_a_sure_charger_and_overruled_for_an_ambiguous_one() {
+    use evse_sim::slac::Validation as Evs;
+    let mut evses = [evse_with(0, 5, Evs::NotRequired)];
+    let r = drive(validating(Validation::Always), &mut evses, Some(10), &[]);
+    assert!(matches!(r.outcome, Outcome::Matched { .. }));
+    assert!(r.toggles.is_empty());
+    let mut evses = [evse_with(0, 15, Evs::NotRequired)];
+    let r = drive(validating(Validation::Ambiguous), &mut evses, Some(10), &[]);
+    assert!(matches!(r.outcome, Outcome::Matched { .. }));
+    assert_eq!(r.toggles.len(), 1);
+}
+
+#[test]
+fn without_validation_an_ambiguous_charger_is_still_refused_or_accepted_by_policy() {
+    let mut evses = [evse_at(0, 15)];
+    let r = drive(Config { rate_ms: 100, repetition_ms: 1500, ..Config::DEFAULT }, &mut evses, Some(10), &[]);
+    assert_eq!(r.outcome, Outcome::Failed(Failure::NoDirectEvse));
+    assert!(validate_reqs(&r).is_empty());
 }

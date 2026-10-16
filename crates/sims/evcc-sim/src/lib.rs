@@ -15,7 +15,7 @@ use evcc_linux::{Outcome, Transport, run};
 
 mod settings;
 
-pub use settings::{Connector, LogLevel, Settings, Tls};
+pub use settings::{Connector, LogLevel, Settings, SlacValidation, Tls};
 
 pub struct SimulatedEv {
     connector: DcConnector,
@@ -165,5 +165,27 @@ impl LogSink for StderrLog {
         if record.level() <= self.level {
             eprintln!("[{:?}] {record:?}", record.level());
         }
+    }
+}
+
+/// A simulated control pilot for scenarios: the toggles are timed as the standard asks, and
+/// every completed toggle appends one octet to a file, where the simulated charger counts them.
+#[cfg(target_os = "linux")]
+pub struct FilePilot(pub std::path::PathBuf);
+
+#[cfg(target_os = "linux")]
+impl evcc_linux::slac::ControlPilot for FilePilot {
+    fn toggle(&mut self, toggle: evcc_core::slac::Toggle) -> io::Result<()> {
+        use std::io::Write;
+        let pause = std::time::Duration::from_millis(toggle.state_ms.into());
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&self.0)?;
+        std::thread::sleep(pause); // the initial state B
+        for _ in 0..toggle.count {
+            std::thread::sleep(pause); // C
+            std::thread::sleep(pause); // B again
+            file.write_all(&[1])?;
+            file.flush()?;
+        }
+        Ok(())
     }
 }

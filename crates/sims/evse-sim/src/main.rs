@@ -122,7 +122,7 @@ fn run(args: &Args) -> io::Result<bool> {
         None => None,
     };
     if args.slac || settings.slac_responder {
-        start_slac(&args.interface, settings.slac.clone())?;
+        start_slac(&args.interface, settings.slac.clone(), settings.control_pilot_file.clone())?;
     }
     let ifindex = evcc_linux::sdp::interface_index(&args.interface)?;
     let udp = UdpSocket::bind((Ipv6Addr::UNSPECIFIED, v2gtp::sdp::SDP_PORT))?;
@@ -165,7 +165,7 @@ fn run(args: &Args) -> io::Result<bool> {
 }
 
 #[cfg(target_os = "linux")]
-fn start_slac(interface: &str, config: evse_sim::slac::Config) -> io::Result<()> {
+fn start_slac(interface: &str, config: evse_sim::slac::Config, pilot: Option<String>) -> io::Result<()> {
     use evcc_linux::slac::PacketSocket;
     let socket = PacketSocket::open(interface)?;
     let mut evse = evse_sim::slac::Evse::new(evse_sim::slac::Config {
@@ -180,8 +180,19 @@ fn start_slac(interface: &str, config: evse_sim::slac::Config) -> io::Result<()>
             else {
                 continue;
             };
+            // Toggles are counted from here on (the file may hold those of an earlier run).
+            let before = pilot.as_deref().and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len());
             for frame in evse.handle(&buf[..n]) {
                 let _ = socket.send(&frame);
+            }
+            // The vehicle asked for the validation by BCB-Toggle: listen, count, answer.
+            if let Some(ms) = evse.validation_window_ms() {
+                std::thread::sleep(std::time::Duration::from_millis(ms.into()));
+                let after = pilot.as_deref().and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len());
+                eprintln!("slac: validation, {} toggles counted", after - before);
+                for frame in evse.finish_validation((after - before).min(255) as u8) {
+                    let _ = socket.send(&frame);
+                }
             }
             if !matched && matches!(evse.state(), evse_sim::slac::State::Matched { .. }) {
                 matched = true;
@@ -193,7 +204,7 @@ fn start_slac(interface: &str, config: evse_sim::slac::Config) -> io::Result<()>
 }
 
 #[cfg(not(target_os = "linux"))]
-fn start_slac(_interface: &str, _config: evse_sim::slac::Config) -> io::Result<()> {
+fn start_slac(_interface: &str, _config: evse_sim::slac::Config, _pilot: Option<String>) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "SLAC needs Linux",

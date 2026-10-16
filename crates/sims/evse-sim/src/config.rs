@@ -62,6 +62,10 @@ mod codes {
 pub struct Settings {
     /// Answer SLAC on the interface (the responder follows `slac`).
     pub slac_responder: bool,
+    /// The simulated control pilot the vehicle toggles: one octet per toggle is appended to
+    /// this file (a path relative to the artifacts directory in a scenario). The charger counts
+    /// them when the vehicle asks for the validation by BCB-Toggle.
+    pub control_pilot_file: Option<String>,
     /// Serve this many sessions (connections) one after the other; 0 for ever.
     pub sessions: u32,
     pub session: Config,
@@ -70,7 +74,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { slac_responder: false, sessions: 1, session: Config::default(), slac: Default::default() }
+        Self { slac_responder: false, control_pilot_file: None, sessions: 1, session: Config::default(), slac: Default::default() }
     }
 }
 

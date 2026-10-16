@@ -27,6 +27,10 @@ pub const GROUPS: usize = 58;
 pub mod mmtype {
     pub const SET_KEY_REQ: u16 = 0x6008;
     pub const SET_KEY_CNF: u16 = 0x6009;
+    /// CM_VALIDATE.REQ / .CNF (Tables A.5, A.6): the base is 0x6044 in the HomePlug MME
+    /// numbering that open implementations use; ISO 15118-3 only refers to the HomePlug spec.
+    pub const VALIDATE_REQ: u16 = 0x6044;
+    pub const VALIDATE_CNF: u16 = 0x6045;
     pub const SLAC_PARM_REQ: u16 = 0x6064;
     pub const SLAC_PARM_CNF: u16 = 0x6065;
     pub const START_ATTEN_CHAR_IND: u16 = 0x606A;
@@ -38,6 +42,15 @@ pub mod mmtype {
 }
 
 pub type RunId = [u8; 8];
+
+/// The `Result` field of CM_VALIDATE (Tables A.5, A.6).
+pub mod validate_result {
+    pub const NOT_READY: u8 = 0;
+    pub const READY: u8 = 1;
+    pub const SUCCESS: u8 = 2;
+    pub const FAILURE: u8 = 3;
+    pub const NOT_REQUIRED: u8 = 4;
+}
 
 /// A SLAC message with the fields the standard makes variable; the rest is fixed by the
 /// definitions. Application and security type are always "PEV-EVSE matching, no security".
@@ -53,6 +66,12 @@ pub enum Message {
     AttenCharRsp { source: Mac, run_id: RunId, result: u8 },
     MatchReq { pev: Mac, evse: Mac, run_id: RunId },
     MatchCnf { pev: Mac, evse: Mac, run_id: RunId, nid: [u8; 7], nmk: [u8; 16] },
+    /// The EV asks the charger to validate the match by control pilot toggles. `timer` is 0 in
+    /// the first request and the time the charger listens in units of 100 ms in the second
+    /// (Table A.6); `result` is "ready". The signal type is always 0 (PEV S2 toggles).
+    ValidateReq { timer: u8, result: u8 },
+    /// The answer: `toggle_num` is 0 in the first and the number of toggles seen in the second.
+    ValidateCnf { toggle_num: u8, result: u8 },
     /// Configures the local modem (Table A.8); not sent over the power line.
     SetKeyReq { cco_capability: u8, nid: [u8; 7], nmk: [u8; 16] },
     SetKeyCnf { result: u8 },
@@ -108,6 +127,8 @@ impl Message {
             Message::AttenCharRsp { .. } => mmtype::ATTEN_CHAR_RSP,
             Message::MatchReq { .. } => mmtype::SLAC_MATCH_REQ,
             Message::MatchCnf { .. } => mmtype::SLAC_MATCH_CNF,
+            Message::ValidateReq { .. } => mmtype::VALIDATE_REQ,
+            Message::ValidateCnf { .. } => mmtype::VALIDATE_CNF,
             Message::SetKeyReq { .. } => mmtype::SET_KEY_REQ,
             Message::SetKeyCnf { .. } => mmtype::SET_KEY_CNF,
         }
@@ -173,6 +194,16 @@ impl Message {
                 out[66..73].copy_from_slice(nid);
                 out[74..90].copy_from_slice(nmk);
                 90
+            }
+            Message::ValidateReq { timer, result } => {
+                out[1] = *timer;
+                out[2] = *result;
+                3
+            }
+            Message::ValidateCnf { toggle_num, result } => {
+                out[1] = *toggle_num;
+                out[2] = *result;
+                3
             }
             Message::SetKeyReq { cco_capability, nid, nmk } => {
                 out[0] = 0x01; // key type NMK
@@ -256,6 +287,9 @@ impl Message {
                     nmk: b[74..90].try_into().unwrap(),
                 })
             }
+            // No application and security type here: signal type 0 (PEV S2 toggles), then two fields.
+            mmtype::VALIDATE_REQ => (b.len() >= 3 && b[0] == 0).then(|| Message::ValidateReq { timer: b[1], result: b[2] }),
+            mmtype::VALIDATE_CNF => (b.len() >= 3 && b[0] == 0).then(|| Message::ValidateCnf { toggle_num: b[1], result: b[2] }),
             mmtype::SET_KEY_REQ => {
                 (b.len() >= 38 && b[0] == 0x01 && b[21] == 0x01).then_some(())?;
                 Some(Message::SetKeyReq { cco_capability: b[13], nid: b[14..21].try_into().unwrap(), nmk: b[22..38].try_into().unwrap() })
@@ -286,6 +320,8 @@ mod tests {
     #[test]
     fn every_message_survives_a_round_trip() {
         round_trip(Message::ParmReq { run_id: RUN });
+        round_trip(Message::ValidateReq { timer: 22, result: validate_result::READY });
+        round_trip(Message::ValidateCnf { toggle_num: 3, result: validate_result::SUCCESS });
         round_trip(Message::ParmCnf { num_sounds: 10, time_out: 6, forwarding_sta: EV, run_id: RUN });
         round_trip(Message::StartAttenChar { num_sounds: 10, time_out: 6, forwarding_sta: EV, run_id: RUN });
         round_trip(Message::MnbcSound { cnt: 9, run_id: RUN, rnd: [7; 16] });

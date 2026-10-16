@@ -19,6 +19,24 @@ pub struct Config {
     /// Never send CM_ATTEN_CHAR.IND (a charger that cannot measure).
     pub no_report: bool,
     pub nmk: [u8; 16],
+    /// How the charger answers CM_VALIDATE.REQ (validation by control pilot toggles).
+    pub validation: Validation,
+}
+
+/// The charger's side of the validation by BCB-Toggle (ISO 15118-3 A.9.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Validation {
+    /// Ready; counts the toggles in the second step (the host reports them with
+    /// [`Evse::finish_validation`]).
+    Ready,
+    /// Answers the first request with "not ready" this many times, then "ready".
+    NotReady(u32),
+    /// "Not required" in the first step; counts all the same if the EV goes on.
+    NotRequired,
+    /// "Failure": the feature is not implemented (V2G3-A09-53).
+    Failure,
+    /// Does not answer at all.
+    Silent,
 }
 
 impl Default for Config {
@@ -30,6 +48,7 @@ impl Default for Config {
             ignore_match: 0,
             no_report: false,
             nmk: [0x5A; 16],
+            validation: Validation::Ready,
         }
     }
 }
@@ -51,6 +70,9 @@ pub struct Evse {
     state: State,
     parm_seen: u32,
     match_seen: u32,
+    validate_seen: u32,
+    /// The EV asked for the second step: the charger counts toggles for this long (ms).
+    counting: Option<(Mac, u32)>,
 }
 
 /// The network ID for a key (HomePlug Green PHY 4.4.3.1): PBKDF1 with SHA-256 and five
@@ -69,7 +91,7 @@ pub fn nid(nmk: &[u8; 16]) -> [u8; 7] {
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { config, state: State::Unmatched, parm_seen: 0, match_seen: 0 }
+        Self { config, state: State::Unmatched, parm_seen: 0, match_seen: 0, validate_seen: 0, counting: None }
     }
 
     pub fn state(&self) -> State {
@@ -142,9 +164,45 @@ impl Evse {
                 let nmk = self.config.nmk;
                 out.push(self.frame(Message::MatchCnf { pev, evse, run_id, nid: nid(&nmk), nmk }, ev));
             }
+            // Step 1 of the validation (V2G3-A09-75 ff.) and, with a listening time, step 2.
+            (State::Reported { ev, .. } | State::Matched { ev }, Message::ValidateReq { timer, result }) if ev == from => {
+                if result != homeplug::validate_result::READY {
+                    // V2G3-A09-84: anything but "ready" fails the matching; nothing is sent.
+                    return out;
+                }
+                use homeplug::validate_result::{FAILURE, NOT_READY, NOT_REQUIRED, READY};
+                if timer == 0 {
+                    self.validate_seen += 1;
+                    let answer = match self.config.validation {
+                        Validation::Silent => return out,
+                        Validation::Failure => FAILURE,
+                        Validation::NotRequired => NOT_REQUIRED,
+                        Validation::NotReady(n) if self.validate_seen <= n => NOT_READY,
+                        Validation::NotReady(_) | Validation::Ready => READY,
+                    };
+                    out.push(self.frame(Message::ValidateCnf { toggle_num: 0, result: answer }, ev));
+                } else if matches!(self.config.validation, Validation::Ready | Validation::NotReady(_) | Validation::NotRequired) {
+                    self.counting = Some((ev, u32::from(timer) * 100));
+                }
+            }
             _ => {}
         }
         out
+    }
+
+    /// How long the charger is to count toggles (the listening time of the second request), if
+    /// it was asked to. The host waits that long, counts the toggles on the control pilot and
+    /// calls [`Self::finish_validation`].
+    pub fn validation_window_ms(&self) -> Option<u32> {
+        self.counting.map(|(_, ms)| ms)
+    }
+
+    /// The listening time is over: answer with the number of toggles seen.
+    pub fn finish_validation(&mut self, counted: u8) -> Vec<Vec<u8>> {
+        match self.counting.take() {
+            Some((ev, _)) => vec![self.frame(Message::ValidateCnf { toggle_num: counted, result: homeplug::validate_result::SUCCESS }, ev)],
+            None => Vec::new(),
+        }
     }
 
     fn frame(&self, m: Message, dst: Mac) -> Vec<u8> {

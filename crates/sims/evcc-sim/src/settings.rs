@@ -28,6 +28,15 @@ impl From<Connector> for DcConnector {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+pub enum SlacValidation {
+    #[default]
+    Never,
+    Ambiguous,
+    Always,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     Error,
     #[default]
@@ -66,6 +75,14 @@ pub struct Settings {
     pub slac: bool,
     /// `TT_matching_repetition` (default 10 s): how long SLAC keeps trying.
     pub slac_repetition_ms: Option<u32>,
+    /// When SLAC validates the charger by control pilot toggles; the toggles are written to
+    /// `control_pilot_file` for the simulated charger to count.
+    pub slac_validation: SlacValidation,
+    /// Toggles per validation (1 to 3); 0: chosen per run.
+    pub slac_toggles: u8,
+    /// Where the simulated control pilot leaves one octet per toggle (a path relative to the
+    /// artifacts directory in a scenario).
+    pub control_pilot_file: Option<String>,
     /// Without it the session is unsecured (SDP asks for `NoTls`).
     pub tls: Option<Tls>,
     /// Charge loop rounds before the car stops; 0 charges until the charger ends the session.
@@ -98,6 +115,9 @@ impl Default for Settings {
         Self {
             slac: false,
             slac_repetition_ms: None,
+            slac_validation: SlacValidation::Never,
+            slac_toggles: 0,
+            control_pilot_file: None,
             tls: None,
             stop_after: 3,
             connector: Connector::Core,
@@ -120,6 +140,12 @@ impl Settings {
         if let Some(ms) = self.slac_repetition_ms {
             config.repetition_ms = ms;
         }
+        config.validation = match self.slac_validation {
+            SlacValidation::Never => evcc_core::slac::Validation::Never,
+            SlacValidation::Ambiguous => evcc_core::slac::Validation::Ambiguous,
+            SlacValidation::Always => evcc_core::slac::Validation::Always,
+        };
+        config.toggles = self.slac_toggles;
         config
     }
 
