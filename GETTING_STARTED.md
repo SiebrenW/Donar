@@ -59,12 +59,13 @@ cargo xtask linux-test -p evcc-linux --test netns   # only the namespace tests
 ### Interoperability with another charger implementation
 
 ```sh
-cargo xtask interop --no-tls --connector extended    # what the open-source charger below offers
-cargo xtask interop --no-tls --connector extended --log debug
-INTEROP_SHOW_PARTNER_LOG=1 cargo xtask interop --no-tls --connector extended
+cargo xtask interop                       # plain TCP
+cargo xtask interop iso15118-python-tls   # TLS 1.3 with mutual authentication
+cargo xtask interop --log debug           # extra arguments go to evcc
+INTEROP_SHOW_PARTNER_LOG=1 cargo xtask interop
 ```
 
-This starts the `evcc` command (a simulated vehicle that does SLAC, SDP, optionally TLS, and a DC charging session) in one network namespace and an independent ISO 15118-20 charger in another: the open-source [`iso15118`](https://pypi.org/project/iso15118/) Python library, installed in the container. It prints the vehicle's log and exits with 0 when the session completed. Without arguments the car asks for a `--no-tls` session; `--connector core|extended|dual2|dual4` selects the inlet the car claims (this charger offers `Extended`). `evcc --help`-style usage is in `evcc-linux/src/bin/evcc.rs`.
+This starts the `evcc` command (a simulated vehicle that does SLAC, SDP, optionally TLS, and a DC charging session) in one network namespace and an independent ISO 15118-20 charger in another: the open-source [`iso15118`](https://pypi.org/project/iso15118/) Python library, installed in the container. It prints the vehicle's log and exits with 0 when the session completed. Each partner brings defaults for `evcc` (plain or TLS, the certificates and the `Extended` inlet this charger offers); further arguments are appended, for example `--connector` to change the inlet. This partner's test certificates are secp256r1 (the ISO 15118-2 profile), so the TLS run uses `--backwards-compatible`. `evcc --help`-style usage is in `evcc-linux/src/bin/evcc.rs`.
 
 ### What the tests cover
 

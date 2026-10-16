@@ -3,7 +3,8 @@
 //! session with the EIM authorization.
 //!
 //! ```text
-//! evcc --interface eth1 [--slac] [--no-tls | --chain F --key F --trust F]
+//! evcc --interface eth1 [--slac] [--no-tls | --chain F --key F --trust F
+//!                        [--key-password P] [--backwards-compatible]]
 //!      [--stop-after N | --never-stop] [--connector core|extended|dual2|dual4]
 //!      [--log error|info|debug|trace]
 //! ```
@@ -27,13 +28,15 @@ struct Args {
     chain: Option<String>,
     key: Option<String>,
     trust: Option<String>,
+    key_password: Option<String>,
+    backwards_compatible: bool,
     stop_after: Option<u32>,
     connector: DcConnector,
     level: Level,
 }
 
 fn parse() -> Result<Args, String> {
-    let mut a = Args { interface: String::new(), slac: false, no_tls: false, chain: None, key: None, trust: None, stop_after: Some(3), connector: DcConnector::Core, level: Level::Info };
+    let mut a = Args { interface: String::new(), slac: false, no_tls: false, chain: None, key: None, trust: None, key_password: None, backwards_compatible: false, stop_after: Some(3), connector: DcConnector::Core, level: Level::Info };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
@@ -44,6 +47,8 @@ fn parse() -> Result<Args, String> {
             "--chain" => a.chain = Some(value("--chain")?),
             "--key" => a.key = Some(value("--key")?),
             "--trust" => a.trust = Some(value("--trust")?),
+            "--key-password" => a.key_password = Some(value("--key-password")?),
+            "--backwards-compatible" => a.backwards_compatible = true,
             "--stop-after" => a.stop_after = Some(value("--stop-after")?.parse().map_err(|_| "--stop-after: not a number")?),
             "--never-stop" => a.stop_after = None,
             "--connector" => {
@@ -80,7 +85,7 @@ fn main() -> ExitCode {
     let args = match parse() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("evcc: {e}\nusage: evcc --interface IF [--slac] [--no-tls | --chain F --key F --trust F] [--stop-after N | --never-stop] [--connector INLET] [--log LEVEL]");
+            eprintln!("evcc: {e}\nusage: evcc --interface IF [--slac] [--no-tls | --chain F --key F --trust F [--key-password P] [--backwards-compatible]] [--stop-after N | --never-stop] [--connector INLET] [--log LEVEL]");
             return ExitCode::from(2);
         }
     };
@@ -116,8 +121,20 @@ fn run(args: &Args) -> io::Result<bool> {
     } else {
         let read = |p: &Option<String>| std::fs::read(p.as_deref().unwrap());
         let (chain, key, trust) = (read(&args.chain)?, read(&args.key)?, read(&args.trust)?);
-        let context = tls::client_context(&tls::Credentials { chain_pem: &chain, key_pem: &key, trust_pem: &trust }).map_err(io::Error::other)?;
+        let mut credentials = tls::Credentials::new(&chain, &key, &trust);
+        if let Some(password) = &args.key_password {
+            credentials = credentials.key_password(password.as_bytes());
+        }
+        if args.backwards_compatible {
+            credentials = credentials.backwards_compatible();
+        }
+        let context = tls::client_context(&credentials).map_err(io::Error::other)?;
         let mut stream = tls::connect(&context, tcp)?;
+        eprintln!(
+            "tls: {} {}",
+            stream.ssl().version_str(),
+            stream.ssl().current_cipher().map_or("?", |c| c.name())
+        );
         run_simulated_car(&mut stream, true, config, args.stop_after, args.connector, log)?
     };
     eprintln!("session: {outcome:?}");

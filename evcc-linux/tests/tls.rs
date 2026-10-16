@@ -13,7 +13,7 @@ use evcc_linux::tls::{self, Credentials};
 use evse_sim::State as EvseState;
 
 fn credentials<'a>(own: &'a Identity, trust: &'a Pki) -> Credentials<'a> {
-    Credentials { chain_pem: &own.chain, key_pem: &own.key, trust_pem: &trust.pem }
+    Credentials::new(&own.chain, &own.key, &trust.pem)
 }
 
 fn fast() -> Config {
@@ -97,4 +97,35 @@ fn certificates_on_a_curve_outside_the_profile_are_refused() {
     let (addr, server) = start(SecContext(context(&secc, &vca, true)));
     assert!(drive_client(addr, &context(&evcc, &ca, false)).is_err());
     assert!(server.join().unwrap().is_err());
+}
+
+#[test]
+fn p256_certificates_work_when_backwards_compatibility_is_asked_for() {
+    // The ISO 15118-2 certificate profile (V2G20-2056, 2057) on top of TLS 1.3.
+    let (ca, secc) = pki(Curve::P256, "SECC");
+    let (vca, evcc) = pki(Curve::P256, "EVCC");
+    let server = tls::server_context(&credentials(&secc, &vca).backwards_compatible()).unwrap();
+    let client = tls::client_context(&credentials(&evcc, &ca).backwards_compatible()).unwrap();
+    let (addr, server) = start(SecContext(server));
+    let outcome = drive_client(addr, &client).unwrap();
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+}
+
+#[test]
+fn an_encrypted_private_key_needs_its_passphrase() {
+    let (_, secc) = pki(Curve::P521, "SECC");
+    let (ca, _) = pki(Curve::P521, "EVCC");
+    let key = openssl::pkey::PKey::private_key_from_pem(&secc.key).unwrap();
+    let encrypted = key.private_key_to_pem_pkcs8_passphrase(openssl::symm::Cipher::aes_128_cbc(), b"secret").unwrap();
+    let with = |password: Option<&[u8]>| {
+        let mut c = Credentials::new(&secc.chain, &encrypted, &ca.pem);
+        if let Some(p) = password {
+            c = c.key_password(p);
+        }
+        tls::server_context(&c).is_ok()
+    };
+    assert!(with(Some(b"secret")));
+    assert!(!with(Some(b"wrong")));
+    assert!(!with(None));
 }

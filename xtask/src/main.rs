@@ -234,16 +234,13 @@ fn linux_container() -> Result<Command, String> {
 }
 
 /// Runs the `evcc` command against an independent charger implementation (default partner:
-/// `iso15118-python`) in the Linux container. Further arguments go to `evcc`; without any,
-/// the session runs over plain TCP (`--no-tls`).
+/// `iso15118-python`; also `iso15118-python-tls`) in the Linux container. The partner's
+/// defaults for `evcc` (TLS or not, certificates, inlet) come first, further arguments after.
 fn interop(args: Vec<String>) -> Result<(), String> {
-    let (partner, mut evcc_args) = match args.split_first() {
+    let (partner, evcc_args) = match args.split_first() {
         Some((p, rest)) if !p.starts_with("--") => (p.clone(), rest.to_vec()),
         _ => ("iso15118-python".to_string(), args),
     };
-    if evcc_args.is_empty() {
-        evcc_args.push("--no-tls".into());
-    }
     let mut cmd = linux_container()?;
     // `own-volumes` first: volumes made by an older image belong to root.
     cmd.args(["bash", "-c", r#"own-volumes && cargo build --quiet -p evcc-linux --bin evcc && exec sudo -E docker/interop.sh "$@""#, "interop"])

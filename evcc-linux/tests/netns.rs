@@ -122,7 +122,7 @@ fn slac_refuses_a_charger_that_is_too_far_away() {
 type Mac = homeplug::Mac;
 
 fn credentials<'a>(own: &'a common::pki::Identity, trust: &'a common::pki::Pki) -> tls::Credentials<'a> {
-    tls::Credentials { chain_pem: &own.chain, key_pem: &own.key, trust_pem: &trust.pem }
+    tls::Credentials::new(&own.chain, &own.key, &trust.pem)
 }
 
 /// The whole bring-up of a charging session: SLAC, SDP by multicast, TLS 1.3 with mutual
