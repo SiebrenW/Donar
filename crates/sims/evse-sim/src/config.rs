@@ -235,17 +235,12 @@ impl Default for Config {
             authorization_code: ResponseCode::Ok,
             offered_authorization: vec![Authorization::Eim],
             energy_services: vec![2],
-            // Connector 1, ControlMode 2 (Dynamic), MobilityNeedsMode 1, Pricing 0; the
-            // numbers are those of ISO 15118-20:2022 Table 207.
-            parameter_sets: vec![OfferedSet::new(
-                1,
-                [
-                    ("Connector", 1),
-                    ("ControlMode", 2),
-                    ("MobilityNeedsMode", 1),
-                    ("Pricing", 0),
-                ],
-            )],
+            // One set per inlet (Connector 1 to 4), ControlMode 2 (Dynamic), MobilityNeedsMode 1,
+            // Pricing 0, so that any vehicle finds its own; the numbers are those of
+            // ISO 15118-20:2022 Table 207.
+            parameter_sets: (1..=4)
+                .map(|connector| OfferedSet::new(connector as u16, [("Connector", connector), ("ControlMode", 2), ("MobilityNeedsMode", 1), ("Pricing", 0)]))
+                .collect(),
             selection_code: ResponseCode::Ok,
             cpd_code: ResponseCode::Ok,
             schedule_ongoing_responses: 0,
