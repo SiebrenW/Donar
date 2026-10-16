@@ -36,6 +36,9 @@ fn serve_evse(stream: &mut (impl Read + Write), mut evse: Evse, live: Option<&st
             return Ok(evse.state());
         }
         let outputs = evse.handle(&buf[..n]);
+        for line in evse.take_log() {
+            eprintln!("[evse] {line}");
+        }
         if let Some(live) = live {
             live.set_state(evse.state());
         }

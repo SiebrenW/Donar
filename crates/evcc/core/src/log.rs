@@ -4,6 +4,7 @@
 //! synchronously.
 
 use exi::DecodeError;
+use iso15118_20::common::{Authorization, ParameterSet, Service};
 use iso15118_20::common_types::{Processing, ResponseCode};
 
 use crate::session::{EndReason, State};
@@ -72,6 +73,13 @@ pub enum Record<'a> {
     /// A frame that is not a valid response to the request in flight was dropped (V2G20-440).
     Ignored { state: State, payload_type: u16 },
     DecodeFailed { state: State, error: DecodeError },
+    /// The charger offers no authorization service the vehicle can use.
+    NoAuthorization { wanted: Authorization, offered: &'a [Authorization] },
+    /// The charger does not offer the energy transfer service the vehicle wants.
+    NoService { wanted: u16, offered: &'a [Service] },
+    /// None of the offered parameter sets has the vehicle's inlet (`connector`, the value of
+    /// the `Connector` parameter) and every `(name, value)` of the vehicle's filter.
+    NoParameterSet { connector: i32, filter: &'static [(&'static str, i32)], offered: &'a [ParameterSet<'a>] },
     Ended { reason: EndReason },
 }
 
@@ -88,7 +96,7 @@ impl Record<'_> {
                 Level::Debug
             }
             Record::RxPayload { .. } => Level::Trace,
-            Record::DecodeFailed { .. } => Level::Error,
+            Record::DecodeFailed { .. } | Record::NoAuthorization { .. } | Record::NoService { .. } | Record::NoParameterSet { .. } => Level::Error,
             Record::Ignored { .. } => Level::Info,
             Record::Ended { reason } => match reason {
                 EndReason::Completed => Level::Info,

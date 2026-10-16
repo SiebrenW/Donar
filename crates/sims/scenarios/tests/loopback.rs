@@ -471,3 +471,20 @@ fn the_evse_asking_for_a_pause_can_be_answered_with_a_session_pause() {
     assert_eq!(log.count("to: AwaitPowerDeliveryStandbyRes"), 0);
     assert_eq!(server.join().unwrap().unwrap(), EvseState::Paused);
 }
+
+#[test]
+fn the_vehicle_logs_which_parameters_it_wanted_and_what_was_offered() {
+    // A charger with a set for the extended inlet only, written with the names a file may use.
+    let set: OfferedSet = toml::from_str("id = 5\nvalues = { Connector = \"extended\", ControlMode = \"dynamic\", MobilityNeedsMode = \"evcc\" }").unwrap();
+    let (addr, server) = start(evse_sim::Config { parameter_sets: vec![set], ..Default::default() });
+    let mut stream = TcpStream::connect(addr).unwrap();
+    let (outcome, log) = common::run_car_recorded(&mut stream, fast(), Some(3));
+    assert_eq!(outcome, Outcome::Ended(EndReason::NoCompatibleParameterSet));
+    assert_eq!(log.count("NoParameterSet"), 1);
+    // The vehicle's inlet (core is 1), its filter and the offer with its parameters.
+    let line = log.0.borrow().iter().find(|r| r.contains("NoParameterSet")).cloned().unwrap();
+    for part in ["connector: 1", "ControlMode", "parameter_set_id: 5", "\"Connector\"", "ByteValue(2)"] {
+        assert!(line.contains(part) || line.contains(&part.replace("ByteValue", "IntValue")), "{part} missing from {line}");
+    }
+    drop(server);
+}

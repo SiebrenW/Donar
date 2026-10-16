@@ -79,16 +79,78 @@ impl Default for Settings {
     }
 }
 
-/// A parameter set offered in `ServiceDetailRes`: the numbers of ISO 15118-20:2022 Table 207
-/// by parameter name (`Connector`, `ControlMode`, `MobilityNeedsMode`, `Pricing`).
+/// Names for the values of the service parameters (ISO 15118-20:2022 Table 207) that a file may
+/// use instead of the numbers: `Connector` (the vehicle's `connector` setting) and `ControlMode`.
+const NAMED_VALUES: &[(&str, &[(&str, i32)])] = &[
+    ("Connector", &[("core", 1), ("extended", 2), ("dual2", 3), ("dual4", 4)]),
+    ("ControlMode", &[("scheduled", 1), ("dynamic", 2)]),
+    ("MobilityNeedsMode", &[("evcc", 1), ("evcc_and_secc", 2)]),
+];
+
+/// The name of a parameter value, if it has one.
+pub fn value_name(parameter: &str, value: i32) -> Option<&'static str> {
+    let names = NAMED_VALUES.iter().find(|(p, _)| *p == parameter)?.1;
+    names.iter().find(|(_, v)| *v == value).map(|(n, _)| *n)
+}
+
+mod parameter_values {
+    use super::*;
+    use serde::{Deserializer, de::Error};
+
+    /// Numbers, or the names of [`NAMED_VALUES`].
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<String, i32>, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Value {
+            Number(i32),
+            Name(String),
+        }
+        let mut out = BTreeMap::new();
+        for (parameter, value) in BTreeMap::<String, Value>::deserialize(d)? {
+            let number = match value {
+                Value::Number(n) => n,
+                Value::Name(name) => {
+                    let names = NAMED_VALUES.iter().find(|(p, _)| *p == parameter).map(|(_, n)| *n).ok_or_else(|| D::Error::custom(format!("{parameter} has no named values, use a number")))?;
+                    names
+                        .iter()
+                        .find(|(n, _)| *n == name)
+                        .map(|(_, v)| *v)
+                        .ok_or_else(|| D::Error::custom(format!("{parameter}: unknown value {name:?}; one of {}", names.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", "))))?
+                }
+            };
+            out.insert(parameter, number);
+        }
+        Ok(out)
+    }
+}
+
+/// A parameter set offered in `ServiceDetailRes`: the values of ISO 15118-20:2022 Table 207
+/// by parameter name (`Connector`, `ControlMode`, `MobilityNeedsMode`, `Pricing`). A file may
+/// give `Connector` and `ControlMode` by name (`Connector = "extended"`), the same names as the
+/// vehicle's `connector` setting.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OfferedSet {
     pub id: u16,
+    #[serde(deserialize_with = "parameter_values::deserialize")]
+    #[schemars(with = "BTreeMap<String, serde_json::Value>")]
     pub values: BTreeMap<String, i32>,
 }
 
 impl OfferedSet {
+    /// `id 2: Connector=extended(2), ControlMode=dynamic(2)`, for logs.
+    pub fn describe(&self) -> String {
+        let values: Vec<String> = self
+            .values
+            .iter()
+            .map(|(k, v)| match value_name(k, *v) {
+                Some(name) => format!("{k}={name}({v})"),
+                None => format!("{k}={v}"),
+            })
+            .collect();
+        format!("set {}: {}", self.id, values.join(", "))
+    }
+
     pub fn new<'a>(id: u16, values: impl IntoIterator<Item = (&'a str, i32)>) -> Self {
         Self {
             id,
@@ -305,6 +367,16 @@ mod tests {
             )]
         );
         assert_eq!(config.evse_id, Config::default().evse_id);
+    }
+
+    #[test]
+    fn parameter_values_may_be_named() {
+        let set: OfferedSet = toml::from_str("id = 3\nvalues = { Connector = \"extended\", ControlMode = \"dynamic\", Pricing = 0 }").unwrap();
+        assert_eq!(set, OfferedSet::new(3, [("Connector", 2), ("ControlMode", 2), ("Pricing", 0)]));
+        assert_eq!(set.describe(), "set 3: Connector=extended(2), ControlMode=dynamic(2), Pricing=0");
+        let e = toml::from_str::<OfferedSet>("id = 1\nvalues = { Connector = \"big\" }").unwrap_err().to_string();
+        assert!(e.contains("core, extended, dual2, dual4"), "{e}");
+        assert!(toml::from_str::<OfferedSet>("id = 1\nvalues = { Pricing = \"free\" }").is_err());
     }
 
     #[test]

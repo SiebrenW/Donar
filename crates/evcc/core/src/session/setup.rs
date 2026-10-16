@@ -68,6 +68,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             return self.end(EndReason::Rejected(res.response_code));
         }
         if !res.authorization_services.contains(&Authorization::Eim) {
+            self.log.record(&Record::NoAuthorization { wanted: Authorization::Eim, offered: res.authorization_services });
             return self.end(EndReason::NoCompatibleAuthorization);
         }
         self.send_authorization_req(State::AwaitAuthorizationRes, tx)
@@ -117,6 +118,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
         let wanted = self.config.energy_service;
         if !res.energy_transfer_service_list.service.iter().any(|s| s.service_id == wanted) {
+            self.log.record(&Record::NoService { wanted, offered: res.energy_transfer_service_list.service });
             return self.end(EndReason::NoCompatibleService);
         }
         let msg = ServiceDetailReq { header: self.header(), service_id: wanted };
@@ -132,6 +134,11 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             return self.end(EndReason::UnexpectedMessage);
         }
         let Some(parameter_set_id) = self.pick_parameter_set(res.service_parameter_list.parameter_set) else {
+            self.log.record(&Record::NoParameterSet {
+                connector: self.ev.dc_connector() as i32,
+                filter: self.config.parameter_filter,
+                offered: res.service_parameter_list.parameter_set,
+            });
             return self.end(EndReason::NoCompatibleParameterSet);
         };
         let selected = SelectedService { service_id: res.service_id, parameter_set_id };

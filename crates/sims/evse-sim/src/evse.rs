@@ -79,11 +79,12 @@ pub struct Evse {
     /// A schedule renegotiation finished on the side stream.
     side_renegotiated: bool,
     live: Option<Arc<EvseLive>>,
+    log: Vec<String>,
 }
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None }
+        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new() }
     }
 
     /// Reports the charge loop measurements to a test platform and takes its edits.
@@ -94,6 +95,16 @@ impl Evse {
 
     pub fn state(&self) -> State {
         self.state
+    }
+
+    /// What the charger did since the last call, one line each: what it received, what it
+    /// offered and answered, why it refused or closed.
+    pub fn take_log(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.log)
+    }
+
+    fn note(&mut self, line: impl Into<String>) {
+        self.log.push(line.into());
     }
 
     /// Feeds bytes read from the stream; returns the messages to send, in order.
@@ -124,7 +135,44 @@ impl Evse {
         outputs
     }
 
+    /// The request the charger waits for in `state`.
+    fn expects(state: State) -> &'static str {
+        match state {
+            State::AwaitSupportedAppProtocolReq => "SupportedAppProtocolReq",
+            State::AwaitSessionSetupReq => "SessionSetupReq",
+            State::AwaitAuthorizationSetupReq => "AuthorizationSetupReq",
+            State::AwaitAuthorizationReq => "AuthorizationReq",
+            State::AwaitServiceDiscoveryReq => "ServiceDiscoveryReq",
+            State::AwaitServiceDetailReq => "ServiceDetailReq",
+            State::AwaitServiceSelectionReq => "ServiceSelectionReq",
+            State::AwaitChargeParameterDiscoveryReq => "DC_ChargeParameterDiscoveryReq",
+            State::AwaitScheduleExchangeReq => "ScheduleExchangeReq",
+            State::AwaitCableCheckReq => "DC_CableCheckReq",
+            State::AwaitPreChargeReq => "DC_PreChargeReq",
+            State::AwaitPowerDeliveryReq => "PowerDeliveryReq",
+            State::ChargeLoop => "DC_ChargeLoopReq or PowerDeliveryReq",
+            State::AwaitWeldingReq => "DC_WeldingDetectionReq",
+            State::AwaitSessionStopReq => "SessionStopReq",
+            State::Stopped | State::Paused | State::Closed => "nothing",
+        }
+    }
+
     fn on_frame(&mut self, payload_type: PayloadType, payload: &[u8]) -> Output {
+        let before = self.state;
+        self.note(format!("rx {} bytes, payload type {:#06x}, waiting for {}", payload.len(), payload_type.0, Self::expects(before)));
+        let out = self.on_frame_inner(payload_type, payload);
+        match (&out.send, out.close) {
+            (None, true) => self.note(format!("closing without an answer: the frame is not a decodable {} (state {before:?})", Self::expects(before))),
+            (None, false) => self.note("no answer"),
+            (Some(bytes), close) => self.note(format!("tx {} bytes{}", bytes.len(), if close { ", then closing" } else { "" })),
+        }
+        if self.state != before {
+            self.note(format!("state {before:?} -> {:?}", self.state));
+        }
+        out
+    }
+
+    fn on_frame_inner(&mut self, payload_type: PayloadType, payload: &[u8]) -> Output {
         let mut mem = vec![0u8; 8192];
         let arena = Arena::new(&mut mem);
         let closed = Output { send: None, close: true };
@@ -263,6 +311,8 @@ impl Evse {
                 let valid = self.config.energy_services.contains(&service_id)
                     && self.config.parameter_sets.iter().any(|set| set.id == parameter_set_id);
                 if !valid {
+                    let sets: Vec<u16> = self.config.parameter_sets.iter().map(|s| s.id).collect();
+                    self.note(format!("selected service {service_id} with parameter set {parameter_set_id}; offered services {:?}, parameter set ids {sets:?}", self.config.energy_services));
                     return self.selection_res(ResponseCode::FailedServiceSelectionInvalid);
                 }
                 let code = self.config.selection_code;
@@ -593,7 +643,8 @@ impl Evse {
     }
 
     /// `ServiceDiscoveryRes`; a failure code closes the connection.
-    fn discovery_res(&self, code: ResponseCode) -> Output {
+    fn discovery_res(&mut self, code: ResponseCode) -> Output {
+        self.note(format!("ServiceDiscoveryReq: answering {code:?}, energy services {:?}", self.config.energy_services));
         let list: Vec<Service> =
             self.config.energy_services.iter().map(|&service_id| Service { service_id, free_service: false }).collect();
         let res = ServiceDiscoveryRes {
@@ -609,7 +660,9 @@ impl Evse {
         }
     }
 
-    fn detail_res(&self, code: ResponseCode, service_id: u16) -> Output {
+    fn detail_res(&mut self, code: ResponseCode, service_id: u16) -> Output {
+        let offered: Vec<String> = self.config.parameter_sets.iter().map(|s| s.describe()).collect();
+        self.note(format!("ServiceDetailReq for service {service_id}: answering {code:?}, offering {}", if offered.is_empty() { "no parameter sets".to_string() } else { offered.join("; ") }));
         let names: Vec<Vec<Parameter<'_>>> = self
             .config
             .parameter_sets
@@ -637,7 +690,8 @@ impl Evse {
         }
     }
 
-    fn selection_res(&self, code: ResponseCode) -> Output {
+    fn selection_res(&mut self, code: ResponseCode) -> Output {
+        self.note(format!("ServiceSelectionReq: answering {code:?}"));
         let res = ServiceSelectionRes { header: self.header(), response_code: code };
         Output {
             send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)),
