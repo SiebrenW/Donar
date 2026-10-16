@@ -1,0 +1,19 @@
+name = "charger-ends-charge"
+description = "The charger asks the vehicle to terminate after four charge loop rounds; the vehicle would charge for ever."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session]
+terminate_after_loops = 4
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+stop_after = 0
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)"]

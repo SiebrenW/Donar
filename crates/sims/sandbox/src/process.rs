@@ -18,11 +18,12 @@ pub struct Spawn {
     env: Vec<(OsString, OsString)>,
     cwd: Option<PathBuf>,
     label: Option<String>,
+    net_raw: bool,
 }
 
 impl Spawn {
     pub fn new(program: impl Into<OsString>) -> Self {
-        Self { program: program.into(), args: Vec::new(), env: Vec::new(), cwd: None, label: None }
+        Self { program: program.into(), args: Vec::new(), env: Vec::new(), cwd: None, label: None, net_raw: false }
     }
 
     pub fn arg(mut self, arg: impl Into<OsString>) -> Self {
@@ -42,6 +43,14 @@ impl Spawn {
 
     pub fn current_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.cwd = Some(dir.into());
+        self
+    }
+
+    /// Lets the participant open raw packet sockets (`CAP_NET_RAW`, needed for SLAC) though it
+    /// runs as the sandbox's user: the capability is kept as an ambient one, nothing else is.
+    /// Without a user to drop to the participant is root anyway.
+    pub fn net_raw(mut self) -> Self {
+        self.net_raw = true;
         self
     }
 
@@ -73,10 +82,12 @@ impl Process {
         let tail = |cmd: &mut Command| {
             cmd.arg(&spec.program).args(&spec.args);
         };
+        let caps: &[&str] = if spec.net_raw { &["--inh-caps=+net_raw", "--ambient-caps=+net_raw"] } else { &[] };
         match (node, user) {
             (Some(n), Some(u)) => {
                 cmd = Command::new("ip");
-                cmd.args(["netns", "exec", &n.namespace, "setpriv", &format!("--reuid={}", u.uid), &format!("--regid={}", u.gid), "--clear-groups", "--"]);
+                cmd.args(["netns", "exec", &n.namespace, "setpriv", &format!("--reuid={}", u.uid), &format!("--regid={}", u.gid), "--clear-groups"]);
+                cmd.args(caps).arg("--");
                 tail(&mut cmd);
             }
             (Some(n), None) => {
@@ -86,7 +97,8 @@ impl Process {
             }
             (None, Some(u)) => {
                 cmd = Command::new("setpriv");
-                cmd.args([&format!("--reuid={}", u.uid), &format!("--regid={}", u.gid), "--clear-groups", "--"]);
+                cmd.args([&format!("--reuid={}", u.uid), &format!("--regid={}", u.gid), "--clear-groups"]);
+                cmd.args(caps).arg("--");
                 tail(&mut cmd);
             }
             (None, None) => {

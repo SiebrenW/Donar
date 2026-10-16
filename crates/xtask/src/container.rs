@@ -11,7 +11,7 @@ use crate::{run, workspace_root};
 pub fn linux_test(cargo_args: Vec<String>) -> Result<(), String> {
     let mut cmd = linux_container()?;
     // `own-volumes` first: volumes made by an older image belong to root.
-    cmd.args(["bash", "-c", r#"own-volumes && exec cargo "$@""#, "cargo", "test"]);
+    cmd.args(["bash", "-c", r#"own-volumes && cargo build --quiet --workspace --bins && exec cargo "$@""#, "cargo", "test"]);
     if cargo_args.is_empty() {
         cmd.args(["--workspace"]);
     } else {
@@ -34,21 +34,24 @@ fn linux_container() -> Result<Command, String> {
         .arg("--volume")
         .arg(format!("{}:/workspaces/evcc-rs", root.display()))
         .args(["--volume", "evcc-rs-target-v2:/target", "--volume", "evcc-rs-cargo-v2:/usr/local/cargo/registry"])
-        // Lets `INTEROP_SHOW_PARTNER_LOG=1 cargo xtask interop` print the partner's log.
-        .args(["--env", "INTEROP_SHOW_PARTNER_LOG"])
         .args(["--workdir", "/workspaces/evcc-rs", IMAGE]);
     Ok(cmd)
 }
 
-/// Runs the `evcc-sim` command against an independent charger implementation (default partner:
-/// `iso15118-python`; also `iso15118-python-tls`) in the Linux container, in a sandbox
-/// (`crates/sims/scenarios/src/bin/interop.rs`). The partner's defaults for `evcc-sim` (TLS or
-/// not, certificates, inlet) come first, further arguments after.
-pub fn interop(args: Vec<String>) -> Result<(), String> {
+/// Runs the interoperability scenarios (`crates/sims/scenarios/scenarios/interop/`) in the Linux
+/// container: the simulated vehicle against an independent charger implementation. Names
+/// select scenarios (`iso15118-python`, `iso15118-python-tls`); without any all of them run.
+pub fn interop(names: Vec<String>) -> Result<(), String> {
+    let dir = "crates/sims/scenarios/scenarios/interop";
+    let files: Vec<String> = if names.is_empty() {
+        vec![format!("{dir}/*.toml")]
+    } else {
+        names.iter().map(|n| format!("{dir}/{n}.toml")).collect()
+    };
     let mut cmd = linux_container()?;
-    // `own-volumes` first: volumes made by an older image belong to root. Only the driver runs
-    // as root (it creates the namespaces); the participants drop to the invoking user.
-    cmd.args(["bash", "-c", r#"own-volumes && cargo build --quiet -p evcc-sim -p scenarios --bins && exec sudo -E /target/debug/interop "$@""#, "interop"])
-        .args(args);
+    // `own-volumes` first: volumes made by an older image belong to root. Only the runner
+    // runs as root (it creates the namespaces); the participants drop to the invoking user.
+    cmd.args(["bash", "-c", r#"own-volumes && cargo build --quiet --workspace --bins && exec sudo -E /target/debug/scenario $@"#, "interop"])
+        .args(files);
     run(&mut cmd)
 }

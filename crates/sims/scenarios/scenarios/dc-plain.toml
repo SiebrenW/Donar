@@ -1,0 +1,17 @@
+name = "dc-plain"
+description = "A DC session over plain TCP, found by multicast SDP across the cable."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)"]
+secc_log = ["sdp: answered after 1 request(s)", "session: Stopped"]

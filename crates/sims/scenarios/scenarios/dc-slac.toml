@@ -1,0 +1,20 @@
+name = "dc-slac"
+description = "SLAC matches the charger on the other end of the cable, then a plain DC session."
+timeout_s = 40
+
+[secc]
+kind = "evse-sim"
+[secc.settings]
+slac_responder = true
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+slac = true
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+
+[expect]
+secc_exit = 0
+evcc_log = ["slac: Matched", "session: Ended(Completed)"]
+secc_log = ["slac: matched", "session: Stopped"]

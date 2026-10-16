@@ -1,0 +1,20 @@
+name = "slac-too-far"
+description = "The charger's modem measures 40 dB: it is not directly connected and the vehicle refuses it."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+[secc.settings]
+slac_responder = true
+[secc.settings.slac]
+attenuation = 40
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+slac = true
+slac_repetition_ms = 1500
+
+[expect]
+evcc_exit = 1
+evcc_log = ["slac: Failed(NoDirectEvse)"]

@@ -119,7 +119,7 @@ fn run(args: &Args) -> io::Result<bool> {
         }
         None => None,
     };
-    if args.slac {
+    if args.slac || settings.slac_responder {
         start_slac(&args.interface, settings.slac.clone())?;
     }
     let ifindex = evcc_linux::sdp::interface_index(&args.interface)?;

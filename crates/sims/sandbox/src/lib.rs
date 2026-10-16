@@ -151,6 +151,19 @@ impl Sandbox {
         &self.artifacts
     }
 
+    /// Writes a file into the artifacts directory (`name` may have subdirectories) owned by the
+    /// participants' user, and returns its path. For configuration and credentials that the
+    /// participants read.
+    pub fn write_artifact(&self, name: &str, contents: &[u8]) -> io::Result<PathBuf> {
+        let path = self.artifacts.join(name);
+        if let Some(dir) = path.parent() {
+            ns::create_dir_all_owned(dir, self.user)?;
+        }
+        std::fs::write(&path, contents)?;
+        ns::chown(&path, self.user)?;
+        Ok(path)
+    }
+
     /// Creates a node (a network namespace with its loopback up).
     pub fn node(&mut self, name: &str) -> io::Result<Node> {
         self.nodes += 1;

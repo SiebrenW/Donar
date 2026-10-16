@@ -1,0 +1,16 @@
+name = "interop-iso15118-python-tls"
+description = "As iso15118-python, over TLS 1.3 with mutual authentication. The partner's test PKI is the ISO 15118-2 profile (secp256r1), so the vehicle runs backwards compatible."
+timeout_s = 60
+
+[secc]
+kind = "iso15118-python"
+tls = true
+
+[evcc]
+kind = "evcc-sim"
+tls = true
+[evcc.settings]
+connector = "extended"
+
+[expect]
+evcc_log = ["tls: TLSv1.3 TLS_AES_256_GCM_SHA384", "session: Ended(Completed)"]

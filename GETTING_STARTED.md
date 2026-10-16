@@ -52,21 +52,29 @@ cargo test -p evcc-core                   # one crate
 cargo test -p scenarios --test tls        # one test file
 cargo bench -p iso15118-20                # codec throughput over the reference vectors
 cargo xtask linux-test                    # the whole workspace inside the Linux container
-cargo xtask linux-test -p scenarios --test netns   # only the namespace tests
+cargo xtask linux-test -p scenarios --test scenarios   # only the scenarios
 ```
 
 `cargo xtask linux-test [cargo test arguments]` builds the image, starts a privileged container with the repository mounted and runs `cargo test` in it. It is what you use from macOS without the dev container. In the dev container you run `cargo test` directly.
 
+### Scenarios
+
+A scenario is a TOML file that says who runs against whom, with which settings, and what must hold afterwards (`crates/sims/scenarios/scenarios/*.toml`, the format is documented in `crates/sims/scenarios/src/scenario.rs`). The runner puts a charger and a vehicle in two network namespaces joined by a cable, starts them as processes and checks exit statuses and log lines. `tests/scenarios.rs` runs every file as a test (`cargo xtask linux-test`); a single one by hand:
+
+```sh
+cargo xtask linux-test -p scenarios --test scenarios dc_tls_slac
+```
+
+Only the runner is root (it creates the namespaces); `evse-sim` and `evcc-sim` run as you, and their logs, settings and generated certificates are in the artifacts directory the run prints (`target/sandbox/<run>/`, owned by you). Both simulators are ordinary commands with a settings file, so a participant can also be started by hand: `evse-sim --interface IF --address ADDR --config FILE`, `evcc-sim --interface IF --config FILE` (`--help`-style usage at the top of `crates/sims/{evse-sim,evcc-sim}/src/main.rs`).
+
 ### Interoperability with another charger implementation
 
 ```sh
-cargo xtask interop                       # plain TCP
-cargo xtask interop iso15118-python-tls   # TLS 1.3 with mutual authentication
-cargo xtask interop --log debug           # extra arguments go to evcc
-INTEROP_SHOW_PARTNER_LOG=1 cargo xtask interop
+cargo xtask interop                       # all scenarios in scenarios/interop/
+cargo xtask interop iso15118-python-tls   # one of them: TLS 1.3 with mutual authentication
 ```
 
-This starts the `evcc-sim` command (a simulated vehicle that does SLAC, SDP, optionally TLS, and a DC charging session) in one network namespace and an independent ISO 15118-20 charger in another: the open-source [`iso15118`](https://pypi.org/project/iso15118/) Python library, installed in the container. It prints the vehicle's log and exits with 0 when the session completed. Both run as processes in a sandbox (`crates/sims/sandbox`): only creating the namespaces needs root, the participants run as you, and their logs (`evcc-sim`, the partner's `secc`) are in the artifacts directory the run prints (`target/sandbox/<run>/`, owned by you). Each partner brings defaults for `evcc` (plain or TLS, the certificates and the `Extended` inlet this charger offers); further arguments are appended to `evcc-sim`'s command line, for example `--connector` to change the inlet. This partner's test certificates are secp256r1 (the ISO 15118-2 profile), so the TLS run uses `--backwards-compatible`. `evcc --help`-style usage is in `crates/sims/evcc-sim/src/main.rs`.
+These scenarios run `evcc-sim` against an independent ISO 15118-20 charger in another namespace: the open-source [`iso15118`](https://pypi.org/project/iso15118/) Python library, installed in the container. Output is `PASS` or `FAIL` with both logs. The partner offers only the `Extended` inlet, so its scenarios set `connector = "extended"`; its test certificates are secp256r1 (the ISO 15118-2 profile), so the runner switches the vehicle's `backwards_compatible` on for them.
 
 ### What the tests cover
 
@@ -79,7 +87,7 @@ This starts the `evcc-sim` command (a simulated vehicle that does SLAC, SDP, opt
 | `crates/sims/scenarios/tests/loopback.rs` | The session over real TCP on localhost against the simulator | no |
 | `crates/sims/scenarios/tests/tls.rs` | TLS 1.3 with mutual authentication, P-521 and Ed448 certificates, refusal of unknown CAs and wrong curves | no |
 | `crates/sims/scenarios/tests/sdp.rs` | SDP discovery over UDP on the IPv6 loopback | no |
-| `crates/sims/scenarios/tests/netns.rs` | Two network namespaces joined by a veth pair: multicast SDP, SLAC on a raw packet socket, and the whole bring-up (SLAC, SDP, TLS, DC session) | **yes** (Linux only) |
+| `crates/sims/scenarios/tests/scenarios.rs` | Every scenario file in two network namespaces: multicast SDP, SLAC on a raw packet socket (matched and too far away), TLS 1.3 with P-521 and Ed448 certificates, a delayed cable, a charger that ends the charge; plus a check that all scenario files load | **yes** (Linux only; the loading check runs everywhere) |
 
 Tests that need root are compiled only on Linux, so `cargo test --workspace` on macOS simply does not contain them.
 
@@ -98,7 +106,7 @@ crates/
     evse-sim                         a simulated charger
     evcc-sim                         a simulated vehicle and the `evcc-sim` command
     sandbox                          network namespaces joined by virtual cables; participants run as processes
-    scenarios                        end-to-end tests, partner implementations, the `interop` driver
+    scenarios                        scenario files, the runner (`scenario` command), partners, end-to-end tests
   xtask                            `cargo xtask ...` (setup, gen, vectors, linux-test, interop)
 .devcontainer/                     the Linux test environment (also used by `cargo xtask linux-test`)
 data/                              downloaded schemas and reference vectors (not in git)

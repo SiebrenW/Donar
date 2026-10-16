@@ -1,0 +1,19 @@
+name = "dc-delay"
+description = "A DC session over a cable that adds 30 ms in each direction."
+timeout_s = 60
+
+[impairment]
+delay_ms = 30
+
+[secc]
+kind = "evse-sim"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)"]

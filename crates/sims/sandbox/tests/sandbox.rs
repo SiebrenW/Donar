@@ -40,6 +40,12 @@ fn artifacts_and_logs_belong_to_the_user_and_participants_run_as_that_user() {
     let mut q = sb.spawn_on_host(Spawn::new("sh").args(["-c", "touch made-by-participant"]).current_dir(sb.artifacts())).unwrap();
     assert!(q.wait_timeout(Duration::from_secs(5)).unwrap().unwrap().success());
     assert_eq!(std::fs::metadata(sb.artifacts().join("made-by-participant")).unwrap().uid(), user.uid);
+    // Files written for the participants are the user's too, also in new subdirectories.
+    let written = sb.write_artifact("pki/x/key.pem", b"k").unwrap();
+    assert_eq!(std::fs::read(&written).unwrap(), b"k");
+    for path in [written.as_path(), written.parent().unwrap(), written.parent().unwrap().parent().unwrap()] {
+        assert_eq!(std::fs::metadata(path).unwrap().uid(), user.uid, "{path:?}");
+    }
     let top = root.parent().unwrap().parent().unwrap().to_path_buf();
     drop((p, q, sb));
     std::fs::remove_dir_all(top).unwrap();
@@ -157,4 +163,21 @@ fn delay_can_be_added_to_and_removed_from_a_cable() {
     sb.impair(&a, Impairment::default()).unwrap();
     sb.impair(&b, Impairment::default()).unwrap();
     assert!(fast() < Duration::from_millis(40));
+}
+
+#[test]
+fn raw_sockets_need_asking_for_and_come_with_the_user_id_kept() {
+    let Some(sb) = sandbox() else { return };
+    let status = |spawn: Spawn| {
+        let mut p = sb.spawn_on_host(spawn.label("caps")).unwrap();
+        assert!(p.wait_timeout(Duration::from_secs(5)).unwrap().unwrap().success());
+        p.log()
+    };
+    let show = || Spawn::new("sh").args(["-c", "id -u; grep CapAmb /proc/self/status"]);
+    let plain = status(show());
+    let raw = status(show().net_raw());
+    let uid = user().unwrap().uid.to_string();
+    assert!(plain.starts_with(&uid) && plain.contains("CapAmb:\t0000000000000000"), "{plain}");
+    // CAP_NET_RAW is capability 13.
+    assert!(raw.starts_with(&uid) && raw.contains("CapAmb:\t0000000000002000"), "{raw}");
 }

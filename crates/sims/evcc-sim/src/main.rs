@@ -125,7 +125,7 @@ fn main() -> ExitCode {
 
 fn run(interface: &str, settings: &Settings) -> io::Result<bool> {
     let ifindex = sdp::interface_index(interface)?;
-    if settings.slac && !run_slac(interface)? {
+    if settings.slac && !run_slac(interface, settings)? {
         return Ok(false);
     }
     let security = if settings.tls.is_some() {
@@ -183,13 +183,13 @@ fn run(interface: &str, settings: &Settings) -> io::Result<bool> {
 }
 
 #[cfg(target_os = "linux")]
-fn run_slac(interface: &str) -> io::Result<bool> {
+fn run_slac(interface: &str, settings: &Settings) -> io::Result<bool> {
     use evcc_core::slac::Outcome as SlacOutcome;
     let socket = evcc_linux::slac::PacketSocket::open(interface)?;
-    let run_id = std::array::from_fn(|i| (std::process::id() as u8).wrapping_add(i as u8 * 37));
+    let run_id = std::array::from_fn(|i| (std::process::id() as u8).wrapping_add((i as u8).wrapping_mul(37)));
     let outcome = evcc_linux::slac::run(
         &socket,
-        evcc_core::slac::Config::DEFAULT,
+        settings.slac_config(),
         run_id,
         &mut evcc_linux::slac::NoModem,
     )?;
@@ -198,7 +198,7 @@ fn run_slac(interface: &str) -> io::Result<bool> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn run_slac(_interface: &str) -> io::Result<bool> {
+fn run_slac(_interface: &str, _settings: &Settings) -> io::Result<bool> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "SLAC needs Linux",

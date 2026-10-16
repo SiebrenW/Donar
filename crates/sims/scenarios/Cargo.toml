@@ -7,20 +7,22 @@ description = "Scenarios (simulated vehicle and charger, external partners) and 
 
 [dependencies]
 sandbox = { path = "../sandbox" }
+evcc-sim = { path = "../evcc-sim" }
+evse-sim = { path = "../evse-sim" }
+openssl = "0.10"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
 
 [dev-dependencies]
 evcc-core = { path = "../../evcc/core" }
 evcc-linux = { path = "../../evcc/linux" }
-evcc-sim = { path = "../evcc-sim" }
-evse-sim = { path = "../evse-sim" }
 iso15118-20 = { path = "../../codec/iso15118-20" }
 app-protocol = { path = "../../codec/app-protocol" }
 exi = { path = "../../codec/exi" }
 v2gtp = { path = "../../codec/v2gtp" }
 homeplug = { path = "../../codec/homeplug" }
-openssl = "0.10"
 libc = "0.2"
 
 [[bin]]
-name = "interop"
-path = "src/bin/interop.rs"
+name = "scenario"
+path = "src/bin/scenario.rs"

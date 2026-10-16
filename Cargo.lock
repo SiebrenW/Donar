@@ -300,6 +300,8 @@ dependencies = [
  "libc",
  "openssl",
  "sandbox",
+ "serde",
+ "toml",
  "v2gtp",
 ]
 

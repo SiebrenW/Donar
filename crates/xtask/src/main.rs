@@ -20,7 +20,7 @@ fn main() -> ExitCode {
         Some("linux-test") => container::linux_test(args.collect()),
         Some("interop") => container::interop(args.collect()),
         _ => {
-            eprintln!("usage: cargo xtask setup [--force] | gen [--force] | vectors | grammars | linux-test [cargo test args] | interop [partner] [evcc args]");
+            eprintln!("usage: cargo xtask setup [--force] | gen [--force] | vectors | grammars | linux-test [cargo test args] | interop [scenario...]");
             return ExitCode::from(2);
         }
     };

@@ -1,0 +1,23 @@
+name = "dc-tls-slac"
+description = "The whole bring-up: SLAC, SDP by multicast, TLS 1.3 with mutual authentication (P-521 certificates made for the run) and a DC session."
+timeout_s = 40
+pki = "p521"
+
+[secc]
+kind = "evse-sim"
+tls = true
+[secc.settings]
+slac_responder = true
+
+[evcc]
+kind = "evcc-sim"
+tls = true
+[evcc.settings]
+slac = true
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+
+[expect]
+secc_exit = 0
+evcc_log = ["slac: Matched", "tls: TLSv1.3 TLS_AES_256_GCM_SHA384", "session: Ended(Completed)"]
+secc_log = ["tls: TLSv1.3", "session: Stopped"]

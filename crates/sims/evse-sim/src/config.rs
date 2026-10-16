@@ -60,6 +60,8 @@ mod codes {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    /// Answer SLAC on the interface (the responder follows `slac`).
+    pub slac_responder: bool,
     pub session: Config,
     pub slac: crate::slac::Config,
 }

@@ -64,6 +64,8 @@ pub struct Tls {
 pub struct Settings {
     /// Run SLAC on the interface before looking for a charger.
     pub slac: bool,
+    /// `TT_matching_repetition` (default 10 s): how long SLAC keeps trying.
+    pub slac_repetition_ms: Option<u32>,
     /// Without it the session is unsecured (SDP asks for `NoTls`).
     pub tls: Option<Tls>,
     /// Charge loop rounds before the car stops; 0 charges until the charger ends the session.
@@ -79,6 +81,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             slac: false,
+            slac_repetition_ms: None,
             tls: None,
             stop_after: 3,
             connector: Connector::Core,
@@ -90,6 +93,14 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub fn slac_config(&self) -> evcc_core::slac::Config {
+        let mut config = evcc_core::slac::Config::DEFAULT;
+        if let Some(ms) = self.slac_repetition_ms {
+            config.repetition_ms = ms;
+        }
+        config
+    }
+
     pub fn stop_after(&self) -> Option<u32> {
         (self.stop_after > 0).then_some(self.stop_after)
     }
