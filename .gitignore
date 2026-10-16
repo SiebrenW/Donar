@@ -1,5 +1,4 @@
 /target
-/schemas
-/vectors
-/codecs/*/src/generated/
+/data
+/crates/*/src/generated/
 /standards/

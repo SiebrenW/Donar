@@ -48,12 +48,12 @@ fn main() -> ExitCode {
 /// (a different mount point in a container).
 fn workspace_root() -> PathBuf {
     let manifest = std::env::var_os("CARGO_MANIFEST_DIR").map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from);
-    manifest.parent().unwrap().to_path_buf()
+    manifest.parent().and_then(Path::parent).unwrap().to_path_buf()
 }
 
 /// Downloads the XSDs (skipping files already present unless `force`).
 fn setup(force: bool) -> Result<(), String> {
-    let dir = workspace_root().join("schemas/iso15118-20");
+    let dir = workspace_root().join("data/schemas/iso15118-20");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     for name in ISO20_FILES {
         let dest = dir.join(name);
@@ -94,11 +94,11 @@ fn jdk_tool(name: &str) -> PathBuf {
     if on_path || !brew.exists() { PathBuf::from(name) } else { brew }
 }
 
-/// Downloads EXIficient and compiles the helper programs in `xtask/java`; returns the class
+/// Downloads EXIficient and compiles the helper programs in `crates/xtask/java`; returns the class
 /// directory and the class path.
 fn java_env() -> Result<(PathBuf, String), String> {
     let root = workspace_root();
-    let lib = root.join("vectors/lib");
+    let lib = root.join("data/vectors/lib");
     std::fs::create_dir_all(&lib).map_err(|e| e.to_string())?;
     for path in EXIFICIENT {
         let dest = lib.join(path.rsplit('/').next().unwrap());
@@ -111,10 +111,10 @@ fn java_env() -> Result<(PathBuf, String), String> {
             .arg(&dest)
             .arg(format!("https://repo1.maven.org/maven2/{path}")))?;
     }
-    let classes = root.join("vectors/classes");
+    let classes = root.join("data/vectors/classes");
     std::fs::create_dir_all(&classes).map_err(|e| e.to_string())?;
     let cp = format!("{}/*", lib.display());
-    let mut sources: Vec<PathBuf> = std::fs::read_dir(root.join("xtask/java"))
+    let mut sources: Vec<PathBuf> = std::fs::read_dir(root.join("crates/xtask/java"))
         .map_err(|e| e.to_string())?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "java"))
@@ -129,7 +129,7 @@ fn java_env() -> Result<(PathBuf, String), String> {
 /// rate-limits; nothing in the schema uses what the DTD declares, so the copy omits it.
 fn java_schemas() -> Result<PathBuf, String> {
     let root = workspace_root();
-    let (from, to) = (root.join("schemas/iso15118-20"), root.join("vectors/schemas"));
+    let (from, to) = (root.join("data/schemas/iso15118-20"), root.join("data/vectors/schemas"));
     std::fs::create_dir_all(&to).map_err(|e| e.to_string())?;
     for entry in std::fs::read_dir(&from).map_err(|e| e.to_string())? {
         let path = entry.map_err(|e| e.to_string())?.path();
@@ -166,22 +166,22 @@ fn java_run(cp: &str, class: &str, args: &[&std::ffi::OsStr]) -> Result<String, 
     }
 }
 
-/// Encodes every XML in `xtask/vectors` with EXIficient into `vectors/<name>.hex`.
+/// Encodes every XML in `crates/xtask/vectors` with EXIficient into `data/vectors/<name>.hex`.
 /// These are the independent oracle for the codecs; they are gitignored.
 fn vectors() -> Result<(), String> {
     let root = workspace_root();
     let (_, cp) = java_env()?;
     let java_schemas = java_schemas()?;
-    let manifest = std::fs::read_to_string(root.join("xtask/vectors/manifest.txt"))
+    let manifest = std::fs::read_to_string(root.join("crates/xtask/vectors/manifest.txt"))
         .map_err(|e| e.to_string())?;
     for line in manifest.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
         let mut it = line.split_whitespace();
         let (name, xsd) = (it.next().unwrap(), it.next().ok_or("manifest: missing xsd")?);
-        let xml = root.join(format!("xtask/vectors/{name}.xml"));
-        let dest = root.join(format!("vectors/{name}.hex"));
+        let xml = root.join(format!("crates/xtask/vectors/{name}.xml"));
+        let dest = root.join(format!("data/vectors/{name}.hex"));
         let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
         if mtime(&dest).is_some_and(|h| mtime(&xml).is_some_and(|x| h >= x)) {
-            continue; // up to date; delete vectors/*.hex to regenerate everything
+            continue; // up to date; delete data/vectors/*.hex to regenerate everything
         }
         let xsd_path = java_schemas.join(xsd);
         let out = java_run(
@@ -192,7 +192,7 @@ fn vectors() -> Result<(), String> {
         .map_err(|e| format!("{name}: {e}"))?;
         std::fs::write(&dest, out.trim().to_string() + "\n")
             .map_err(|e| e.to_string())?;
-        println!("wrote vectors/{name}.hex");
+        println!("wrote data/vectors/{name}.hex");
     }
     Ok(())
 }
@@ -220,8 +220,8 @@ fn linux_container() -> Result<Command, String> {
     let root = workspace_root();
     run(Command::new("docker")
         .args(["build", "--quiet", "--tag", IMAGE, "--file"])
-        .arg(root.join("docker/linux-test.Dockerfile"))
-        .arg(root.join("docker")))?;
+        .arg(root.join(".devcontainer/Dockerfile"))
+        .arg(root.join(".devcontainer")))?;
     let mut cmd = Command::new("docker");
     cmd.args(["run", "--rm", "--privileged"])
         .arg("--volume")
@@ -243,7 +243,7 @@ fn interop(args: Vec<String>) -> Result<(), String> {
     };
     let mut cmd = linux_container()?;
     // `own-volumes` first: volumes made by an older image belong to root.
-    cmd.args(["bash", "-c", r#"own-volumes && cargo build --quiet -p evcc-linux --bin evcc && exec sudo -E docker/interop.sh "$@""#, "interop"])
+    cmd.args(["bash", "-c", r#"own-volumes && cargo build --quiet -p evcc-linux --bin evcc && exec sudo -E .devcontainer/interop.sh "$@""#, "interop"])
         .arg(partner)
         .arg("/target/debug/evcc")
         .args(evcc_args);
@@ -260,7 +260,7 @@ fn run(cmd: &mut Command) -> Result<(), String> {
 
 /// Crate directory that holds the generated code of an `exi-gen` group.
 fn group_dir(group: &exi_gen::Group) -> PathBuf {
-    workspace_root().join("codecs").join(group.name)
+    workspace_root().join("crates").join(group.name)
 }
 
 fn mtime(p: &Path) -> Option<std::time::SystemTime> {
@@ -271,7 +271,7 @@ fn mtime(p: &Path) -> Option<std::time::SystemTime> {
 /// Skipped when the output is newer than every schema and than this binary, which carries
 /// the generator.
 fn generate(force: bool) -> Result<(), String> {
-    let schemas = workspace_root().join("schemas/iso15118-20");
+    let schemas = workspace_root().join("data/schemas/iso15118-20");
     let exe = std::env::current_exe().ok().and_then(|p| mtime(&p));
     for group in exi_gen::GROUPS {
         let out = group_dir(group).join("src/generated");
@@ -302,7 +302,7 @@ fn generate(force: bool) -> Result<(), String> {
 /// Compares, for every message, the grammar `exi-gen` derives with the one EXIficient builds
 /// from the same schema (event codes, datatypes, nesting).
 fn grammars() -> Result<(), String> {
-    let schemas = workspace_root().join("schemas/iso15118-20");
+    let schemas = workspace_root().join("data/schemas/iso15118-20");
     let (_, cp) = java_env()?;
     let java_schemas = java_schemas()?;
     let mut failed = 0;

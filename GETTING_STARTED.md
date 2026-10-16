@@ -16,7 +16,7 @@ The Linux-only tests create network namespaces and virtual Ethernet pairs and op
 Prerequisites: Docker (Docker Desktop, Colima or similar) in your `PATH`, and an editor with dev container support: VS Code with the Dev Containers extension, [Zed](https://zed.dev/docs/dev-containers), or the [`devcontainer` CLI](https://github.com/devcontainers/cli).
 
 1. Open the folder in your editor and accept the offer to open it in the container (VS Code: **Reopen in Container**; Zed: **Open in Container** in the prompt; CLI: `devcontainer up --workspace-folder .`).
-2. The first start builds the image from `docker/linux-test.Dockerfile` (Rust, JDK, iproute2) and then runs `cargo xtask setup && cargo xtask vectors`. That downloads the ISO 15118-20 schemas, generates the codecs and builds the reference vectors. It takes a few minutes and needs network access.
+2. The first start builds the image from `.devcontainer/Dockerfile` (Rust, JDK, iproute2) and then runs `cargo xtask setup && cargo xtask vectors`. That downloads the ISO 15118-20 schemas, generates the codecs and builds the reference vectors. It takes a few minutes and needs network access.
 3. In a terminal inside the container:
 
    ```sh
@@ -25,7 +25,7 @@ Prerequisites: Docker (Docker Desktop, Colima or similar) in your `PATH`, and an
 
 Zed ignores the `customizations.vscode` block (extensions, settings) of `devcontainer.json` and brings its own rust-analyzer. The setup has been tried with VS Code's settings format and the plain Docker commands; the Zed route is untested, in particular whether Zed passes `--privileged` from `runArgs`. If the namespace tests fail with "Operation not permitted" in a Zed container, run them from a normal terminal with `cargo xtask linux-test`.
 
-The repository is mounted at `/workspaces/evcc-rs` in the container, both by the dev container and by `cargo xtask linux-test`; keep it that way, because cargo bakes the path into build outputs (`env!("CARGO_MANIFEST_DIR")`) that live in a shared volume. You work as the user `developer` (UID 1000, which an editor may change to your own UID) with passwordless `sudo`. Only the test binaries run as root: the image sets `CARGO_TARGET_*_RUNNER` to `docker/test-runner.sh`, which starts programs from cargo's `deps` directory through `sudo`, so the namespace and raw-socket tests get their privileges while building and `cargo xtask` stay unprivileged. The container is **privileged** (the namespace tests need it), so use it on a machine and Docker VM you trust. Build output lives in the named volume `evcc-rs-target-v2` (`CARGO_TARGET_DIR=/target`), so it never mixes with a `target/` directory made on macOS.
+The repository is mounted at `/workspaces/evcc-rs` in the container, both by the dev container and by `cargo xtask linux-test`; keep it that way, because cargo bakes the path into build outputs (`env!("CARGO_MANIFEST_DIR")`) that live in a shared volume. You work as the user `developer` (UID 1000, which an editor may change to your own UID) with passwordless `sudo`. Only the test binaries run as root: the image sets `CARGO_TARGET_*_RUNNER` to `.devcontainer/test-runner.sh`, which starts programs from cargo's `deps` directory through `sudo`, so the namespace and raw-socket tests get their privileges while building and `cargo xtask` stay unprivileged. The container is **privileged** (the namespace tests need it), so use it on a machine and Docker VM you trust. Build output lives in the named volume `evcc-rs-target-v2` (`CARGO_TARGET_DIR=/target`), so it never mixes with a `target/` directory made on macOS.
 
 ## Local setup
 
@@ -65,41 +65,43 @@ cargo xtask interop --log debug           # extra arguments go to evcc
 INTEROP_SHOW_PARTNER_LOG=1 cargo xtask interop
 ```
 
-This starts the `evcc` command (a simulated vehicle that does SLAC, SDP, optionally TLS, and a DC charging session) in one network namespace and an independent ISO 15118-20 charger in another: the open-source [`iso15118`](https://pypi.org/project/iso15118/) Python library, installed in the container. It prints the vehicle's log and exits with 0 when the session completed. Each partner brings defaults for `evcc` (plain or TLS, the certificates and the `Extended` inlet this charger offers); further arguments are appended, for example `--connector` to change the inlet. This partner's test certificates are secp256r1 (the ISO 15118-2 profile), so the TLS run uses `--backwards-compatible`. `evcc --help`-style usage is in `evcc-linux/src/bin/evcc.rs`.
+This starts the `evcc` command (a simulated vehicle that does SLAC, SDP, optionally TLS, and a DC charging session) in one network namespace and an independent ISO 15118-20 charger in another: the open-source [`iso15118`](https://pypi.org/project/iso15118/) Python library, installed in the container. It prints the vehicle's log and exits with 0 when the session completed. Each partner brings defaults for `evcc` (plain or TLS, the certificates and the `Extended` inlet this charger offers); further arguments are appended, for example `--connector` to change the inlet. This partner's test certificates are secp256r1 (the ISO 15118-2 profile), so the TLS run uses `--backwards-compatible`. `evcc --help`-style usage is in `crates/evcc-linux/src/bin/evcc.rs`.
 
 ### What the tests cover
 
 | Crate / file | What it checks | Needs Linux root |
 |---|---|---|
-| `codecs/exi`, `codecs/app-protocol`, `codecs/iso15118-20` | The generated EXI codec byte for byte against EXIficient vectors, in both directions; truncated and bit-flipped input; message sizes | no |
+| `crates/exi`, `crates/app-protocol`, `crates/iso15118-20` | The generated EXI codec byte for byte against EXIficient vectors, in both directions; truncated and bit-flipped input; message sizes | no |
 | `v2gtp`, `homeplug` | V2GTP and SDP framing; SLAC message wire formats | no |
-| `evcc-core/tests/session_flow.rs` | The session machine message by message: setup, authorization, services, charge parameters, schedule exchange, cable check, pre-charge, power delivery, charge loop, welding detection, session stop, timeouts and the ignore policy | no |
-| `evcc-core/tests/slac_flow.rs` | The SLAC state machine against the simulated charger in virtual time: retries, thresholds, several chargers, lost messages | no |
-| `evcc-linux/tests/loopback.rs` | The session over real TCP on localhost against the simulator | no |
-| `evcc-linux/tests/tls.rs` | TLS 1.3 with mutual authentication, P-521 and Ed448 certificates, refusal of unknown CAs and wrong curves | no |
-| `evcc-linux/tests/sdp.rs` | SDP discovery over UDP on the IPv6 loopback | no |
-| `evcc-linux/tests/netns.rs` | Two network namespaces joined by a veth pair: multicast SDP, SLAC on a raw packet socket, and the whole bring-up (SLAC, SDP, TLS, DC session) | **yes** (Linux only) |
+| `crates/evcc-core/tests/session_flow.rs` | The session machine message by message: setup, authorization, services, charge parameters, schedule exchange, cable check, pre-charge, power delivery, charge loop, welding detection, session stop, timeouts and the ignore policy | no |
+| `crates/evcc-core/tests/slac_flow.rs` | The SLAC state machine against the simulated charger in virtual time: retries, thresholds, several chargers, lost messages | no |
+| `crates/evcc-linux/tests/loopback.rs` | The session over real TCP on localhost against the simulator | no |
+| `crates/evcc-linux/tests/tls.rs` | TLS 1.3 with mutual authentication, P-521 and Ed448 certificates, refusal of unknown CAs and wrong curves | no |
+| `crates/evcc-linux/tests/sdp.rs` | SDP discovery over UDP on the IPv6 loopback | no |
+| `crates/evcc-linux/tests/netns.rs` | Two network namespaces joined by a veth pair: multicast SDP, SLAC on a raw packet socket, and the whole bring-up (SLAC, SDP, TLS, DC session) | **yes** (Linux only) |
 
 Tests that need root are compiled only on Linux, so `cargo test --workspace` on macOS simply does not contain them.
 
 ## Layout
 
 ```
-codecs/exi             shared EXI runtime (no_std)
-codecs/app-protocol    SupportedAppProtocol messages (generated)
-codecs/iso15118-20     ISO 15118-20 messages (generated)
-exi-gen                the code generator (XSD to Rust)
-v2gtp, homeplug        V2GTP/SDP framing, SLAC messages (no_std)
-evcc-core              the sans-IO session, SDP and SLAC machines (no_std)
-evse-sim               a simulated charger for tests
-evcc-linux             host adapter: TCP, TLS (OpenSSL), UDP/SDP, raw sockets (SLAC); the `evcc` command and a simulated car
-xtask                  `cargo xtask ...` automation (setup, gen, vectors, linux-test, interop)
-docker/, .devcontainer the Linux test environment
+crates/
+  exi, app-protocol, iso15118-20   the EXI runtime and the generated message codecs
+  exi-gen                          the code generator (XSD to Rust)
+  v2gtp, homeplug                  V2GTP/SDP framing, SLAC messages (no_std)
+  evcc-core                        the sans-IO session, SDP and SLAC machines (no_std)
+  evse-sim                         a simulated charger for tests
+  evcc-linux                       host adapter: TCP, TLS (OpenSSL), UDP/SDP, raw sockets (SLAC),
+                                   the `evcc` command and a simulated car
+  xtask                            `cargo xtask ...` (setup, gen, vectors, linux-test, interop)
+.devcontainer/                     the Linux test environment (also used by `cargo xtask linux-test`)
+data/                              downloaded schemas and reference vectors (not in git)
+standards/                         your copies of the standards (not in git)
 ```
 
 ## Troubleshooting
 
-- **`missing .../vectors/*.hex`**: run `cargo xtask setup && cargo xtask vectors`.
+- **`missing .../data/vectors/*.hex`**: run `cargo xtask setup && cargo xtask vectors`.
 - **OpenSSL not found (macOS)**: `export OPENSSL_DIR=$(brew --prefix openssl@3)`.
 - **`cargo xtask linux-test` cannot reach Docker**: start your Docker VM (`colima start` or Docker Desktop). With Colima the repository must be below your home directory, which it shares by default.
 - **Namespace tests fail with "Operation not permitted"**: the container is not privileged; use `cargo xtask linux-test` or the dev container as configured.

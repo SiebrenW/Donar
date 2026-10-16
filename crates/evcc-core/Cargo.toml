@@ -7,9 +7,9 @@ publish = false
 [dependencies]
 v2gtp = { path = "../v2gtp" }
 homeplug = { path = "../homeplug" }
-iso15118-20 = { path = "../codecs/iso15118-20" }
-app-protocol = { path = "../codecs/app-protocol" }
-exi = { path = "../codecs/exi" }
+iso15118-20 = { path = "../iso15118-20" }
+app-protocol = { path = "../app-protocol" }
+exi = { path = "../exi" }
 
 [dev-dependencies]
 evse-sim = { path = "../evse-sim" }

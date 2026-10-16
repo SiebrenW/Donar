@@ -5,7 +5,7 @@ use exi::Arena;
 use app_protocol::*;
 
 fn vector(name: &str) -> std::vec::Vec<u8> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../vectors/{name}.hex"));
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../data/vectors/{name}.hex"));
     let hex = std::fs::read_to_string(&path)
         .unwrap_or_else(|_| panic!("missing {path:?}; run `cargo xtask setup && cargo xtask vectors`"));
     (0..hex.trim().len() / 2)

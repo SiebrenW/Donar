@@ -1,5 +1,5 @@
 //! Prints the grammar the generator derives for a root element, in the canonical format of
-//! `xtask/java/DumpTree.java`, so it can be diffed against EXIficient's.
+//! `crates/xtask/java/DumpTree.java`, so it can be diffed against EXIficient's.
 
 use std::collections::HashMap;
 
