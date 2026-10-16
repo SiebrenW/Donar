@@ -7,6 +7,7 @@
 pub mod slac;
 pub mod sdp;
 pub mod tls;
+pub mod xmlsig;
 
 use std::io::{self, ErrorKind, Read, Write};
 use std::net::TcpStream;

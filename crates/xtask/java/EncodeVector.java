@@ -9,12 +9,14 @@ import java.io.*;
 import javax.xml.parsers.SAXParserFactory;
 import org.xml.sax.*;
 
-/** Usage: EncodeVector <xsd> <strict|lax> <header|noheader> <in.xml>  -> prints EXI as hex. */
+/** Usage: EncodeVector <xsd> <strict|lax> <header|noheader> <in.xml> [fragment]  -> prints EXI as hex.
+ *  With `fragment` the document is one element encoded with the schema-informed fragment grammar. */
 public class EncodeVector {
   public static void main(String[] a) throws Exception {
     EXIFactory f = DefaultEXIFactory.newInstance();
     Grammars g = GrammarFactory.newInstance().createGrammars(a[0]);
     f.setGrammars(g);
+    if (a.length > 4 && a[4].equals("fragment")) f.setFragment(true);
     f.setFidelityOptions(a[1].equals("strict") ? FidelityOptions.createStrict() : FidelityOptions.createDefault());
     EncodingOptions eo = EncodingOptions.createDefault();
     if (a[2].equals("header")) eo.setOption(EncodingOptions.INCLUDE_OPTIONS);

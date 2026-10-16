@@ -711,3 +711,25 @@ fn truncated_and_mutated_signatures_never_panic() {
         let _ = common::decode(&copy, &arena);
     }
 }
+
+// ---------------------------------------------------------------- signed fragments
+
+/// The parts of a message that are signed are EXI fragments (V2G20-1449): the start event is
+/// chosen among all element declarations of the schema, and the stream ends with the end of the
+/// document. EXIficient's fragment encoding of the OEM provisioning certificate chain and of a
+/// `SignedInfo`.
+#[test]
+fn signed_fragments() {
+    use iso15118_20::signature::{self, Reference, SignedInfo, encode_fragment};
+    let chain = SignedCertificateChain { id: "id1", certificate: &[1, 2, 3, 4, 5], sub_certificates: None };
+    let mut out = [0u8; 256];
+    let n = encode_fragment(&mut out, signature::fragment::OEM_PROVISIONING_CERTIFICATE_CHAIN, |e| chain.encode_content(e)).unwrap();
+    assert_eq!(&out[..n], &vector("fragment_signed_certificate_chain")[..]);
+
+    let digest = bytes(0..64);
+    let reference = Reference { id: None, uri: Some("#id1"), transform_algorithm: Some(CANONICAL), digest_algorithm: SHA512, digest_value: &digest };
+    let info = SignedInfo { id: None, canonicalization_algorithm: CANONICAL, signature_algorithm: ECDSA512, reference: &[reference] };
+    let mut out = [0u8; 512];
+    let n = info.encode_fragment(&mut out).unwrap();
+    assert_eq!(&out[..n], &vector("fragment_signed_info")[..]);
+}

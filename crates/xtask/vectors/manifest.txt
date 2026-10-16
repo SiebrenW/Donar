@@ -1,4 +1,4 @@
-# <vector name> <xsd under data/schemas/iso15118-20>; input is crates/xtask/vectors/<name>.xml
+# <vector name> <xsd under data/schemas/iso15118-20> [fragment]; input is crates/xtask/vectors/<name>.xml
 app_protocol_req V2G_CI_AppProtocol.xsd
 session_setup_req V2G_CI_CommonMessages.xsd
 app_protocol_req_2 V2G_CI_AppProtocol.xsd
@@ -63,3 +63,5 @@ session_stop_req_empty_expl_only V2G_CI_CommonMessages.xsd
 certificate_installation_req_serials V2G_CI_CommonMessages.xsd
 header_signature V2G_CI_CommonMessages.xsd
 header_signature_two_references V2G_CI_CommonMessages.xsd
+fragment_signed_certificate_chain V2G_CI_CommonMessages.xsd fragment
+fragment_signed_info V2G_CI_CommonMessages.xsd fragment

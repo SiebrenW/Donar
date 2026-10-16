@@ -105,6 +105,8 @@ pub fn vectors() -> Result<(), String> {
     for line in manifest.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
         let mut it = line.split_whitespace();
         let (name, xsd) = (it.next().unwrap(), it.next().ok_or("manifest: missing xsd")?);
+        // An optional third column, `fragment`, encodes the document as a fragment (signed parts).
+        let fragment = it.next() == Some("fragment");
         let xml = root.join(format!("crates/xtask/vectors/{name}.xml"));
         let dest = root.join(format!("data/vectors/{name}.hex"));
         let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
@@ -112,11 +114,11 @@ pub fn vectors() -> Result<(), String> {
             continue; // up to date; delete data/vectors/*.hex to regenerate everything
         }
         let xsd_path = java_schemas.join(xsd);
-        let out = java_run(
-            &cp,
-            "EncodeVector",
-            &[xsd_path.as_os_str(), "lax".as_ref(), "noheader".as_ref(), xml.as_os_str()],
-        )
+        let mut args = vec![xsd_path.as_os_str(), "lax".as_ref(), "noheader".as_ref(), xml.as_os_str()];
+        if fragment {
+            args.push("fragment".as_ref());
+        }
+        let out = java_run(&cp, "EncodeVector", &args)
         .map_err(|e| format!("{name}: {e}"))?;
         std::fs::write(&dest, out.trim().to_string() + "\n")
             .map_err(|e| e.to_string())?;

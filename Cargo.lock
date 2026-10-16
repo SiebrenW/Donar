@@ -92,6 +92,7 @@ name = "evcc-linux"
 version = "0.1.0"
 dependencies = [
  "evcc-core",
+ "exi",
  "homeplug",
  "iso15118-20",
  "libc",

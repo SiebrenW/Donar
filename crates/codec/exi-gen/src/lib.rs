@@ -8,6 +8,7 @@
 
 pub mod dump;
 pub mod emit;
+pub mod fragment;
 pub mod model;
 pub mod names;
 pub mod xsd;
@@ -22,6 +23,9 @@ pub struct Group {
     pub files: &'static [&'static str],
     /// `(namespace, Rust module name)`.
     pub modules: &'static [(&'static str, &'static str)],
+    /// Schema files whose element declarations form the fragment grammar (the entry schema and
+    /// what it imports), if the group's messages are signed in fragments.
+    pub fragment: &'static [&'static str],
 }
 
 pub const NS_COMMON_TYPES: &str = "urn:iso:std:iso:15118:-20:CommonTypes";
@@ -33,10 +37,11 @@ pub const ISO20: Group = Group {
     name: "iso15118-20",
     files: &["V2G_CI_CommonTypes.xsd", "V2G_CI_CommonMessages.xsd", "V2G_CI_DC.xsd", "xmldsig-core-schema.xsd"],
     modules: &[(NS_COMMON_TYPES, "common_types"), (NS_COMMON, "common"), (NS_DC, "dc"), (xsd::XMLDSIG, "xmldsig")],
+    fragment: &["V2G_CI_CommonMessages.xsd", "V2G_CI_CommonTypes.xsd", "xmldsig-core-schema.xsd"],
 };
 
 pub const APP_PROTOCOL: Group =
-    Group { name: "app-protocol", files: &["V2G_CI_AppProtocol.xsd"], modules: &[(NS_APP_PROTOCOL, "app_protocol")] };
+    Group { name: "app-protocol", files: &["V2G_CI_AppProtocol.xsd"], modules: &[(NS_APP_PROTOCOL, "app_protocol")], fragment: &[] };
 
 pub const GROUPS: &[&Group] = &[&ISO20, &APP_PROTOCOL];
 
@@ -55,6 +60,11 @@ pub fn generate(group: &Group, schema_dir: &Path, out_dir: &Path) -> Result<(), 
         let code = em.emit_module()?;
         std::fs::write(out_dir.join(format!("{module}.rs")), code).map_err(|e| e.to_string())?;
         modrs.push_str(&format!("pub mod {module};\n"));
+    }
+    if !group.fragment.is_empty() {
+        let table = fragment::table(schema_dir, group.fragment)?;
+        std::fs::write(out_dir.join("fragment.rs"), fragment::emit(&table)).map_err(|e| e.to_string())?;
+        modrs.push_str("pub mod fragment;\n");
     }
     std::fs::write(out_dir.join("mod.rs"), modrs).map_err(|e| e.to_string())?;
     Ok(())
