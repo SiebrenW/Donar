@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use iso15118_20::common::*;
 use iso15118_20::common_types::ResponseCode;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Response codes and authorization services appear in files under their schema names
@@ -57,7 +58,7 @@ mod codes {
 
 /// Everything a simulated charger process reads from its settings file (`evse-sim --config`):
 /// the session knobs and the SLAC responder's.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     /// Answer SLAC on the interface (the responder follows `slac`).
@@ -80,7 +81,7 @@ impl Default for Settings {
 
 /// A parameter set offered in `ServiceDetailRes`: the numbers of ISO 15118-20:2022 Table 207
 /// by parameter name (`Connector`, `ControlMode`, `MobilityNeedsMode`, `Pricing`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OfferedSet {
     pub id: u16,
@@ -99,7 +100,7 @@ impl OfferedSet {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub evse_id: String,
@@ -108,6 +109,7 @@ pub struct Config {
     pub reject_protocol: bool,
     /// Response code for `SessionSetupRes`.
     #[serde(with = "code")]
+    #[schemars(with = "String")]
     pub setup_code: ResponseCode,
     /// Never answer a `SessionSetupReq` (the EV should time out).
     pub silent_on_setup: bool,
@@ -117,9 +119,11 @@ pub struct Config {
     pub authorization_never_finishes: bool,
     /// Response code of the `AuthorizationRes` that would finish authorization.
     #[serde(with = "code")]
+    #[schemars(with = "String")]
     pub authorization_code: ResponseCode,
     /// Authorization services offered in `AuthorizationSetupRes`.
     #[serde(with = "codes")]
+    #[schemars(with = "Vec<String>")]
     pub offered_authorization: Vec<Authorization>,
     /// Energy transfer services offered in `ServiceDiscoveryRes`.
     pub energy_services: Vec<u16>,
@@ -127,25 +131,30 @@ pub struct Config {
     pub parameter_sets: Vec<OfferedSet>,
     /// Response code of the `ServiceSelectionRes` for a valid selection.
     #[serde(with = "code")]
+    #[schemars(with = "String")]
     pub selection_code: ResponseCode,
     /// Response code of `DC_ChargeParameterDiscoveryRes`.
     #[serde(with = "code")]
+    #[schemars(with = "String")]
     pub cpd_code: ResponseCode,
     /// How many `ScheduleExchangeRes` carry `Ongoing` before one says `Finished`.
     pub schedule_ongoing_responses: u32,
     /// Response code of the `ScheduleExchangeRes` that finishes the exchange.
     #[serde(with = "code")]
+    #[schemars(with = "String")]
     pub schedule_code: ResponseCode,
     /// How many `DC_CableCheckRes` carry `Ongoing` before one says `Finished`.
     pub cable_check_ongoing_responses: u32,
     /// Response code of the `DC_CableCheckRes` that finishes the check.
     #[serde(with = "code")]
+    #[schemars(with = "String")]
     pub cable_check_code: ResponseCode,
     /// How many `DC_PreChargeReq` the EVSE answers before the EV considers the voltage reached
     /// (the simulator only reports the target voltage once this many arrived).
     pub precharge_requests_to_settle: u32,
     /// Response code of the `PowerDeliveryRes` to `Start`.
     #[serde(with = "code")]
+    #[schemars(with = "String")]
     pub power_delivery_code: ResponseCode,
     /// After this many `DC_ChargeLoopRes` the EVSE asks the EV to terminate (`EVSENotification`).
     pub terminate_after_loops: Option<u32>,
@@ -178,6 +187,7 @@ pub struct Config {
     pub forget_paused_sessions: bool,
     /// Response code of the `DC_WeldingDetectionRes`.
     #[serde(with = "code")]
+    #[schemars(with = "String")]
     pub welding_code: ResponseCode,
 }
 

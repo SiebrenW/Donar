@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>evcc-rs scenarios</title>
+<style>
+  :root { --line: #ccd; --accent: #1a5fb4; --set: #fff6d6; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px system-ui, sans-serif; display: grid; grid-template-columns: 16rem 1fr; height: 100vh; }
+  nav { border-right: 1px solid var(--line); overflow: auto; padding: .5rem; }
+  nav h1 { font-size: 1rem; margin: .2rem 0 .6rem; }
+  nav a { display: block; padding: .25rem .4rem; border-radius: 4px; color: inherit; text-decoration: none; cursor: pointer; }
+  nav a:hover { background: #eef; }
+  nav a.current { background: var(--accent); color: white; }
+  main { overflow: auto; padding: 1rem; display: grid; gap: 1rem; align-content: start; }
+  h2 { font-size: 1.1rem; margin: 0; }
+  p.desc { margin: .2rem 0 0; color: #445; }
+  .row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: end; }
+  label { display: grid; gap: .15rem; font-size: .85rem; }
+  .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  @media (max-width: 1100px) { .columns { grid-template-columns: 1fr; } }
+  fieldset { border: 1px solid var(--line); border-radius: 6px; padding: .5rem .7rem; }
+  fieldset fieldset { margin: .4rem 0; }
+  legend { font-weight: 600; }
+  .field { display: grid; grid-template-columns: 13rem 1fr auto; gap: .4rem; align-items: center; padding: .12rem 0; }
+  .field .name { font-family: ui-monospace, monospace; font-size: .8rem; overflow-wrap: anywhere; }
+  .field .doc { grid-column: 2 / 4; color: #667; font-size: .75rem; margin-top: -.1rem; }
+  input[type=text], input[type=number], select, textarea { width: 100%; padding: .2rem .3rem; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
+  textarea { font-family: ui-monospace, monospace; font-size: .8rem; }
+  .set input, .set select, .set textarea { background: var(--set); }
+  button { padding: .35rem .9rem; border: 1px solid var(--accent); background: var(--accent); color: white; border-radius: 4px; cursor: pointer; font: inherit; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.reset { padding: 0 .4rem; background: none; color: var(--accent); border-color: transparent; }
+  #verdict { font-weight: 600; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: .8rem; }
+  #verdict.pass { color: #1c7a2e; }
+  #verdict.fail { color: #b3261e; }
+  .logs { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  .log h3 { margin: 0 0 .2rem; font-size: .85rem; font-family: ui-monospace, monospace; }
+  .log pre { margin: 0; height: 22rem; overflow: auto; background: #12141c; color: #d7dae0; padding: .5rem; border-radius: 6px; font-size: .75rem; white-space: pre-wrap; }
+  .error { color: #b3261e; }
+  details pre { background: #f4f4f8; padding: .5rem; overflow: auto; font-size: .75rem; }
+</style>
+</head>
+<body>
+<nav><h1>Scenarios</h1><div id="list"></div></nav>
+<main id="main"><p>Pick a scenario.</p></main>
+<script>
+"use strict";
+const $ = (tag, props = {}, ...kids) => {
+  const e = Object.assign(document.createElement(tag), props);
+  for (const k of kids) e.append(k);
+  return e;
+};
+const api = async (url, init) => {
+  const r = await fetch(url, init);
+  const body = await r.json();
+  if (!r.ok) throw new Error(body.error || r.statusText);
+  return body;
+};
+
+let schemas, scenario, running = false;
+
+// ---- schema helpers ------------------------------------------------------
+
+const deref = (root, s) => {
+  while (s && s.$ref) s = s.$ref.slice(2).split("/").reduce((o, k) => o[k], root);
+  return s || {};
+};
+// The type of a schema without "null", and whether null is allowed.
+const strip = (root, s) => {
+  s = deref(root, s);
+  if (Array.isArray(s.type)) {
+    const types = s.type.filter(t => t !== "null");
+    s = { ...s, type: types.length === 1 ? types[0] : types };
+  }
+  if (s.anyOf || s.oneOf) {
+    const alts = (s.anyOf || s.oneOf).map(a => deref(root, a)).filter(a => a.type !== "null");
+    if (alts.length === 1) s = { ...s, ...alts[0] };
+    else if (alts.every(a => "const" in a || a.enum)) {
+      s = { ...s, enum: alts.flatMap(a => ("const" in a ? [a.const] : a.enum)) };
+    }
+  }
+  return s;
+};
+
+// ---- values by path ------------------------------------------------------
+
+const getPath = (obj, path) => path.reduce((o, k) => (o == null ? undefined : o[k]), obj);
+const setPath = (obj, path, value) => {
+  const chain = [obj];
+  for (const k of path.slice(0, -1)) {
+    if (chain.at(-1)[k] == null) {
+      if (value === undefined) return;
+      chain.at(-1)[k] = {};
+    }
+    chain.push(chain.at(-1)[k]);
+  }
+  const last = path.at(-1);
+  if (value === undefined) delete chain.at(-1)[last]; else chain.at(-1)[last] = value;
+  // Prune tables that became empty.
+  for (let i = chain.length - 1; i > 0; i--) if (Object.keys(chain[i]).length === 0) delete chain[i - 1][path[i - 1]];
+};
+
+// ---- forms made from the schema ------------------------------------------
+
+function form(root, schema, settings, defaults, path = []) {
+  const props = strip(root, schema).properties || {};
+  const box = $("div");
+  for (const [name, raw] of Object.entries(props)) {
+    const s = strip(root, raw);
+    const here = [...path, name];
+    if (s.type === "object" && s.properties) {
+      box.append($("fieldset", {}, $("legend", { textContent: name }), form(root, s, settings, defaults, here)));
+      continue;
+    }
+    box.append(field(root, name, raw, s, here, settings, defaults));
+  }
+  return box;
+}
+
+function field(root, name, raw, s, here, settings, defaults) {
+  const row = $("div", { className: "field" });
+  const dflt = getPath(defaults, here);
+  const set = () => getPath(settings, here) !== undefined;
+  const value = () => (set() ? getPath(settings, here) : dflt);
+  const mark = () => { row.classList.toggle("set", set()); reset.hidden = !set(); };
+  const reset = $("button", { className: "reset", title: "back to the default", textContent: "×", type: "button" });
+  const put = v => { setPath(settings, here, v); mark(); refresh(); };
+  let input;
+  if (s.type === "boolean") {
+    input = $("input", { type: "checkbox", checked: !!value() });
+    input.onchange = () => put(input.checked);
+  } else if (s.enum) {
+    input = $("select");
+    for (const o of s.enum) input.append($("option", { value: JSON.stringify(o), textContent: String(o) }));
+    input.value = JSON.stringify(value());
+    input.onchange = () => put(JSON.parse(input.value));
+  } else if (s.type === "integer" || s.type === "number") {
+    input = $("input", { type: "number", step: s.type === "integer" ? "1" : "any" });
+    if (value() != null) input.value = value();
+    input.placeholder = dflt == null ? "unset" : String(dflt);
+    input.oninput = () => put(input.value === "" ? undefined : Number(input.value));
+  } else if (s.type === "string") {
+    input = $("input", { type: "text", value: value() ?? "", placeholder: dflt == null ? "unset" : String(dflt) });
+    input.oninput = () => put(input.value === "" ? undefined : input.value);
+  } else {
+    // Anything else (lists, tables, enums with data) as JSON.
+    input = $("textarea", { rows: 2, value: JSON.stringify(value() ?? null) });
+    input.onchange = () => {
+      try { put(JSON.parse(input.value)); input.style.outline = ""; }
+      catch { input.style.outline = "2px solid #b3261e"; }
+    };
+  }
+  reset.onclick = () => { put(undefined); render(); };
+  row.append($("span", { className: "name", textContent: name }), input, reset);
+  if (raw.description || s.description) row.append($("span", { className: "doc", textContent: raw.description || s.description }));
+  mark();
+  return row;
+}
+
+// ---- the scenario page ---------------------------------------------------
+
+function render() {
+  const main = document.getElementById("main");
+  main.replaceChildren();
+  if (!scenario) { main.append($("p", { textContent: "Pick a scenario." })); return; }
+  const sc = scenario;
+  sc.evcc ??= { kind: "evcc-sim" };
+  sc.secc ??= { kind: "evse-sim" };
+
+  const top = $("div", {}, $("h2", { textContent: sc.name }), $("p", { className: "desc", textContent: sc.description || "" }));
+  const num = (label, get, put, step = "1") => {
+    const i = $("input", { type: "number", step, value: get() ?? "" });
+    i.oninput = () => { put(i.value === "" ? undefined : Number(i.value)); refresh(); };
+    return $("label", { textContent: label }, i);
+  };
+  const check = (label, get, put) => {
+    const i = $("input", { type: "checkbox", checked: !!get() });
+    i.onchange = () => { put(i.checked); refresh(); };
+    return $("label", { textContent: label }, i);
+  };
+  const pki = $("select");
+  for (const p of ["", "p521", "ed448", "p256", "partner"]) pki.append($("option", { value: p, textContent: p || "default" }));
+  pki.value = sc.pki ?? "";
+  pki.onchange = () => { if (pki.value) sc.pki = pki.value; else delete sc.pki; refresh(); };
+  const row = $("div", { className: "row" },
+    num("timeout (s)", () => sc.timeout_s, v => { if (v === undefined) delete sc.timeout_s; else sc.timeout_s = v; }),
+    $("label", { textContent: "pki" }, pki),
+    num("delay (ms)", () => sc.impairment?.delay_ms, v => setPath(sc, ["impairment", "delay_ms"], v)),
+    num("loss (%)", () => sc.impairment?.loss_percent, v => setPath(sc, ["impairment", "loss_percent"], v), "any"),
+    check("charger TLS", () => sc.secc.tls, v => { sc.secc.tls = v; }),
+    check("vehicle TLS", () => sc.evcc.tls, v => { sc.evcc.tls = v; }));
+
+  sc.evcc.settings ??= {};
+  sc.secc.settings ??= {};
+  const columns = $("div", { className: "columns" },
+    $("fieldset", {}, $("legend", { textContent: "vehicle (evcc-sim)" }), form(schemas.evcc.schema, schemas.evcc.schema, sc.evcc.settings, schemas.evcc.defaults)));
+  if (sc.secc.kind === "evse-sim") {
+    columns.append($("fieldset", {}, $("legend", { textContent: "charger (evse-sim)" }), form(schemas.secc.schema, schemas.secc.schema, sc.secc.settings, schemas.secc.defaults)));
+  } else {
+    columns.append($("fieldset", {}, $("legend", { textContent: "charger (" + sc.secc.kind + ")" }), $("p", { textContent: "An external implementation; it has no settings here." })));
+  }
+
+  const expect = $("textarea", { rows: 4, value: JSON.stringify(sc.expect ?? {}, null, 2) });
+  expect.onchange = () => {
+    try { sc.expect = JSON.parse(expect.value); expect.style.outline = ""; refresh(); }
+    catch { expect.style.outline = "2px solid #b3261e"; }
+  };
+
+  const run = $("button", { id: "run", textContent: "Run", disabled: running });
+  run.onclick = start;
+  main.append(top, row, columns,
+    $("label", { textContent: "must hold afterwards (expect)" }, expect),
+    $("details", {}, $("summary", { textContent: "scenario as JSON" }), $("pre", { id: "json" })),
+    $("div", { className: "row" }, run, $("span", { id: "verdict" })),
+    $("div", { className: "logs", id: "logs" }));
+  refresh();
+}
+
+// The JSON preview follows the edits; empty tables stay out of the scenario.
+function clean() {
+  const sc = structuredClone(scenario);
+  for (const p of [sc.evcc, sc.secc]) {
+    if (p.settings && Object.keys(p.settings).length === 0) delete p.settings;
+    if (!p.tls) delete p.tls;
+  }
+  if (sc.secc.kind !== "evse-sim") delete sc.secc.settings;
+  return sc;
+}
+function refresh() {
+  const pre = document.getElementById("json");
+  if (pre) pre.textContent = JSON.stringify(clean(), null, 2);
+}
+
+// ---- running -------------------------------------------------------------
+
+function start() {
+  const verdict = document.getElementById("verdict");
+  const logs = document.getElementById("logs");
+  verdict.className = ""; verdict.textContent = "starting…";
+  logs.replaceChildren();
+  api("/api/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(clean()) })
+    .then(({ id }) => {
+      running = true;
+      document.getElementById("run").disabled = true;
+      verdict.textContent = "running…";
+      const panes = {};
+      const es = new EventSource(`/api/runs/${id}/events`);
+      es.addEventListener("log", e => {
+        const { file, text } = JSON.parse(e.data);
+        if (!panes[file]) {
+          const pre = $("pre");
+          panes[file] = pre;
+          logs.append($("div", { className: "log" }, $("h3", { textContent: file }), pre));
+        }
+        const pre = panes[file];
+        const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 8;
+        pre.append(text);
+        if (atEnd) pre.scrollTop = pre.scrollHeight;
+      });
+      es.addEventListener("result", e => {
+        verdict.textContent = e.data.trim();
+        verdict.className = /^PASS/m.test(e.data) ? "pass" : "fail";
+      });
+      es.addEventListener("end", () => {
+        es.close();
+        running = false;
+        const button = document.getElementById("run");
+        if (button) button.disabled = false;
+      });
+      es.onerror = () => { if (es.readyState === EventSource.CLOSED) running = false; };
+    })
+    .catch(e => { verdict.className = "fail"; verdict.textContent = e.message; });
+}
+
+// ---- start ---------------------------------------------------------------
+
+async function load(file, link) {
+  location.hash = file;
+  document.querySelectorAll("nav a").forEach(a => a.classList.toggle("current", a === link));
+  scenario = await api("/api/scenarios/" + file);
+  render();
+}
+
+(async () => {
+  schemas = await api("/api/schema");
+  const list = document.getElementById("list");
+  for (const s of await api("/api/scenarios")) {
+    const a = $("a", { textContent: s.file, title: s.description });
+    a.onclick = () => load(s.file, a);
+    list.append(a);
+    if (location.hash.slice(1) === s.file) a.click();
+  }
+})();
+</script>
+</body>
+</html>

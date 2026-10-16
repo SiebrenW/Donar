@@ -67,6 +67,14 @@ cargo xtask linux-test -p scenarios --test scenarios dc_tls_slac
 
 Only the runner is root (it creates the namespaces); `evse-sim` and `evcc-sim` run as you, and their logs, settings and generated certificates are in the artifacts directory the run prints (`target/sandbox/<run>/`, owned by you). Both simulators are ordinary commands with a settings file, so a participant can also be started by hand: `evse-sim --interface IF --address ADDR --config FILE`, `evcc-sim --interface IF --config FILE` (`--help`-style usage at the top of `crates/sims/{evse-sim,evcc-sim}/src/main.rs`).
 
+### Web UI
+
+```sh
+cargo xtask web          # http://127.0.0.1:8080/ (an argument picks another port)
+```
+
+Starts `evcc-web` in the Linux container and publishes it on localhost. Pick a scenario, change the settings of the vehicle and the charger in the forms (a value you set is highlighted, × resets it), press **Run** and follow both logs live; the verdict is the runner's `PASS` or `FAIL`. The server runs as the container's user and starts each run through `sudo`; the logs and settings of a run stay in `target/web/run-N/` in the container's build volume. Inside the dev container run `cargo run -p evcc-web` after `cargo build --workspace --bins`. It is meant for your own machine: no authentication.
+
 ### Interoperability with another charger implementation
 
 ```sh
@@ -87,6 +95,7 @@ These scenarios run `evcc-sim` against an independent ISO 15118-20 charger in an
 | `crates/sims/scenarios/tests/loopback.rs` | The session over real TCP on localhost against the simulator | no |
 | `crates/sims/scenarios/tests/tls.rs` | TLS 1.3 with mutual authentication, P-521 and Ed448 certificates, refusal of unknown CAs and wrong curves | no |
 | `crates/sims/scenarios/tests/sdp.rs` | SDP discovery over UDP on the IPv6 loopback | no |
+| `crates/sims/web/tests/web.rs` | The web server over HTTP: scenario list, schemas, refusal of bad scenarios; a run with its logs streamed (Linux) | the run: yes |
 | `crates/sims/scenarios/tests/scenarios.rs` | Every scenario file in two network namespaces: multicast SDP, SLAC on a raw packet socket (matched and too far away), TLS 1.3 with P-521 and Ed448 certificates, a delayed cable, a charger that ends the charge; plus a check that all scenario files load | **yes** (Linux only; the loading check runs everywhere) |
 
 Tests that need root are compiled only on Linux, so `cargo test --workspace` on macOS simply does not contain them.
@@ -105,9 +114,10 @@ crates/
   sims/
     evse-sim                         a simulated charger
     evcc-sim                         a simulated vehicle and the `evcc-sim` command
+    web                              `evcc-web`: start scenarios, edit settings, follow the logs in a browser
     sandbox                          network namespaces joined by virtual cables; participants run as processes
     scenarios                        scenario files, the runner (`scenario` command), partners, end-to-end tests
-  xtask                            `cargo xtask ...` (setup, gen, vectors, linux-test, interop)
+  xtask                            `cargo xtask ...` (setup, gen, vectors, linux-test, interop, web)
 .devcontainer/                     the Linux test environment (also used by `cargo xtask linux-test`)
 data/                              downloaded schemas and reference vectors (not in git)
 standards/                         your copies of the standards (not in git)

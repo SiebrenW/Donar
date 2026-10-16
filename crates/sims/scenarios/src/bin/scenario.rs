@@ -1,4 +1,4 @@
-//! `scenario FILE...`: runs scenario files in the sandbox and reports pass or fail for each.
+//! `scenario [--artifacts-root DIR] FILE...`: runs scenario files in the sandbox and reports pass or fail for each.
 //! Needs root and a user to drop to (sudo), and the simulators built next to it. The logs of
 //! every run are in its artifacts directory, which is printed.
 
@@ -13,9 +13,18 @@ fn main() -> std::process::ExitCode {
     use std::path::Path;
     use std::process::ExitCode;
 
-    let files: Vec<String> = std::env::args().skip(1).collect();
+    let mut files: Vec<String> = std::env::args().skip(1).collect();
+    let mut options = sandbox::Options::default();
+    if files.first().is_some_and(|a| a == "--artifacts-root") {
+        if files.len() < 2 {
+            eprintln!("--artifacts-root needs a directory");
+            return ExitCode::from(2);
+        }
+        options.artifacts_root = Some(files[1].clone().into());
+        files.drain(..2);
+    }
     if files.is_empty() {
-        eprintln!("usage: scenario FILE.toml...");
+        eprintln!("usage: scenario [--artifacts-root DIR] FILE.toml...");
         return ExitCode::from(2);
     }
     let mut failed = 0;
@@ -28,7 +37,7 @@ fn main() -> std::process::ExitCode {
             }
         };
         eprintln!("running {} ({file})", scenario.name);
-        match scenarios::runner::run(&scenario) {
+        match scenarios::runner::run_with(&scenario, options.clone()) {
             Ok(report) if report.passed() => println!("PASS {}  (artifacts: {})", scenario.name, report.artifacts.display()),
             Ok(report) => {
                 failed += 1;

@@ -1,0 +1,23 @@
+[package]
+name = "evcc-web"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "A small web UI to start scenarios, change their parameters and follow the logs live"
+
+[dependencies]
+scenarios = { path = "../scenarios" }
+evcc-sim = { path = "../evcc-sim" }
+evse-sim = { path = "../evse-sim" }
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "net", "sync", "io-util", "fs"] }
+tokio-stream = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+toml = "1"
+libc = "0.2"
+
+[[bin]]
+name = "evcc-web"
+path = "src/main.rs"

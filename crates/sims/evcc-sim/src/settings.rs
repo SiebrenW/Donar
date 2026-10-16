@@ -2,10 +2,11 @@
 
 use evcc_core::ev::DcConnector;
 use evcc_core::log::Level;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// The inlet the simulated car claims (value of the service parameter `Connector`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Connector {
     #[default]
@@ -26,7 +27,7 @@ impl From<Connector> for DcConnector {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SlacValidation {
     #[default]
@@ -35,7 +36,7 @@ pub enum SlacValidation {
     Always,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     Error,
@@ -57,7 +58,7 @@ impl From<LogLevel> for Level {
 }
 
 /// TLS 1.3 with mutual authentication; the files are PEM.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Tls {
     pub chain: String,
@@ -68,7 +69,7 @@ pub struct Tls {
     pub backwards_compatible: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     /// Run SLAC on the interface before looking for a charger.

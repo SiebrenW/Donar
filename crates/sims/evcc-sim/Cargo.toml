@@ -13,6 +13,7 @@ v2gtp = { path = "../../codec/v2gtp" }
 
 serde = { version = "1", features = ["derive"] }
 toml = "1"
+schemars = "1"
 
 [[bin]]
 name = "evcc-sim"

@@ -4,10 +4,11 @@
 //! measures a fixed attenuation, so the EV decides "directly connected" or not by the knob.
 
 use homeplug::{BROADCAST, Frame, GROUPS, Mac, Message, RunId};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub mac: Mac,
@@ -24,7 +25,7 @@ pub struct Config {
 }
 
 /// The charger's side of the validation by BCB-Toggle (ISO 15118-3 A.9.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum Validation {
     /// Ready; counts the toggles in the second step (the host reports them with
     /// [`Evse::finish_validation`]).
