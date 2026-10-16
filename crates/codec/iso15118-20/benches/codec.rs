@@ -29,7 +29,7 @@ fn decode<'a>(bytes: &[u8], arena: &'a Arena<'_>) -> Option<Msg<'a>> {
 }
 
 fn vectors() -> Vec<(String, Vec<u8>)> {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/vectors");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../data/vectors");
     let mut v: Vec<_> = std::fs::read_dir(&dir)
         .expect("run `cargo xtask vectors` first")
         .filter_map(|e| e.ok())

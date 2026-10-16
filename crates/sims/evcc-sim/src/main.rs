@@ -1,9 +1,9 @@
-//! `evcc`: brings up a charging session with a simulated vehicle, for interoperability tests
+//! `evcc-sim`: brings up a charging session with a simulated vehicle, for interoperability tests
 //! against other chargers (SECCs). SLAC (optional), SECC discovery, TLS (optional) and a DC
 //! session with the EIM authorization.
 //!
 //! ```text
-//! evcc --interface eth1 [--slac] [--no-tls | --chain F --key F --trust F
+//! evcc-sim --interface eth1 [--slac] [--no-tls | --chain F --key F --trust F
 //!                        [--key-password P] [--backwards-compatible]]
 //!      [--stop-after N | --never-stop] [--connector core|extended|dual2|dual4]
 //!      [--log error|info|debug|trace]
@@ -17,7 +17,7 @@ use evcc_core::ev::DcConnector;
 use evcc_core::log::Level;
 use evcc_core::session::{Config, EndReason};
 use evcc_core::sdp::Outcome as SdpOutcome;
-use evcc_linux::sim_ev::{StderrLog, run_simulated_car};
+use evcc_sim::{StderrLog, run_simulated_car};
 use evcc_linux::{Outcome, sdp, tls};
 use v2gtp::sdp::Security;
 
@@ -85,7 +85,7 @@ fn main() -> ExitCode {
     let args = match parse() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("evcc: {e}\nusage: evcc --interface IF [--slac] [--no-tls | --chain F --key F --trust F [--key-password P] [--backwards-compatible]] [--stop-after N | --never-stop] [--connector INLET] [--log LEVEL]");
+            eprintln!("evcc-sim: {e}\nusage: evcc-sim --interface IF [--slac] [--no-tls | --chain F --key F --trust F [--key-password P] [--backwards-compatible]] [--stop-after N | --never-stop] [--connector INLET] [--log LEVEL]");
             return ExitCode::from(2);
         }
     };
@@ -93,7 +93,7 @@ fn main() -> ExitCode {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(e) => {
-            eprintln!("evcc: {e}");
+            eprintln!("evcc-sim: {e}");
             ExitCode::FAILURE
         }
     }

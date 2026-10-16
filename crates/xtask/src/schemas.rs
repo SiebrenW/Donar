@@ -47,7 +47,7 @@ pub fn setup(force: bool) -> Result<(), String> {
 
 /// Crate directory that holds the generated code of an `exi-gen` group.
 pub fn group_dir(group: &exi_gen::Group) -> PathBuf {
-    workspace_root().join("crates").join(group.name)
+    workspace_root().join("crates/codec").join(group.name)
 }
 
 pub fn mtime(p: &Path) -> Option<std::time::SystemTime> {

@@ -1,4 +1,4 @@
 /target
 /data
-/crates/*/src/generated/
+/crates/codec/*/src/generated/
 /standards/

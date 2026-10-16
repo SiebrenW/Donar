@@ -1,5 +1,5 @@
 #!/bin/bash
-# Runs the `evcc` command against an independent charger implementation in two network
+# Runs the `evcc-sim` command against an independent charger implementation in two network
 # namespaces joined by a virtual Ethernet pair. Needs root; `cargo xtask interop` starts it.
 #
 #   interop.sh PARTNER EVCC_BINARY [evcc arguments]
@@ -8,7 +8,7 @@
 #          iso15118-python-tls  the same with TLS 1.3 and mutual authentication, using the
 #                               library's own test PKI (secp256r1; created for the run)
 #
-# Arguments after the program are given to `evcc` after the partner's defaults.
+# Arguments after the program are given to `evcc-sim` after the partner's defaults.
 set -u
 partner=$1; evcc=$2; shift 2
 id=$$

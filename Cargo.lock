@@ -85,14 +85,21 @@ dependencies = [
 name = "evcc-linux"
 version = "0.1.0"
 dependencies = [
- "app-protocol",
  "evcc-core",
- "evse-sim",
- "exi",
  "homeplug",
  "iso15118-20",
  "libc",
  "openssl",
+ "v2gtp",
+]
+
+[[package]]
+name = "evcc-sim"
+version = "0.1.0"
+dependencies = [
+ "evcc-core",
+ "evcc-linux",
+ "iso15118-20",
  "v2gtp",
 ]
 
@@ -242,6 +249,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "scenarios"
+version = "0.1.0"
+dependencies = [
+ "app-protocol",
+ "evcc-core",
+ "evcc-linux",
+ "evcc-sim",
+ "evse-sim",
+ "exi",
+ "homeplug",
+ "iso15118-20",
+ "libc",
+ "openssl",
+ "v2gtp",
 ]
 
 [[package]]

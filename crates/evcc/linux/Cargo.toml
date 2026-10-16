@@ -1,0 +1,13 @@
+[package]
+name = "evcc-linux"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+evcc-core = { path = "../core" }
+openssl = "0.10"
+libc = "0.2"
+v2gtp = { path = "../../codec/v2gtp" }
+iso15118-20 = { path = "../../codec/iso15118-20" }
+homeplug = { path = "../../codec/homeplug" }

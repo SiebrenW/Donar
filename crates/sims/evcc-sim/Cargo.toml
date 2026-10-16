@@ -1,0 +1,16 @@
+[package]
+name = "evcc-sim"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "A simulated vehicle (EVCC with a fake battery) for tests, scenarios and interop runs"
+
+[dependencies]
+evcc-core = { path = "../../evcc/core" }
+evcc-linux = { path = "../../evcc/linux" }
+iso15118-20 = { path = "../../codec/iso15118-20" }
+v2gtp = { path = "../../codec/v2gtp" }
+
+[[bin]]
+name = "evcc-sim"
+path = "src/main.rs"

@@ -6,7 +6,7 @@ pub mod pki;
 use evcc_core::ev::DcConnector;
 use evcc_core::log::NoLog;
 use evcc_core::session::Config;
-use evcc_linux::sim_ev::run_simulated_car;
+use evcc_sim::run_simulated_car;
 use evcc_linux::{Outcome, Transport};
 
 /// Runs the car over `stream`; after `stop_after` charge loop answers it asks to stop.

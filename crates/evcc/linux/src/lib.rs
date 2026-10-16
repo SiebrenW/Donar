@@ -6,7 +6,6 @@
 #[cfg(target_os = "linux")]
 pub mod slac;
 pub mod sdp;
-pub mod sim_ev;
 pub mod tls;
 
 use std::io::{self, ErrorKind, Read, Write};

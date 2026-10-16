@@ -49,10 +49,10 @@ Both skip what is already there; `setup --force` fetches and generates again. Th
 ```sh
 cargo test --workspace                    # everything that runs on this machine
 cargo test -p evcc-core                   # one crate
-cargo test -p evcc-linux --test tls       # one test file
+cargo test -p scenarios --test tls        # one test file
 cargo bench -p iso15118-20                # codec throughput over the reference vectors
 cargo xtask linux-test                    # the whole workspace inside the Linux container
-cargo xtask linux-test -p evcc-linux --test netns   # only the namespace tests
+cargo xtask linux-test -p scenarios --test netns   # only the namespace tests
 ```
 
 `cargo xtask linux-test [cargo test arguments]` builds the image, starts a privileged container with the repository mounted and runs `cargo test` in it. It is what you use from macOS without the dev container. In the dev container you run `cargo test` directly.
@@ -66,20 +66,20 @@ cargo xtask interop --log debug           # extra arguments go to evcc
 INTEROP_SHOW_PARTNER_LOG=1 cargo xtask interop
 ```
 
-This starts the `evcc` command (a simulated vehicle that does SLAC, SDP, optionally TLS, and a DC charging session) in one network namespace and an independent ISO 15118-20 charger in another: the open-source [`iso15118`](https://pypi.org/project/iso15118/) Python library, installed in the container. It prints the vehicle's log and exits with 0 when the session completed. Each partner brings defaults for `evcc` (plain or TLS, the certificates and the `Extended` inlet this charger offers); further arguments are appended, for example `--connector` to change the inlet. This partner's test certificates are secp256r1 (the ISO 15118-2 profile), so the TLS run uses `--backwards-compatible`. `evcc --help`-style usage is in `crates/evcc-linux/src/bin/evcc.rs`.
+This starts the `evcc-sim` command (a simulated vehicle that does SLAC, SDP, optionally TLS, and a DC charging session) in one network namespace and an independent ISO 15118-20 charger in another: the open-source [`iso15118`](https://pypi.org/project/iso15118/) Python library, installed in the container. It prints the vehicle's log and exits with 0 when the session completed. Each partner brings defaults for `evcc` (plain or TLS, the certificates and the `Extended` inlet this charger offers); further arguments are appended to `evcc-sim`'s command line, for example `--connector` to change the inlet. This partner's test certificates are secp256r1 (the ISO 15118-2 profile), so the TLS run uses `--backwards-compatible`. `evcc --help`-style usage is in `crates/sims/evcc-sim/src/main.rs`.
 
 ### What the tests cover
 
 | Crate / file | What it checks | Needs Linux root |
 |---|---|---|
-| `crates/exi`, `crates/app-protocol`, `crates/iso15118-20` | The generated EXI codec byte for byte against EXIficient vectors, in both directions; truncated and bit-flipped input; message sizes | no |
-| `v2gtp`, `homeplug` | V2GTP and SDP framing; SLAC message wire formats | no |
-| `crates/evcc-core/tests/session_flow.rs` | The session machine message by message: setup, authorization, services, charge parameters, schedule exchange, cable check, pre-charge, power delivery, charge loop, welding detection, session stop, timeouts and the ignore policy | no |
-| `crates/evcc-core/tests/slac_flow.rs` | The SLAC state machine against the simulated charger in virtual time: retries, thresholds, several chargers, lost messages | no |
-| `crates/evcc-linux/tests/loopback.rs` | The session over real TCP on localhost against the simulator | no |
-| `crates/evcc-linux/tests/tls.rs` | TLS 1.3 with mutual authentication, P-521 and Ed448 certificates, refusal of unknown CAs and wrong curves | no |
-| `crates/evcc-linux/tests/sdp.rs` | SDP discovery over UDP on the IPv6 loopback | no |
-| `crates/evcc-linux/tests/netns.rs` | Two network namespaces joined by a veth pair: multicast SDP, SLAC on a raw packet socket, and the whole bring-up (SLAC, SDP, TLS, DC session) | **yes** (Linux only) |
+| `crates/codec/exi`, `.../app-protocol`, `.../iso15118-20` | The generated EXI codec byte for byte against EXIficient vectors, in both directions; truncated and bit-flipped input; message sizes | no |
+| `codec/v2gtp`, `codec/homeplug` | V2GTP and SDP framing; SLAC message wire formats | no |
+| `crates/evcc/core/tests/session_flow.rs` | The session machine message by message: setup, authorization, services, charge parameters, schedule exchange, cable check, pre-charge, power delivery, charge loop, welding detection, session stop, timeouts and the ignore policy | no |
+| `crates/evcc/core/tests/slac_flow.rs` | The SLAC state machine against the simulated charger in virtual time: retries, thresholds, several chargers, lost messages | no |
+| `crates/sims/scenarios/tests/loopback.rs` | The session over real TCP on localhost against the simulator | no |
+| `crates/sims/scenarios/tests/tls.rs` | TLS 1.3 with mutual authentication, P-521 and Ed448 certificates, refusal of unknown CAs and wrong curves | no |
+| `crates/sims/scenarios/tests/sdp.rs` | SDP discovery over UDP on the IPv6 loopback | no |
+| `crates/sims/scenarios/tests/netns.rs` | Two network namespaces joined by a veth pair: multicast SDP, SLAC on a raw packet socket, and the whole bring-up (SLAC, SDP, TLS, DC session) | **yes** (Linux only) |
 
 Tests that need root are compiled only on Linux, so `cargo test --workspace` on macOS simply does not contain them.
 
@@ -87,13 +87,17 @@ Tests that need root are compiled only on Linux, so `cargo test --workspace` on 
 
 ```
 crates/
-  exi, app-protocol, iso15118-20   the EXI runtime and the generated message codecs
-  exi-gen                          the code generator (XSD to Rust)
-  v2gtp, homeplug                  V2GTP/SDP framing, SLAC messages (no_std)
-  evcc-core                        the sans-IO session, SDP and SLAC machines (no_std)
-  evse-sim                         a simulated charger for tests
-  evcc-linux                       host adapter: TCP, TLS (OpenSSL), UDP/SDP, raw sockets (SLAC),
-                                   the `evcc` command and a simulated car
+  codec/                           wire formats (no state machine, no I/O)
+    exi, app-protocol, iso15118-20   the EXI runtime and the generated message codecs
+    exi-gen                          the code generator (XSD to Rust)
+    v2gtp, homeplug                  V2GTP/SDP framing, SLAC messages
+  evcc/
+    core                             the sans-IO session, SDP and SLAC machines (no_std)
+    linux                            host adapter: TCP, TLS (OpenSSL), UDP/SDP, raw sockets (SLAC)
+  sims/
+    evse-sim                         a simulated charger
+    evcc-sim                         a simulated vehicle and the `evcc-sim` command
+    scenarios                        end-to-end tests (scenario files and runner follow)
   xtask                            `cargo xtask ...` (setup, gen, vectors, linux-test, interop)
 .devcontainer/                     the Linux test environment (also used by `cargo xtask linux-test`)
 data/                              downloaded schemas and reference vectors (not in git)

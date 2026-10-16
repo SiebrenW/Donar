@@ -40,9 +40,9 @@ fn linux_container() -> Result<Command, String> {
     Ok(cmd)
 }
 
-/// Runs the `evcc` command against an independent charger implementation (default partner:
+/// Runs the `evcc-sim` command against an independent charger implementation (default partner:
 /// `iso15118-python`; also `iso15118-python-tls`) in the Linux container. The partner's
-/// defaults for `evcc` (TLS or not, certificates, inlet) come first, further arguments after.
+/// defaults for `evcc-sim` (TLS or not, certificates, inlet) come first, further arguments after.
 pub fn interop(args: Vec<String>) -> Result<(), String> {
     let (partner, evcc_args) = match args.split_first() {
         Some((p, rest)) if !p.starts_with("--") => (p.clone(), rest.to_vec()),
@@ -50,9 +50,9 @@ pub fn interop(args: Vec<String>) -> Result<(), String> {
     };
     let mut cmd = linux_container()?;
     // `own-volumes` first: volumes made by an older image belong to root.
-    cmd.args(["bash", "-c", r#"own-volumes && cargo build --quiet -p evcc-linux --bin evcc && exec sudo -E .devcontainer/interop.sh "$@""#, "interop"])
+    cmd.args(["bash", "-c", r#"own-volumes && cargo build --quiet -p evcc-sim --bin evcc-sim && exec sudo -E .devcontainer/interop.sh "$@""#, "interop"])
         .arg(partner)
-        .arg("/target/debug/evcc")
+        .arg("/target/debug/evcc-sim")
         .args(evcc_args);
     run(&mut cmd)
 }

@@ -7,7 +7,7 @@ use iso15118_20::common_types::{MessageHeader, Processing, RationalNumber, Respo
 use iso15118_20::dc;
 
 fn vector(name: &str) -> Vec<u8> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../data/vectors/{name}.hex"));
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../../data/vectors/{name}.hex"));
     let hex = std::fs::read_to_string(&path)
         .unwrap_or_else(|_| panic!("missing {path:?}; run `cargo xtask setup && cargo xtask vectors`"));
     (0..hex.trim().len() / 2).map(|i| u8::from_str_radix(&hex.trim()[2 * i..2 * i + 2], 16).unwrap()).collect()

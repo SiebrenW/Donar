@@ -1,0 +1,19 @@
+[package]
+name = "scenarios"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Scenarios (simulated vehicle and charger, external partners) and the end-to-end tests that run them"
+
+[dev-dependencies]
+evcc-core = { path = "../../evcc/core" }
+evcc-linux = { path = "../../evcc/linux" }
+evcc-sim = { path = "../evcc-sim" }
+evse-sim = { path = "../evse-sim" }
+iso15118-20 = { path = "../../codec/iso15118-20" }
+app-protocol = { path = "../../codec/app-protocol" }
+exi = { path = "../../codec/exi" }
+v2gtp = { path = "../../codec/v2gtp" }
+homeplug = { path = "../../codec/homeplug" }
+openssl = "0.10"
+libc = "0.2"

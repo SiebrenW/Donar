@@ -1,4 +1,4 @@
-//! A simulated vehicle for tests and the `evcc` command: a car with a 400 V battery that
+//! A simulated vehicle for tests, scenarios and the `evcc-sim` command: a car with a 400 V battery that
 //! closes its contactors when asked, reaches the pre-charge voltage, charges until told to
 //! stop and ramps down at once.
 
@@ -11,7 +11,7 @@ use evcc_core::log::LogSink;
 use evcc_core::session::{Buffers, Config, Event, Notice, Session};
 use iso15118_20::common_types::RationalNumber;
 
-use crate::{Outcome, Transport, run};
+use evcc_linux::{Outcome, Transport, run};
 
 pub struct SimulatedEv {
     connector: DcConnector,
