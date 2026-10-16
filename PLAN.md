@@ -68,32 +68,56 @@ A generator that only round-trips its own output can be consistently wrong, so:
 
 ## Layout
 
-Cargo workspace, everything under `crates/`; the root holds only `crates/`, `data/` (gitignored: downloaded schemas, reference vectors), `standards/` (gitignored, your copies of the standards), `.devcontainer/` (the Linux test environment: Dockerfile, helper scripts, `interop.sh`), `.cargo/` and the plan and guide.
+Decided 2026-10-16 (grilled, see "Decided" at the end of this section). Cargo workspace, everything under `crates/` (the usual parent for a many-crate workspace; `src/` would mean the sources of one package). The root holds only `crates/`, `data/` (gitignored: downloaded schemas, reference vectors), `standards/` (gitignored, your copies of the standards), `.devcontainer/` (the Linux test environment: Dockerfile, helper scripts), `.cargo/` and the plan and guide.
 
 ```
 crates/
-  exi/                      # no_std runtime shared by all codecs: bit I/O, arena, string table, event-code layout
-  app-protocol/             # supportedAppProtocol handshake; used before a standard is chosen, so it is its own crate
-    src/generated/          # gitignored, from V2G_CI_AppProtocol.xsd
-  iso15118-20/              # package iso15118-20, lib iso15118_20
-    src/generated/          # gitignored: common_types.rs (header, RationalNumber, response codes), common.rs, dc.rs
-    # later: ac, acdp, wpt (Cargo features), bpt
-  # later: din70121/, iso15118-2/ (generated the same way, from their schemas)
-  exi-gen/                  # host tool (lib + bin): XSD -> Rust codec source; `dump` prints the derived grammar
-  v2gtp/, homeplug/         # no_std framing: V2GTP + SDP messages, HomePlug MMEs for SLAC
-  evcc-core/                # no_std sans-IO EV session, SDP and SLAC machines, Ev trait, actions/events, log records
-    src/session/            #   mod.rs: Session, shared state, frame dispatch; config, types; setup, parameters, charge, shutdown: the handlers of one phase each
-  evse-sim/                 # in-repo EVSE simulator, the mirror image of the core (config, evse, net, slac)
-  evcc-linux/               # host adapter: sockets, OpenSSL, timers, SLAC; the `evcc` command and a simulated car
+  codec/                    # wire formats: no state machine, no I/O, no_std except the generator
+    exi/                    #   runtime shared by all codecs: bit I/O, arena, string table, event-code layout
+    exi-gen/                #   host tool (lib + bin): XSD -> Rust codec source; `dump` prints the derived grammar
+    app-protocol/           #   supportedAppProtocol handshake; used before a standard is chosen, so it is its own crate
+      src/generated/        #     gitignored, from V2G_CI_AppProtocol.xsd
+    iso15118-20/            #   package iso15118-20, lib iso15118_20
+      src/generated/        #     gitignored: common_types.rs (header, RationalNumber, response codes), common.rs, dc.rs
+      # later: ac, acdp, wpt (Cargo features), bpt
+    v2gtp/                  #   V2GTP framing + SDP messages
+    homeplug/               #   HomePlug MMEs for SLAC
+    # later: din70121/, iso15118-2/ (generated the same way, from their schemas)
+  evcc/
+    core/                   #   package evcc-core: no_std sans-IO EV session, SDP and SLAC machines, Ev trait, actions/events, log records
+      src/session/          #     mod.rs: Session, shared state, frame dispatch; config, types; setup, parameters, charge, shutdown
+    linux/                  #   package evcc-linux: host adapter: sockets, OpenSSL, timers, raw sockets for SLAC
+    # later: embedded adapters next to linux/
+  # evse/                   #   only from the EVSE milestone on: real EVSE protocol logic (core/), extracted from sims/evse-sim
+  sims/                     # everything for simulation and end-to-end testing
+    evse-sim/               #   simulated EVSE (library + `evse-sim` binary), config structs serialisable
+    evcc-sim/               #   simulated car (library + `evcc-sim` binary, moved out of evcc-linux)
+    sandbox/                #   the environment scenarios run in: network namespaces, veth pairs, participants as processes
+    scenarios/              #   scenario TOML files, Rust builders for the complex ones, the runner, the end-to-end tests
+    web/                    #   test web UI (built last): start scenarios, change parameters, live logs
   xtask/                    # `cargo xtask`: schemas + generation, java (reference vectors, grammar diff), container (linux-test, interop)
 ```
+
+Package names stay kebab-case and independent of the directory (`evcc-core` lives in `crates/evcc/core`), so `use` paths and dependencies do not change when directories move.
+
+**Decided (2026-10-16).**
+1. `crates/` as the parent. `codec/` holds every wire format that has no state machine and no I/O, including `v2gtp`, `homeplug` and the generator `exi-gen`.
+2. `evcc/core` + `evcc/linux`, one crate per target. The simulated car and the `evcc` command leave the Linux adapter for `sims/evcc-sim`.
+3. No `crates/evse` until the EVSE milestone; then the protocol logic is extracted from `evse-sim` into `evse/core` and `sims/evse-sim` keeps the fault injection and servers on top of it.
+4. `sims/sandbox` is the namespace environment ("unshare") that scenarios run in; it replaces `.devcontainer/interop.sh` and the test `lab` helper.
+5. Scenarios are TOML data files (parameters, participants, pass criteria), with Rust builders for the complex ones. The sim knobs become serialisable config structs. Tests load the same files, so a failing scenario can be started by hand.
+6. Participants (`evse-sim`, `evcc-sim`, external partners such as the Python SECC) run as separate processes started inside their namespace by the sandbox, which owns start, stop, restart with new parameters, log capture, timeouts and network impairments. Threads that `setns` inside the test process stay available as an optional mode for quick tests.
+7. Root only (privileged container, or sudo on native Linux). **Requirement: no root-owned artifacts.** Only creating and destroying namespaces and veth pairs runs as root; participants run as the invoking user (privileges dropped, `SUDO_UID`/explicit user); logs, captures and generated certificates go to a user-owned artifacts directory; the sandbox chowns anything root created; the test runner's sudo wrapper must not leave root-owned files in the repo, `target` or `data`. A rootless implementation (user namespaces; Docker's default seccomp blocks them, checked) can replace the root one later behind the sandbox API (create lab, add participant, apply impairment, tear down).
+8. End-to-end tests live in `sims/scenarios` as thin wrappers (run scenario X, assert the outcome). Adapter and core crates keep only tests of their own code that need no simulator (TLS profile checks, SDP client against a loopback socket, the raw-socket wrapper); `session_flow` and `slac_flow` stay in `evcc-core`.
+9. `sims/web`: Rust (axum) backend, front end embedded in the binary, plain HTML/JS (htmx/Alpine at most), parameter forms derived from the scenario structs (serde + JSON Schema), live logs over server-sent events. Lightweight on purpose; something heavier can replace it.
+10. Order: (1) restructure the directories, no behaviour change; (2) `sandbox`; (3) serialisable sim config + binaries, scenario format and runner, migrate the end-to-end and interop tests; (4) protocol work from the open list; (5) `web`.
 
 Naming: directories and packages are kebab-case, files and modules snake_case, types PascalCase. Standard names are not repeated in file names; the crate and module path carry them (`iso15118_20::common::decode`).
 
 ## Testing
 
-1. **In-repo EVSE simulator** (`evse-sim`, Rust, reuses the generated codec): fast, deterministic, scriptable with fault injection, runs on any dev machine without PLC hardware.
-2. **External interop suite** against an independent EVSE stack, run in the Linux `unshare` harness once SLAC exists. This guards against us and the simulator misreading the spec the same way.
+1. **In-repo simulators** (`sims/evse-sim`, `sims/evcc-sim`, Rust, reuse the generated codec): fast, deterministic, scriptable with fault injection, runs on any dev machine without PLC hardware.
+2. **External interop suite** against an independent EVSE stack, run in the sandbox (Linux namespaces) as scenarios. This guards against us and the simulator misreading the spec the same way.
 
 ## Build order
 
