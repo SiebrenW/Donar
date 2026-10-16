@@ -218,7 +218,7 @@ impl Evse {
                 }
                 let SelectedService { service_id, parameter_set_id } = req.selected_energy_transfer_service;
                 let valid = self.config.energy_services.contains(&service_id)
-                    && self.config.parameter_sets.iter().any(|(id, _)| *id == parameter_set_id);
+                    && self.config.parameter_sets.iter().any(|set| set.id == parameter_set_id);
                 if !valid {
                     return self.selection_res(ResponseCode::FailedServiceSelectionInvalid);
                 }
@@ -457,8 +457,8 @@ impl Evse {
             .config
             .parameter_sets
             .iter()
-            .map(|(_, params)| {
-                params.iter().map(|(name, v)| Parameter { name, choice: ParameterChoice::IntValue(*v) }).collect()
+            .map(|set| {
+                set.values.iter().map(|(name, v)| Parameter { name, choice: ParameterChoice::IntValue(*v) }).collect()
             })
             .collect();
         let sets: Vec<ParameterSet<'_>> = self
@@ -466,7 +466,7 @@ impl Evse {
             .parameter_sets
             .iter()
             .zip(&names)
-            .map(|((id, _), parameters)| ParameterSet { parameter_set_id: *id, parameter: parameters })
+            .map(|(set, parameters)| ParameterSet { parameter_set_id: set.id, parameter: parameters })
             .collect();
         let res = ServiceDetailRes {
             header: self.header(),

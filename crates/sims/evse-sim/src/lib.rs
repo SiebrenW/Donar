@@ -9,6 +9,6 @@ mod config;
 mod evse;
 mod net;
 
-pub use config::Config;
+pub use config::{Config, OfferedSet, Settings};
 pub use evse::{Evse, Output, State};
 pub use net::{answer_discovery, serve, serve_one};

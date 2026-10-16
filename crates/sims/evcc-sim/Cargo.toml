@@ -11,6 +11,9 @@ evcc-linux = { path = "../../evcc/linux" }
 iso15118-20 = { path = "../../codec/iso15118-20" }
 v2gtp = { path = "../../codec/v2gtp" }
 
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+
 [[bin]]
 name = "evcc-sim"
 path = "src/main.rs"

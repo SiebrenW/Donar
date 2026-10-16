@@ -8,6 +8,7 @@ mod common;
 
 use evcc_core::session::{Config, EndReason};
 use evcc_linux::Outcome;
+use evse_sim::OfferedSet;
 use evse_sim::State as EvseState;
 use iso15118_20::common_types::ResponseCode;
 
@@ -121,18 +122,15 @@ fn evse_without_dc_leaves_no_usable_service() {
 
 #[test]
 fn evse_with_only_scheduled_control_leaves_no_usable_parameter_set() {
-    let scheduled = vec![("ControlMode".to_string(), 1), ("MobilityNeedsMode".to_string(), 1)];
-    let (addr, server) = start(evse_sim::Config { parameter_sets: vec![(1, scheduled)], ..Default::default() });
+    let scheduled = OfferedSet::new(1, [("ControlMode", 1), ("MobilityNeedsMode", 1)]);
+    let (addr, server) = start(evse_sim::Config { parameter_sets: vec![scheduled], ..Default::default() });
     assert_eq!(run_ev(addr, fast()), Outcome::Ended(EndReason::NoCompatibleParameterSet));
     drop(server);
 }
 
 #[test]
 fn the_dynamic_parameter_set_is_chosen_among_several() {
-    let set = |id, control_mode| (
-        id,
-        vec![("Connector".to_string(), 1), ("ControlMode".to_string(), control_mode), ("MobilityNeedsMode".to_string(), 1)],
-    );
+    let set = |id, control_mode| OfferedSet::new(id, [("Connector", 1), ("ControlMode", control_mode), ("MobilityNeedsMode", 1)]);
     let (addr, server) = start(evse_sim::Config { parameter_sets: vec![set(4, 1), set(9, 2)], ..Default::default() });
     let outcome = run_ev(addr, fast());
     assert!(outcome == Outcome::Ended(EndReason::Completed), "{outcome:?}");
@@ -179,8 +177,8 @@ fn refused_schedule_is_reported() {
 
 #[test]
 fn a_parameter_set_for_another_connector_is_not_chosen() {
-    let set = vec![("Connector".to_string(), 2), ("ControlMode".to_string(), 2), ("MobilityNeedsMode".to_string(), 1)];
-    let (addr, server) = start(evse_sim::Config { parameter_sets: vec![(1, set)], ..Default::default() });
+    let set = OfferedSet::new(1, [("Connector", 2), ("ControlMode", 2), ("MobilityNeedsMode", 1)]);
+    let (addr, server) = start(evse_sim::Config { parameter_sets: vec![set], ..Default::default() });
     assert_eq!(run_ev(addr, fast()), Outcome::Ended(EndReason::NoCompatibleParameterSet));
     drop(server);
 }

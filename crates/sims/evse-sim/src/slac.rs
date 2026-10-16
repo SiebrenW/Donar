@@ -4,9 +4,11 @@
 //! measures a fixed attenuation, so the EV decides "directly connected" or not by the knob.
 
 use homeplug::{BROADCAST, Frame, GROUPS, Mac, Message, RunId};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub mac: Mac,
     /// The attenuation (dB) reported for every carrier group.
