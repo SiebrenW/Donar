@@ -10,11 +10,13 @@ extern crate std;
 pub mod arena;
 pub mod bits;
 pub mod codec;
+pub mod integer;
 pub mod layout;
 pub mod strings;
 pub mod text;
 
 pub use arena::{Arena, ArenaFull};
+pub use integer::Integer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EncodeError {
@@ -27,8 +29,7 @@ pub enum EncodeError {
 pub enum DecodeError {
     UnexpectedEof,
     ArenaFull,
-    /// A well-formed EXI construct this codec does not handle (escape event codes,
-    /// empty string elements, ...).
+    /// A well-formed EXI construct this codec does not handle (escape event codes, ...).
     Unsupported(&'static str),
     InvalidValue(&'static str),
 }

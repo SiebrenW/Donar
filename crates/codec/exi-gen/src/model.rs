@@ -22,6 +22,8 @@ pub enum Scalar {
     /// An enumeration; the type is generated once under `ty`.
     Enum { ty: QName, values: Vec<String> },
     Str { max: usize },
+    /// `xs:integer`: any size, `exi::Integer`.
+    Integer,
     Bin { base64: bool, fixed: Option<usize>, max: usize },
 }
 
@@ -35,6 +37,7 @@ impl Scalar {
             Scalar::Int { enc: IntEnc::Int, .. } => "INTEGER",
             Scalar::Enum { .. } => "ENUMERATION",
             Scalar::Str { .. } => "STRING",
+            Scalar::Integer => "INTEGER",
             Scalar::Bin { base64: false, .. } => "BINARY_HEX",
             Scalar::Bin { base64: true, .. } => "BINARY_BASE64",
         }
@@ -107,6 +110,7 @@ fn builtin(local: &str) -> Option<Scalar> {
     };
     match local {
         "boolean" => Some(Scalar::Bool),
+        "integer" => Some(Scalar::Integer),
         "byte" => int("i8", -128, 127),
         "short" => int("i16", -32768, 32767),
         "int" => int("i32", i32::MIN.into(), i32::MAX.into()),
@@ -198,7 +202,7 @@ impl<'w> Model<'w> {
     }
 
     fn alt_for(&self, name: QName, ty: &QName, is_abstract: bool) -> Result<Alt, String> {
-        let ty = if ty.ns == XMLDSIG {
+        let ty = if ty.ns == XMLDSIG && self.world.complex(ty).is_none() {
             AltTy::Foreign
         } else if self.is_simple(ty) {
             AltTy::Scalar(self.scalar(ty)?)
@@ -288,9 +292,6 @@ impl<'w> Model<'w> {
 
     fn resolve_complex(&mut self, q: &QName) -> Result<(), String> {
         let def = self.world.complex(q).ok_or_else(|| format!("unknown complex type {}", q.local))?.clone();
-        if q.ns == XMLDSIG {
-            return Ok(());
-        }
         let ctx = |e: String| format!("{}: {e}", q.local);
         // Attributes of the whole derivation chain, sorted by name, come first.
         let mut attrs: Vec<(QName, xsd::AttrDecl)> = Vec::new();

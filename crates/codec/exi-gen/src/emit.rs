@@ -58,7 +58,7 @@ impl<'a, 'w> Emitter<'a, 'w> {
     // ------------------------------------------------------------ types
 
     fn scalar_lt(sc: &Scalar) -> bool {
-        matches!(sc, Scalar::Str { .. }) || matches!(sc, Scalar::Bin { fixed: None, .. })
+        matches!(sc, Scalar::Str { .. } | Scalar::Integer) || matches!(sc, Scalar::Bin { fixed: None, .. })
     }
 
     fn complex_lt(&mut self, q: &QName) -> bool {
@@ -97,6 +97,7 @@ impl<'a, 'w> Emitter<'a, 'w> {
             Scalar::Int { rust, .. } => (*rust).into(),
             Scalar::Enum { ty, .. } => self.path(ty),
             Scalar::Str { .. } => "&'a str".into(),
+            Scalar::Integer => "::exi::Integer<'a>".into(),
             Scalar::Bin { fixed: Some(n), .. } => format!("[u8; {n}]"),
             Scalar::Bin { .. } => "&'a [u8]".into(),
         }
@@ -279,6 +280,7 @@ impl<'a, 'w> Emitter<'a, 'w> {
                 let _ = owner;
                 format!("e.string({q}, {v}, {})?;", if *max == usize::MAX { "usize::MAX".to_string() } else { max.to_string() })
             }
+            Scalar::Integer => format!("e.integer(&{v})?;"),
             Scalar::Bin { fixed: Some(_), .. } => format!("e.binary(&{v})?;"),
             Scalar::Bin { max, .. } => {
                 if *max == usize::MAX {
@@ -326,6 +328,7 @@ impl<'a, 'w> Emitter<'a, 'w> {
                 let q = self.model.qid(name)?;
                 format!("d.string({q}, {})?", if *max == usize::MAX { "usize::MAX".to_string() } else { max.to_string() })
             }
+            Scalar::Integer => "d.integer()?".into(),
             Scalar::Bin { fixed: Some(n), .. } => format!("d.binary_fixed::<{n}>()?"),
             Scalar::Bin { max, .. } => {
                 format!("d.binary({})?", if *max == usize::MAX { "usize::MAX".to_string() } else { max.to_string() })
@@ -340,6 +343,11 @@ impl<'a, 'w> Emitter<'a, 'w> {
             AltTy::Scalar(sc) => {
                 let fused = !attr && Self::fusible(sc);
                 let body = self.enc_scalar(sc, v, owner, &alt.name, fused)?;
+                if let (false, Scalar::Str { max }) = (attr, sc) {
+                    let q = self.model.qid(&alt.name)?;
+                    let max = if *max == usize::MAX { "usize::MAX".to_string() } else { max.to_string() };
+                    return Ok(format!("e.string_element({q}, {v}, {max})?;"));
+                }
                 if attr || fused { body } else { format!("e.ch()?; {body} e.ee()?;") }
             }
             AltTy::Foreign => return Err("cannot encode a foreign element".into()),
@@ -362,6 +370,11 @@ impl<'a, 'w> Emitter<'a, 'w> {
             AltTy::Scalar(sc) => {
                 let fused = !attr && Self::fusible(sc);
                 let body = self.dec_scalar(sc, &alt.name, fused)?;
+                if let (false, Scalar::Str { max }) = (attr, sc) {
+                    let q = self.model.qid(&alt.name)?;
+                    let max = if *max == usize::MAX { "usize::MAX".to_string() } else { max.to_string() };
+                    return Ok(format!("d.string_element({q}, {max})?"));
+                }
                 if attr || fused { body } else { format!("{{ d.expect_ch()?; let v = {body}; d.expect_ee()?; v }}") }
             }
             AltTy::Foreign => return Err("cannot decode a foreign element".into()),

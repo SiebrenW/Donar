@@ -73,17 +73,53 @@ fn session_setup_res() {
     }
 }
 
-/// Open question (see PLAN.md): EXIficient's reference for an empty string element uses an
-/// event code this codec does not understand yet, so both directions must fail loudly instead
-/// of producing a wrong stream.
+/// An empty string element has no characters event: EXIficient codes it as the second-level
+/// `EE` of the element (`Enc::string_element`). Checked in every position that matters: only
+/// element, first and second of two optional elements, both.
 #[test]
-fn empty_string_is_unsupported_not_wrong() {
-    let m = SessionSetupReq { header: hdr(), evccid: "" };
-    assert!(m.encode(&mut [0u8; 64]).is_err());
-    let reference = vector("session_setup_res_empty");
-    let mut mem = [0u8; 512];
+fn empty_string_elements() {
+    let m = SessionSetupRes {
+        header: MessageHeader { session_id: [1, 2, 3, 4, 5, 6, 7, 8], time_stamp: TS },
+        response_code: ResponseCode::FailedWrongChargeParameter,
+        evseid: "",
+    };
+    check("session_setup_res_empty", Message::SessionSetupRes(m), |o| m.encode(o));
+    for (name, code, explanation) in [
+        ("empty_code", Some(""), Some("abc")),
+        ("empty_explanation", Some("abc"), Some("")),
+        ("empty_both", Some(""), Some("")),
+        ("empty_expl_only", None, Some("")),
+    ] {
+        let m = SessionStopReq {
+            header: hdr(),
+            charging_session: ChargingSession::Terminate,
+            ev_termination_code: code,
+            ev_termination_explanation: explanation,
+        };
+        check(&format!("session_stop_req_{name}"), Message::SessionStopReq(m), |o| m.encode(o));
+    }
+}
+
+/// Another encoder may write the empty string as a `CH` event with a zero-length value.
+#[test]
+fn an_empty_string_as_a_character_event_is_accepted() {
+    let reference = vector("session_stop_req_empty_code");
+    // The escape and the 3-bit EE code (4 bits) become CH (0), the length 0 + 2 as an unsigned
+    // integer (8 bits) and EE (0), at the sixth bit after the 17th octet (the header ends there).
+    let mut bits: Vec<bool> = reference.iter().flat_map(|b| (0..8).rev().map(move |i| b >> i & 1 == 1)).collect();
+    let at = 17 * 8 + 6;
+    assert_eq!(bits[at..at + 4], [true, false, false, false]);
+    let ch: Vec<bool> = "0000000100".chars().map(|c| c == '1').collect();
+    bits.splice(at..at + 4, ch);
+    while !bits.len().is_multiple_of(8) {
+        bits.push(false);
+    }
+    let bytes: Vec<u8> = bits.chunks(8).map(|c| c.iter().fold(0, |a, &b| a << 1 | u8::from(b))).collect();
+    let mut mem = [0u8; 4096];
     let arena = Arena::new(&mut mem);
-    assert!(common::decode(&reference, &arena).is_err());
+    let Message::SessionStopReq(m) = common::decode(&bytes, &arena).unwrap() else { panic!() };
+    assert_eq!(m.ev_termination_code, Some(""));
+    assert_eq!(m.ev_termination_explanation, Some("abc"));
 }
 
 #[test]
@@ -485,6 +521,8 @@ fn truncated_input_never_panics_and_never_decodes() {
         "service_detail_res_kinds",
         "service_detail_res_hits",
         "service_selection_req_vas",
+        "certificate_installation_req_serials",
+        "session_stop_req_empty_code",
     ] {
         let full = vector(name);
         for cut in 0..full.len() {
@@ -522,7 +560,7 @@ fn mutated_streams_never_panic() {
         state ^= state << 17;
         state
     };
-    let common_names = ["session_setup_res_ok", "authorization_setup_res_pnc_eim_listed", "service_discovery_res_max", "service_detail_res_hits", "service_selection_req_vas"];
+    let common_names = ["session_setup_res_ok", "authorization_setup_res_pnc_eim_listed", "service_discovery_res_max", "service_detail_res_hits", "service_selection_req_vas", "certificate_installation_req_serials", "session_stop_req_empty_both"];
     for name in common_names {
         let original = vector(name);
         for _ in 0..2000 {
@@ -550,4 +588,59 @@ fn mutated_streams_never_panic() {
             let _ = dc::decode(&bytes, &arena);
         }
     }
+}
+
+// ---------------------------------------------------------------- certificate serial numbers
+
+/// `xs:integer` is of any size: a certificate serial number is up to 20 octets (RFC 5280), a
+/// native integer cannot hold it. Values around the 7-bit group, octet and 20-octet boundaries,
+/// negative ones (the magnitude minus one is coded) and one far beyond 20 octets, against
+/// EXIficient.
+#[test]
+fn root_certificate_ids_with_serial_numbers_of_any_size() {
+    use iso15118_20::common_types::ListOfRootCertificateIds;
+    use iso15118_20::xmldsig::X509IssuerSerial;
+    let max20 = [0xffu8; 20];
+    let mut high20 = [0u8; 20];
+    high20[0] = 0x80;
+    let max40 = [0xffu8; 40];
+    let serials = [
+        exi::Integer::unsigned(&[1]),
+        exi::Integer::ZERO,
+        exi::Integer::new(true, &[5]),
+        exi::Integer::unsigned(&max20),
+        exi::Integer::unsigned(&high20),
+        exi::Integer::new(true, &max20),
+        exi::Integer::unsigned(&max40),
+        exi::Integer::unsigned(&[0xff]),
+        exi::Integer::unsigned(&[1, 0]),
+        exi::Integer::new(true, &[0x80]),
+        exi::Integer::new(true, &[1, 0]),
+    ];
+    let names: Vec<String> = (0..serials.len()).map(|i| format!("CN=Root {i},O=V2G")).collect();
+    let ids: Vec<X509IssuerSerial<'_>> = serials
+        .iter()
+        .zip(&names)
+        .map(|(&x509_serial_number, n)| X509IssuerSerial { x509_issuer_name: n, x509_serial_number })
+        .collect();
+    let m = CertificateInstallationReq {
+        header: hdr(),
+        oem_provisioning_certificate_chain: SignedCertificateChain { id: "id1", certificate: &[1, 2, 3, 4, 5], sub_certificates: None },
+        list_of_root_certificate_ids: ListOfRootCertificateIds { root_certificate_id: &ids },
+        maximum_contract_certificate_chains: 3,
+        prioritized_emaids: None,
+    };
+    let want = vector("certificate_installation_req_serials");
+    let mut out = [0u8; 2048];
+    let n = m.encode(&mut out).unwrap();
+    let mut mem = [0u8; 8192];
+    let arena = Arena::new(&mut mem);
+    let decoded = common::decode(&want, &arena);
+    assert_eq!(&out[..n], &want[..], "encode differs from EXIficient");
+    let Message::CertificateInstallationReq(got) = decoded.unwrap() else { panic!() };
+    assert_eq!(got, m);
+    // The 20-octet serial number as the 21 content octets of a DER INTEGER (a leading zero keeps it positive).
+    let mut der = [0xffu8; 21];
+    der[0] = 0;
+    assert_eq!(exi::Integer::unsigned(&der), serials[3]);
 }

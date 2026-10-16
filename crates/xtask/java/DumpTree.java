@@ -37,7 +37,10 @@ public class DumpTree {
         StartElement se = (StartElement) ev;
         String child;
         String ns = se.getQName().getNamespaceURI();
-        if (ns.startsWith("http://www.w3.org/2000/09/xmldsig") || se.getQName().getLocalPart().equals("RootCertificateID")) child = "XMLDSIG";
+        String local = se.getQName().getLocalPart();
+        // The xmldsig types exi-gen models (X509IssuerSerialType) are expanded.
+        boolean modelled = local.equals("X509IssuerName") || local.equals("X509SerialNumber");
+        if (ns.startsWith("http://www.w3.org/2000/09/xmldsig") && !modelled) child = "XMLDSIG";
         else child = "S" + canon(se.getGrammar());
         d = "SE(" + name(se.getQName()) + ") child=" + child;
       } else if (ev instanceof EndElement) d = "EE";

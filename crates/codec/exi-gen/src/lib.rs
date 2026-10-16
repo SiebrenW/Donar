@@ -32,7 +32,7 @@ pub const NS_APP_PROTOCOL: &str = "urn:iso:15118:2:2010:AppProtocol";
 pub const ISO20: Group = Group {
     name: "iso15118-20",
     files: &["V2G_CI_CommonTypes.xsd", "V2G_CI_CommonMessages.xsd", "V2G_CI_DC.xsd", "xmldsig-core-schema.xsd"],
-    modules: &[(NS_COMMON_TYPES, "common_types"), (NS_COMMON, "common"), (NS_DC, "dc")],
+    modules: &[(NS_COMMON_TYPES, "common_types"), (NS_COMMON, "common"), (NS_DC, "dc"), (xsd::XMLDSIG, "xmldsig")],
 };
 
 pub const APP_PROTOCOL: Group =

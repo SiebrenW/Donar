@@ -10,4 +10,4 @@
 
 mod generated;
 
-pub use generated::{common, common_types, dc};
+pub use generated::{common, common_types, dc, xmldsig};

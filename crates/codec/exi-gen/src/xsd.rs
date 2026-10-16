@@ -8,6 +8,9 @@ use std::path::Path;
 
 pub const XS: &str = "http://www.w3.org/2001/XMLSchema";
 pub const XMLDSIG: &str = "http://www.w3.org/2000/09/xmldsig#";
+/// The xmldsig types the ISO 15118-20 messages use outside the (unsupported) message signature:
+/// the issuer and serial number of a root certificate (`RootCertificateID`).
+pub const XMLDSIG_MODELLED: &[&str] = &["X509IssuerSerialType"];
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct QName {
@@ -180,13 +183,14 @@ fn parse_schema(file: &str, text: &str) -> Result<Schema, String> {
         attributes_qualified: root.attribute("attributeFormDefault") == Some("qualified"),
         ..Default::default()
     };
-    // xmldsig is only needed for its element names (they take part in the document grammar's
-    // event codes); its types are not modelled.
+    // xmldsig is needed for its element names (they take part in the document grammar's event
+    // codes); of its types only those in `XMLDSIG_MODELLED` are modelled.
     let foreign = target_ns == XMLDSIG;
     for node in children(root) {
         match tag(node) {
             "import" => schema.imports.push(node.attribute("namespace").unwrap_or("").to_string()),
-            "simpleType" | "complexType" if foreign => {}
+            "simpleType" if foreign => {}
+            "complexType" if foreign && !node.attribute("name").is_some_and(|n| XMLDSIG_MODELLED.contains(&n)) => {}
             "simpleType" => {
                 let name = node.attribute("name").ok_or("anonymous global simpleType")?.to_string();
                 schema.simple.insert(name, parse_simple(node, &target_ns)?);

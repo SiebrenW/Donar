@@ -18,6 +18,8 @@ pub fn words(s: &str) -> Vec<String> {
         let boundary = match prev {
             Some(p) if p != '_' => {
                 (p.is_lowercase() && c.is_uppercase())
+                    // `X509Issuer` is two words, `V2XEnergy` is not three.
+                    || (p.is_ascii_digit() && c.is_uppercase() && next.is_some_and(|n| n.is_lowercase()))
                     || (p.is_uppercase()
                         && c.is_uppercase()
                         && next.is_some_and(|n| n.is_lowercase())

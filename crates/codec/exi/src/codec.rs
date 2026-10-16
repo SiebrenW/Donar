@@ -85,10 +85,28 @@ impl<'b, 'm> Enc<'b, 'm> {
         self.w.uint64(if v < 0 { !v as u64 } else { v as u64 })
     }
 
+    /// An `xs:integer` of any size (see [`crate::Integer`]).
+    pub fn integer(&mut self, v: &crate::Integer<'_>) -> Result<(), EncodeError> {
+        v.write(&mut self.w)
+    }
+
     #[inline]
     pub fn binary(&mut self, v: &[u8]) -> Result<(), EncodeError> {
         self.w.uint64(v.len() as u64)?;
         self.w.bytes(v)
+    }
+
+    /// A string element's content: `CH`, the value and `EE`. An empty string has no characters
+    /// event in the XML infoset, so it is the second-level `EE` of the element's first state
+    /// (the escape code 1 of the 1-bit first level, then 3 bits, value 0: the width follows
+    /// from the number of second-level productions, checked against EXIficient's output).
+    pub fn string_element(&mut self, q: u8, v: &'m str, max_chars: usize) -> Result<(), EncodeError> {
+        if v.is_empty() {
+            return self.w.bits(0b1000, 4);
+        }
+        self.ch()?;
+        self.string(q, v, max_chars)?;
+        self.ee()
     }
 
     /// A string value under qname id `q`; `max_chars` is the schema's `maxLength`.
@@ -97,9 +115,9 @@ impl<'b, 'm> Enc<'b, 'm> {
         if chars > max_chars {
             return Err(EncodeError::InvalidValue("string longer than the schema allows"));
         }
-        // EXIficient codes an empty string element differently (its event code is not CH).
+        // An empty value is never in the table and is not added to it (EXI 7.3.3).
         if chars == 0 {
-            return Err(EncodeError::InvalidValue("empty string not supported yet"));
+            return self.w.uint64(2);
         }
         match self.strings.find(q, v) {
             Found::Local(i, bits) => {
@@ -156,6 +174,21 @@ impl<'r, 's> Dec<'r, 's> {
         lay.read(&mut self.r, pos)
     }
 
+    /// Reads what [`Enc::string_element`] writes. Also accepts `CH` with a zero-length value,
+    /// which other encoders may produce for an empty string.
+    pub fn string_element(&mut self, q: u8, max_chars: usize) -> Result<&'s str, DecodeError> {
+        if self.r.bit()? {
+            // The escape: only the second-level EE (code 0 of 3 bits) is expected here.
+            return match self.r.bits(3)? {
+                0 => Ok(""),
+                _ => Err(DecodeError::Unsupported("unexpected event code")),
+            };
+        }
+        let v = self.string(q, max_chars)?;
+        self.expect_ee()?;
+        Ok(v)
+    }
+
     #[inline]
     pub fn expect_ch(&mut self) -> Result<(), DecodeError> {
         self.expect_zero(1)
@@ -204,6 +237,11 @@ impl<'r, 's> Dec<'r, 's> {
         Ok(if negative { !(magnitude as i64) } else { magnitude as i64 })
     }
 
+    /// An `xs:integer` of any size; the magnitude lives in the arena.
+    pub fn integer(&mut self) -> Result<crate::Integer<'s>, DecodeError> {
+        crate::integer::read(&mut self.r, self.arena)
+    }
+
     /// A binary value of at most `max` bytes (or exactly `fixed`).
     #[inline]
     pub fn binary(&mut self, max: usize) -> Result<&'s [u8], DecodeError> {
@@ -245,7 +283,7 @@ impl<'r, 's> Dec<'r, 's> {
             n => {
                 let len = usize::try_from(n - 2).map_err(|_| DecodeError::InvalidValue("string too long"))?;
                 if len == 0 {
-                    return Err(DecodeError::Unsupported("empty string element"));
+                    return Ok("");
                 }
                 if len > max_chars {
                     return Err(DecodeError::InvalidValue("string longer than the schema allows"));
