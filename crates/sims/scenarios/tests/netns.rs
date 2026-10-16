@@ -3,7 +3,6 @@
 #![cfg(target_os = "linux")]
 
 mod common;
-mod lab;
 
 use std::net::{Ipv6Addr, SocketAddrV6, TcpListener, UdpSocket};
 use std::thread;
@@ -11,12 +10,51 @@ use std::thread;
 use evcc_core::session::{Config, EndReason};
 use evcc_linux::slac::{self, NoModem, PacketSocket};
 use evcc_linux::{Outcome, sdp, tls};
-use lab::{IFACE, Lab, SECC_ADDR};
+use sandbox::{INTERFACE as IFACE, Node, Options, Sandbox};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use common::pki::{Curve, pki};
 use v2gtp::sdp::{Response, Security, Transport};
+
+/// Two nodes joined by a cable: the EVCC at `fe80::1`, the SECC at `fe80::2`.
+struct Lab {
+    evcc: Node,
+    secc: Node,
+    _sandbox: Sandbox,
+}
+
+const SECC_ADDR: &str = "fe80::2";
+
+impl Lab {
+    fn new() -> Lab {
+        // A test whose one side fails while the other waits for it for ever would hang the
+        // whole run; end the process with a message instead.
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(90));
+            eprintln!("netns test still running after 90 s: probably hung, ending the run");
+            std::process::exit(101);
+        });
+        let mut sandbox = Sandbox::new(Options::default()).expect("the sandbox needs root and a user (sudo)");
+        let (evcc, secc) = (sandbox.node("evcc").unwrap(), sandbox.node("secc").unwrap());
+        let (evcc, secc) = sandbox.connect(&evcc, &secc).unwrap();
+        Lab { evcc, secc, _sandbox: sandbox }
+    }
+}
+
+/// Sets the flag when dropped, also while unwinding from a panic.
+struct StopOnDrop<'a>(&'a AtomicBool);
+
+impl Drop for StopOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Runs `f` in the node on its own thread (see `Node::run_in`).
+fn in_ns<T: Send>(node: &Node, f: impl FnOnce() -> T + Send) -> T {
+    node.run_in(f).unwrap()
+}
 
 #[test]
 fn discovery_by_multicast_and_a_session_across_a_veth_pair() {
@@ -25,7 +63,7 @@ fn discovery_by_multicast_and_a_session_across_a_veth_pair() {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let lab = &lab;
         let secc = s.spawn(move || {
-            lab::in_ns(&lab.secc, || {
+            in_ns(&lab.secc, || {
                 let udp = UdpSocket::bind((Ipv6Addr::UNSPECIFIED, v2gtp::sdp::SDP_PORT)).unwrap();
                 let tcp = TcpListener::bind((Ipv6Addr::UNSPECIFIED, 0)).unwrap();
                 let response = Response {
@@ -41,7 +79,7 @@ fn discovery_by_multicast_and_a_session_across_a_veth_pair() {
             })
         });
         ready_rx.recv().unwrap();
-        let outcome = lab::in_ns(&lab.evcc, || {
+        let outcome = in_ns(&lab.evcc, || {
             let ifindex = sdp::interface_index(IFACE).unwrap();
             let socket = sdp::socket().unwrap();
             let cfg = evcc_core::sdp::Config::new(Security::NoTls);
@@ -85,9 +123,11 @@ fn slac_between_namespaces(attenuation: u8, config: evcc_core::slac::Config) -> 
     let stop = AtomicBool::new(false);
     thread::scope(|s| {
         let (lab, stop) = (&lab, &stop);
+        // A failing assertion must end the charger's loop too, or the scope would never return.
+        let _stop_on_exit = StopOnDrop(stop);
         let (mac_tx, mac_rx) = std::sync::mpsc::channel();
         let secc = s.spawn(move || {
-            lab::in_ns(&lab.secc, || {
+            in_ns(&lab.secc, || {
                 let socket = PacketSocket::open(IFACE).unwrap();
                 mac_tx.send(socket.mac()).unwrap();
                 let mut evse = evse_sim::slac::Evse::new(evse_sim::slac::Config { mac: socket.mac(), attenuation, ..Default::default() });
@@ -95,7 +135,7 @@ fn slac_between_namespaces(attenuation: u8, config: evcc_core::slac::Config) -> 
             })
         });
         let secc_mac = mac_rx.recv().unwrap();
-        let outcome = lab::in_ns(&lab.evcc, || {
+        let outcome = in_ns(&lab.evcc, || {
             let socket = PacketSocket::open(IFACE).unwrap();
             slac::run(&socket, config, RUN, &mut NoModem).unwrap()
         });
@@ -137,8 +177,10 @@ fn slac_then_discovery_then_a_session_over_tls() {
     let stop = AtomicBool::new(false);
     thread::scope(|s| {
         let (lab, stop) = (&lab, &stop);
+        // A failing assertion must end the charger's loop too, or the scope would never return.
+        let _stop_on_exit = StopOnDrop(stop);
         let secc = s.spawn(move || {
-            lab::in_ns(&lab.secc, || {
+            in_ns(&lab.secc, || {
                 let udp = UdpSocket::bind((Ipv6Addr::UNSPECIFIED, v2gtp::sdp::SDP_PORT)).unwrap();
                 let tcp = TcpListener::bind((Ipv6Addr::UNSPECIFIED, 0)).unwrap();
                 let socket = PacketSocket::open(IFACE).unwrap();
@@ -156,7 +198,7 @@ fn slac_then_discovery_then_a_session_over_tls() {
                 evse_sim::serve(&mut stream, evse_sim::Config::default()).unwrap()
             })
         });
-        let outcome = lab::in_ns(&lab.evcc, || {
+        let outcome = in_ns(&lab.evcc, || {
             let socket = PacketSocket::open(IFACE).unwrap();
             let matched = slac::run(&socket, evcc_core::slac::Config::DEFAULT, RUN, &mut NoModem).unwrap();
             assert!(matches!(matched, evcc_core::slac::Outcome::Matched { .. }), "{matched:?}");

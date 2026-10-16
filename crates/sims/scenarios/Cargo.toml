@@ -5,6 +5,9 @@ edition.workspace = true
 publish = false
 description = "Scenarios (simulated vehicle and charger, external partners) and the end-to-end tests that run them"
 
+[dependencies]
+sandbox = { path = "../sandbox" }
+
 [dev-dependencies]
 evcc-core = { path = "../../evcc/core" }
 evcc-linux = { path = "../../evcc/linux" }
@@ -17,3 +20,7 @@ v2gtp = { path = "../../codec/v2gtp" }
 homeplug = { path = "../../codec/homeplug" }
 openssl = "0.10"
 libc = "0.2"
+
+[[bin]]
+name = "interop"
+path = "src/bin/interop.rs"

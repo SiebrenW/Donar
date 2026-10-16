@@ -1,0 +1,9 @@
+[package]
+name = "sandbox"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Isolated network environments (Linux namespaces joined by virtual cables) in which scenarios run their participants as processes"
+
+[dependencies]
+libc = "0.2"

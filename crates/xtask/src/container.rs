@@ -41,18 +41,14 @@ fn linux_container() -> Result<Command, String> {
 }
 
 /// Runs the `evcc-sim` command against an independent charger implementation (default partner:
-/// `iso15118-python`; also `iso15118-python-tls`) in the Linux container. The partner's
-/// defaults for `evcc-sim` (TLS or not, certificates, inlet) come first, further arguments after.
+/// `iso15118-python`; also `iso15118-python-tls`) in the Linux container, in a sandbox
+/// (`crates/sims/scenarios/src/bin/interop.rs`). The partner's defaults for `evcc-sim` (TLS or
+/// not, certificates, inlet) come first, further arguments after.
 pub fn interop(args: Vec<String>) -> Result<(), String> {
-    let (partner, evcc_args) = match args.split_first() {
-        Some((p, rest)) if !p.starts_with("--") => (p.clone(), rest.to_vec()),
-        _ => ("iso15118-python".to_string(), args),
-    };
     let mut cmd = linux_container()?;
-    // `own-volumes` first: volumes made by an older image belong to root.
-    cmd.args(["bash", "-c", r#"own-volumes && cargo build --quiet -p evcc-sim --bin evcc-sim && exec sudo -E .devcontainer/interop.sh "$@""#, "interop"])
-        .arg(partner)
-        .arg("/target/debug/evcc-sim")
-        .args(evcc_args);
+    // `own-volumes` first: volumes made by an older image belong to root. Only the driver runs
+    // as root (it creates the namespaces); the participants drop to the invoking user.
+    cmd.args(["bash", "-c", r#"own-volumes && cargo build --quiet -p evcc-sim -p scenarios --bins && exec sudo -E /target/debug/interop "$@""#, "interop"])
+        .args(args);
     run(&mut cmd)
 }

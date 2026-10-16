@@ -252,6 +252,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sandbox"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "scenarios"
 version = "0.1.0"
 dependencies = [
@@ -265,6 +272,7 @@ dependencies = [
  "iso15118-20",
  "libc",
  "openssl",
+ "sandbox",
  "v2gtp",
 ]
 

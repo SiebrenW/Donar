@@ -66,7 +66,7 @@ cargo xtask interop --log debug           # extra arguments go to evcc
 INTEROP_SHOW_PARTNER_LOG=1 cargo xtask interop
 ```
 
-This starts the `evcc-sim` command (a simulated vehicle that does SLAC, SDP, optionally TLS, and a DC charging session) in one network namespace and an independent ISO 15118-20 charger in another: the open-source [`iso15118`](https://pypi.org/project/iso15118/) Python library, installed in the container. It prints the vehicle's log and exits with 0 when the session completed. Each partner brings defaults for `evcc` (plain or TLS, the certificates and the `Extended` inlet this charger offers); further arguments are appended to `evcc-sim`'s command line, for example `--connector` to change the inlet. This partner's test certificates are secp256r1 (the ISO 15118-2 profile), so the TLS run uses `--backwards-compatible`. `evcc --help`-style usage is in `crates/sims/evcc-sim/src/main.rs`.
+This starts the `evcc-sim` command (a simulated vehicle that does SLAC, SDP, optionally TLS, and a DC charging session) in one network namespace and an independent ISO 15118-20 charger in another: the open-source [`iso15118`](https://pypi.org/project/iso15118/) Python library, installed in the container. It prints the vehicle's log and exits with 0 when the session completed. Both run as processes in a sandbox (`crates/sims/sandbox`): only creating the namespaces needs root, the participants run as you, and their logs (`evcc-sim`, the partner's `secc`) are in the artifacts directory the run prints (`target/sandbox/<run>/`, owned by you). Each partner brings defaults for `evcc` (plain or TLS, the certificates and the `Extended` inlet this charger offers); further arguments are appended to `evcc-sim`'s command line, for example `--connector` to change the inlet. This partner's test certificates are secp256r1 (the ISO 15118-2 profile), so the TLS run uses `--backwards-compatible`. `evcc --help`-style usage is in `crates/sims/evcc-sim/src/main.rs`.
 
 ### What the tests cover
 
@@ -97,7 +97,8 @@ crates/
   sims/
     evse-sim                         a simulated charger
     evcc-sim                         a simulated vehicle and the `evcc-sim` command
-    scenarios                        end-to-end tests (scenario files and runner follow)
+    sandbox                          network namespaces joined by virtual cables; participants run as processes
+    scenarios                        end-to-end tests, partner implementations, the `interop` driver
   xtask                            `cargo xtask ...` (setup, gen, vectors, linux-test, interop)
 .devcontainer/                     the Linux test environment (also used by `cargo xtask linux-test`)
 data/                              downloaded schemas and reference vectors (not in git)
