@@ -10,6 +10,11 @@
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/evcc-rs,type=bind",
   "workspaceFolder": "/workspaces/evcc-rs",
   "remoteUser": "developer",
+  // Keep UID 1000: `cargo xtask linux-test` runs as 1000 in the same volumes, and two UIDs would
+  // take the build volume from each other.
+  "updateRemoteUserUID": false,
+  // `cargo xtask web` inside the container.
+  "forwardPorts": [8080],
   // Same volumes as `cargo xtask linux-test`, so builds are shared and the workspace's
   // `target` (macOS builds when the folder comes from a Mac) is left alone.
   "mounts": [

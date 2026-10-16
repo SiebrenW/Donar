@@ -59,7 +59,7 @@ pub fn interop(names: Vec<String>) -> Result<(), String> {
     run(&mut cmd)
 }
 
-/// Starts the web UI in the Linux container, published on `127.0.0.1:PORT` of this machine
+/// Starts the web UI in the Linux container (or, inside the dev container, directly), published on `127.0.0.1:PORT` of this machine
 /// (default 8080); scenarios need the namespaces. Runs until interrupted. The server runs as
 /// the container's user and starts each run through `sudo`.
 pub fn web(args: Vec<String>) -> Result<(), String> {
@@ -68,6 +68,14 @@ pub fn web(args: Vec<String>) -> Result<(), String> {
         [p] if p.parse::<u16>().is_ok() => p.clone(),
         _ => return Err("usage: cargo xtask web [PORT]".into()),
     };
+    // Already in the Linux container (the dev container): no Docker here, serve directly.
+    if std::path::Path::new("/.dockerenv").exists() {
+        run(Command::new("cargo").args(["build", "--quiet", "--workspace", "--bins"]))?;
+        let target = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".into());
+        let mut cmd = Command::new(std::path::Path::new(&target).join("debug/evcc-web"));
+        cmd.args(["--listen", &format!("0.0.0.0:{port}"), "--work"]).arg(std::path::Path::new(&target).join("web"));
+        return run(&mut cmd);
+    }
     let mut cmd = linux_container(&[format!("127.0.0.1:{port}:8080")])?;
     cmd.args(["bash", "-c", r#"own-volumes && cargo build --quiet --workspace --bins && exec /target/debug/evcc-web --listen 0.0.0.0:8080 --work /target/web"#]);
     run(&mut cmd)

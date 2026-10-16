@@ -73,7 +73,7 @@ Only the runner is root (it creates the namespaces); `evse-sim` and `evcc-sim` r
 cargo xtask web          # http://127.0.0.1:8080/ (an argument picks another port)
 ```
 
-Starts `evcc-web` in the Linux container and publishes it on localhost. Pick a scenario, change the settings of the vehicle and the charger in the forms (a value you set is highlighted, × resets it), press **Run** and follow both logs live; the verdict is the runner's `PASS` or `FAIL`. The server runs as the container's user and starts each run through `sudo`; the logs and settings of a run stay in `target/web/run-N/` in the container's build volume. Inside the dev container run `cargo run -p evcc-web` after `cargo build --workspace --bins`. It is meant for your own machine: no authentication.
+Starts `evcc-web` in the Linux container and publishes it on localhost. Pick a scenario, change the settings of the vehicle and the charger in the forms (a value you set is highlighted, × resets it), press **Run** and follow both logs live; the verdict is the runner's `PASS` or `FAIL`. The server runs as the container's user and starts each run through `sudo`; the logs and settings of a run stay in `target/web/run-N/` in the container's build volume. Inside the dev container the same command serves directly (no Docker, port 8080 is forwarded by the editor); do not use `sudo`, the server asks for it itself when it starts a run. It is meant for your own machine: no authentication.
 
 #### Simulation tab
 
@@ -133,7 +133,7 @@ standards/                         your copies of the standards (not in git)
 - **OpenSSL not found (macOS)**: `export OPENSSL_DIR=$(brew --prefix openssl@3)`.
 - **`cargo xtask linux-test` cannot reach Docker**: start your Docker VM (`colima start` or Docker Desktop). With Colima the repository must be below your home directory, which it shares by default.
 - **Namespace tests fail with "Operation not permitted"**: the container is not privileged; use `cargo xtask linux-test` or the dev container as configured.
-- **"Permission denied" writing in the repository from the container (Linux host)**: the image's `developer` has UID 1000; the dev container adjusts it to your UID (`updateRemoteUserUID`), `cargo xtask linux-test` does not. If your UID is not 1000, run `docker run --user $(id -u) ...` yourself or use the dev container. On macOS with Colima or Docker Desktop this does not occur.
+- **"Permission denied" writing in the repository from the container (Linux host)**: the image's `developer` has UID 1000; the dev container keeps it (`updateRemoteUserUID` is off, so that it and `cargo xtask linux-test` share the build volumes), and so does `cargo xtask linux-test`. If your UID is not 1000, run `docker run --user $(id -u) ...` yourself or use the dev container. On macOS with Colima or Docker Desktop this does not occur.
 - **Build output owned by root after an older image**: the container runs `own-volumes` (a `chown` of the two volumes) on start, in the dev container and in `cargo xtask linux-test`.
 - **Tests fail in the container with a path like `/work/...` or `Permission denied` from `cargo xtask`**: the build volume was made by an earlier layout with the repository at another path. Remove the volumes (`docker volume rm evcc-rs-target-v2 evcc-rs-cargo-v2` with no container using them) and rebuild.
 - **Leftover namespaces after an aborted run**: `ip netns list` inside the container shows them; they vanish when the container ends.
