@@ -36,7 +36,9 @@ pub enum State {
     AwaitPowerDeliveryRes,
     /// Energy is flowing: `DC_ChargeLoopReq`s go out in a cycle.
     AwaitChargeLoopRes,
-    /// Shutting down: the host stops drawing current and reports
+    /// `PowerDeliveryReq(Standby)` is out.
+    AwaitPowerDeliveryStandbyRes,
+    /// Shutting down (or entering standby): the host stops drawing current and reports
     /// [`Event::EnergyTransferStopped`].
     AwaitCurrentStopped,
     /// `PowerDeliveryReq(Stop)` is out.
@@ -117,8 +119,13 @@ pub enum Notice {
     /// What the EVSE reported in the latest `DC_ChargeLoopRes`.
     ChargeLoop(ChargeLoopStatus),
     /// Stop drawing current (ramp down), then report [`Event::EnergyTransferStopped`]. When the
-    /// EVSE asked for the stop, `within_s` is its `NotificationMaxDelay` (V2G20-1416).
+    /// EVSE asked for the stop, `within_s` is its `NotificationMaxDelay` (V2G20-1416). Also the
+    /// first step into a standby period, which the EVSE asked for with `Pause` (V2G20-1194).
     StopEnergyTransfer { within_s: Option<u16> },
+    /// The EVSE accepted the standby period: no current flows, the contactors stay closed and
+    /// the charge loop goes on. [`Notice::EnergyTransferStarted`] follows when it ends (the
+    /// EVSE sent `ExitStandby`) or when the EVSE refused the standby period.
+    StandbyEntered,
     /// The EVSE acknowledged the stop: open the contactors, then send
     /// [`Event::ContactorsOpened`]; welding detection follows.
     OpenContactors,

@@ -69,6 +69,11 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
 
     /// Starts the shutdown: the host ramps the current down first (V2G20-1310).
     pub(super) fn begin_stop(&mut self, within_s: Option<u16>) -> Step {
+        self.standby = false;
+        self.ramp_down(within_s)
+    }
+    /// Asks the host to bring the current to zero; the shutdown or a standby period follows.
+    pub(super) fn ramp_down(&mut self, within_s: Option<u16>) -> Step {
         self.goto(State::AwaitCurrentStopped);
         Step {
             timers: Timers::one(TimerCmd::Cancel(Timer::Response))

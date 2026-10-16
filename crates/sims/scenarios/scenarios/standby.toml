@@ -1,0 +1,23 @@
+name = "standby"
+description = "The charger asks for a pause after two charge loop rounds; the vehicle enters a standby period, the charger ends it with ExitStandby, charging resumes and the charger finally terminates."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session]
+pause_after_loops = 2
+standby_loops = 3
+terminate_after_loops = 12
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+stop_after = 0
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+log = "debug"
+
+[expect]
+secc_exit = 0
+evcc_log = ["to: AwaitPowerDeliveryStandbyRes", "session: Ended(Completed)"]
+secc_log = ["session: Stopped"]

@@ -1,7 +1,7 @@
 //! Cable check, pre-charge, power delivery start and the charge loop.
 
 use iso15118_20::common::{self, *};
-use iso15118_20::common_types::{Processing, ResponseCode};
+use iso15118_20::common_types::{EvseNotification, Processing, ResponseCode};
 use iso15118_20::dc;
 use v2gtp::PayloadType;
 
@@ -92,19 +92,47 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             maximum_voltage: mode.evse_maximum_voltage,
         };
         // V2G20-1416, V2G20-1960: Terminate means shut down and stop the session.
-        // The other notifications (pause, renegotiation, metering) are not
-        // handled yet (TODO) and are ignored.
-        let terminate = res.evse_status.filter(|s| {
-            s.evse_notification == iso15118_20::common_types::EvseNotification::Terminate
-        });
-        if let Some(status) = terminate {
-            return self.begin_stop(Some(status.notification_max_delay));
+        let notification = res.evse_status.map(|s| (s.evse_notification, s.notification_max_delay));
+        if let Some((EvseNotification::Terminate, within_s)) = notification {
+            return self.begin_stop(Some(within_s));
         }
         if core::mem::take(&mut self.stop_requested) {
             return self.begin_stop(None);
         }
+        match notification {
+            // V2G20-1850: the EVSE wants a pause. A pause of the whole session (SessionStopReq
+            // with Pause) is not implemented; a standby period is the other answer the standard
+            // allows, and it keeps the session, the TLS connection and the contactors. The
+            // current goes to zero first (V2G20-1194).
+            Some((EvseNotification::Pause, within_s)) if !self.standby => {
+                self.entering_standby = true;
+                return self.ramp_down(Some(within_s));
+            }
+            // V2G20-1854, V2G20-1393: leave the standby period with PowerDeliveryReq(Start).
+            Some((EvseNotification::ExitStandby, _)) if self.standby => {
+                self.standby = false;
+                return self.send_power_delivery(common::ChargeProgress::Start, tx);
+            }
+            // Schedule and service renegotiation and metering confirmation are not implemented
+            // (the last one belongs to Plug & Charge) and are ignored.
+            _ => {}
+        }
         let mut step = self.pace_charge_loop(tx);
         step.notice = Some(Notice::ChargeLoop(status));
+        step
+    }
+
+    pub(super) fn on_power_delivery_standby_res(&mut self, res: PowerDeliveryRes, tx: &mut [u8]) -> Step {
+        // V2G20-1396: WARNING_StandbyNotAllowed is the EVSE's refusal; the charge goes on.
+        let refused = Some(ResponseCode::WarningStandbyNotAllowed);
+        if let Some(end) = self.received_or(MsgKind::PowerDeliveryRes, res.response_code, refused) {
+            return end;
+        }
+        self.standby = res.response_code != ResponseCode::WarningStandbyNotAllowed;
+        let mut step = self.send_charge_loop_req(tx);
+        if step.end.is_none() {
+            step.notice = Some(if self.standby { Notice::StandbyEntered } else { Notice::EnergyTransferStarted });
+        }
         step
     }
 
@@ -206,10 +234,10 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             bpt_channel_selection: None,
         };
         let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
-        let next = if progress == common::ChargeProgress::Stop {
-            State::AwaitPowerDeliveryStopRes
-        } else {
-            State::AwaitPowerDeliveryRes
+        let next = match progress {
+            common::ChargeProgress::Stop => State::AwaitPowerDeliveryStopRes,
+            common::ChargeProgress::Standby => State::AwaitPowerDeliveryStandbyRes,
+            _ => State::AwaitPowerDeliveryRes,
         };
         self.send_then(next, MsgKind::PowerDeliveryReq, framed)
     }}

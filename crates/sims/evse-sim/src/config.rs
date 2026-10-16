@@ -137,6 +137,15 @@ pub struct Config {
     pub power_delivery_code: ResponseCode,
     /// After this many `DC_ChargeLoopRes` the EVSE asks the EV to terminate (`EVSENotification`).
     pub terminate_after_loops: Option<u32>,
+    /// After this many `DC_ChargeLoopRes` the EVSE asks the EV to pause (`EVSENotification`
+    /// Pause, `NotificationMaxDelay` 60 s, V2G20-1850) and repeats it until the EV reacts.
+    pub pause_after_loops: Option<u32>,
+    /// Accept `PowerDeliveryReq(Standby)`; otherwise answer `WARNING_StandbyNotAllowed`
+    /// (V2G20-1387) and stop asking for the pause.
+    pub standby_allowed: bool,
+    /// How many `DC_ChargeLoopRes` a standby period lasts before the EVSE sends `ExitStandby`
+    /// (V2G20-1854), repeated until the EV leaves it.
+    pub standby_loops: u32,
     /// Response code of the `DC_WeldingDetectionRes`.
     #[serde(with = "code")]
     pub welding_code: ResponseCode,
@@ -175,6 +184,9 @@ impl Default for Config {
             precharge_requests_to_settle: 1,
             power_delivery_code: ResponseCode::Ok,
             terminate_after_loops: None,
+            pause_after_loops: None,
+            standby_allowed: true,
+            standby_loops: 2,
             welding_code: ResponseCode::Ok,
         }
     }

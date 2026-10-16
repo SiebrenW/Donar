@@ -61,11 +61,15 @@ pub struct Evse {
     cable_reqs_seen: u32,
     precharge_reqs_seen: u32,
     loops_seen: u32,
+    /// A standby period is on, and how many charge loop answers it has had.
+    standby: Option<u32>,
+    /// The EV answered the pause request (with standby or a refusal was sent).
+    pause_answered: bool,
 }
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0 }
+        Self { config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false }
     }
 
     pub fn state(&self) -> State {
@@ -355,13 +359,23 @@ impl Evse {
                     ResponseCode::Ok
                 };
                 let terminate = self.config.terminate_after_loops.is_some_and(|n| self.loops_seen >= n);
+                let notification = if terminate {
+                    Some((common_types::EvseNotification::Terminate, 5))
+                } else if let Some(rounds) = &mut self.standby {
+                    *rounds += 1;
+                    (*rounds > self.config.standby_loops).then_some((common_types::EvseNotification::ExitStandby, 60))
+                } else if !self.pause_answered && self.config.pause_after_loops.is_some_and(|n| self.loops_seen >= n) {
+                    Some((common_types::EvseNotification::Pause, 60))
+                } else {
+                    None
+                };
                 let rn = |value| RationalNumber { exponent: 0, value };
                 let res = dc::DcChargeLoopRes {
                     header: self.header(),
                     response_code: code,
-                    evse_status: terminate.then_some(common_types::EvseStatus {
-                        notification_max_delay: 5,
-                        evse_notification: common_types::EvseNotification::Terminate,
+                    evse_status: notification.map(|(evse_notification, notification_max_delay)| common_types::EvseStatus {
+                        notification_max_delay,
+                        evse_notification,
                     }),
                     meter_info: None,
                     receipt: None,
@@ -387,16 +401,33 @@ impl Evse {
                 let Ok(common::Message::PowerDeliveryReq(req)) = common::decode(payload, &arena) else { return closed };
                 let code = if req.header.session_id != self.config.session_id {
                     ResponseCode::FailedUnknownSession
-                } else if req.charge_progress != common::ChargeProgress::Stop {
-                    ResponseCode::FailedPowerDeliveryNotApplied
                 } else {
-                    ResponseCode::Ok
+                    match (req.charge_progress, self.standby.is_some()) {
+                        (common::ChargeProgress::Stop, _) => ResponseCode::Ok,
+                        (common::ChargeProgress::Standby, false) => {
+                            // V2G20-1385, V2G20-1387
+                            self.pause_answered = true;
+                            if self.config.standby_allowed {
+                                self.standby = Some(0);
+                                ResponseCode::Ok
+                            } else {
+                                ResponseCode::WarningStandbyNotAllowed
+                            }
+                        }
+                        // V2G20-1386: Start ends the standby period.
+                        (common::ChargeProgress::Start, true) => {
+                            self.standby = None;
+                            ResponseCode::Ok
+                        }
+                        _ => ResponseCode::FailedPowerDeliveryNotApplied,
+                    }
                 };
                 let res = common::PowerDeliveryRes { header: self.header(), response_code: code, evse_status: None };
-                if is_ok(code) {
+                if is_ok(code) && req.charge_progress == common::ChargeProgress::Stop {
                     self.state = State::AwaitWeldingReq;
                 }
-                Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) }
+                let refused = code == ResponseCode::WarningStandbyNotAllowed;
+                Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) && !refused }
             }
             State::AwaitWeldingReq if payload_type == PayloadType::DC_MAINSTREAM => {
                 let Ok(dc::Message::DcWeldingDetectionReq(req)) = dc::decode(payload, &arena) else { return closed };

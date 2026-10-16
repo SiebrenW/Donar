@@ -65,6 +65,7 @@ mod run {
         dc_tls_ed448 => "dc-tls-ed448",
         dc_delay => "dc-delay",
         charger_ends_charge => "charger-ends-charge",
+        standby => "standby",
     }
 
     #[test]

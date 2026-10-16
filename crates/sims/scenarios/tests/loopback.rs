@@ -214,3 +214,52 @@ fn the_evse_can_end_the_charge() {
     assert_eq!(run_ev_stopping_after(addr, fast(), None), Outcome::Ended(EndReason::Completed));
     assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
 }
+
+fn run_recorded(addr: std::net::SocketAddr, stop_after: Option<u32>) -> (Outcome, common::Recording) {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    common::run_car_recorded(&mut stream, fast(), stop_after)
+}
+
+#[test]
+fn a_pause_request_is_answered_with_a_standby_period_that_ends_with_exit_standby() {
+    let config = evse_sim::Config { pause_after_loops: Some(2), standby_loops: 2, ..Default::default() };
+    let (addr, server) = start(config);
+    // The car would charge until told otherwise: it only stops after the standby period.
+    let (outcome, log) = run_recorded(addr, Some(12));
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    assert_eq!(log.count("to: AwaitPowerDeliveryStandbyRes"), 1);
+    // PowerDeliveryReq: Start, Standby, Start (leaving standby), Stop.
+    assert_eq!(log.count("MsgTx { msg: PowerDeliveryReq }"), 4);
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+}
+
+#[test]
+fn a_refused_standby_period_leaves_the_charge_going() {
+    let config = evse_sim::Config { pause_after_loops: Some(2), standby_allowed: false, ..Default::default() };
+    let (addr, server) = start(config);
+    let (outcome, log) = run_recorded(addr, Some(6));
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    // Start, the refused Standby, Stop.
+    assert_eq!(log.count("MsgTx { msg: PowerDeliveryReq }"), 3);
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+}
+
+#[test]
+fn the_car_can_stop_during_a_standby_period() {
+    let config = evse_sim::Config { pause_after_loops: Some(2), standby_loops: 1000, ..Default::default() };
+    let (addr, server) = start(config);
+    let (outcome, log) = run_recorded(addr, Some(6));
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    // Start, Standby, Stop: no second Start.
+    assert_eq!(log.count("MsgTx { msg: PowerDeliveryReq }"), 3);
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+}
+
+#[test]
+fn the_evse_can_terminate_during_a_standby_period() {
+    let config = evse_sim::Config { pause_after_loops: Some(2), standby_loops: 1000, terminate_after_loops: Some(6), ..Default::default() };
+    let (addr, server) = start(config);
+    let (outcome, _) = run_recorded(addr, None);
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+}

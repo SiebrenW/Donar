@@ -62,6 +62,10 @@ struct Machine<E, L> {
     welding_finishing: bool,
     /// The vehicle asked to stop while a charge loop request was outstanding.
     stop_requested: bool,
+    /// The host is ramping the current down to enter a standby period.
+    entering_standby: bool,
+    /// A standby period is on (the EVSE accepted `PowerDeliveryReq(Standby)`).
+    standby: bool,
     /// SECC time minus the vehicle's clock, learned from `SessionSetupRes` (V2G20-1536).
     clock_offset: i128,
     last_timestamp: u64,
@@ -87,6 +91,8 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 precharge_finishing: false,
                 welding_finishing: false,
                 stop_requested: false,
+                entering_standby: false,
+                standby: false,
                 clock_offset: 0,
                 last_timestamp: 0,
                 selected: SelectedService { service_id: 0, parameter_set_id: 0 },
@@ -174,7 +180,12 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                     m.poll_pending = false;
                     m.begin_stop(None)
                 }
-                State::AwaitChargeLoopRes => {
+                // Also while a standby period is being entered: acted on once it is on.
+                State::AwaitChargeLoopRes | State::AwaitPowerDeliveryStandbyRes => {
+                    m.stop_requested = true;
+                    Step::default()
+                }
+                State::AwaitCurrentStopped if m.entering_standby => {
                     m.stop_requested = true;
                     Step::default()
                 }
@@ -184,7 +195,12 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 if m.state != State::AwaitCurrentStopped {
                     return Step::default();
                 }
-                let step = m.send_power_delivery(common::ChargeProgress::Stop, tx);
+                let progress = if core::mem::take(&mut m.entering_standby) {
+                    common::ChargeProgress::Standby
+                } else {
+                    common::ChargeProgress::Stop
+                };
+                let step = m.send_power_delivery(progress, tx);
                 m.sequence_done(step)
             }
             Event::Received(n) => {
@@ -246,6 +262,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 | State::AwaitCableCheckRes
                 | State::AwaitPreChargeRes
                 | State::AwaitPowerDeliveryRes
+                | State::AwaitPowerDeliveryStandbyRes
                 | State::AwaitChargeLoopRes
                 | State::AwaitPowerDeliveryStopRes
                 | State::AwaitWeldingDetectionRes
@@ -471,6 +488,10 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             }),
             State::AwaitChargeLoopRes => self.dc_mainstream(payload_type, payload, arena, |m, msg| match msg {
                 dc::Message::DcChargeLoopRes(res) => Some(m.on_charge_loop_res(res, tx)),
+                _ => None,
+            }),
+            State::AwaitPowerDeliveryStandbyRes => self.mainstream(payload_type, payload, arena, |m, msg| match msg {
+                M::PowerDeliveryRes(res) => Some(m.on_power_delivery_standby_res(res, tx)),
                 _ => None,
             }),
             State::AwaitPowerDeliveryStopRes => self.mainstream(payload_type, payload, arena, |m, msg| match msg {
