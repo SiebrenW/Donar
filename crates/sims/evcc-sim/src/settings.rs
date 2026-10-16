@@ -57,6 +57,48 @@ impl From<LogLevel> for Level {
     }
 }
 
+/// What the vehicle tells the charger about its needs in `DC_ChargeParameterDiscoveryReq`,
+/// `ScheduleExchangeReq` and the charge loop. Whole units, so that settings compare and
+/// survive a round trip through files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Limits {
+    pub max_charge_power_w: u32,
+    pub min_charge_power_w: u32,
+    pub max_charge_current_a: u32,
+    pub min_charge_current_a: u32,
+    pub max_voltage_v: u32,
+    pub min_voltage_v: u32,
+    /// `TargetSOC` of the charge parameters and the schedule exchange (percent).
+    pub target_soc: u8,
+    /// `MinimumSOC` of the schedule exchange (percent).
+    pub min_soc: Option<u8>,
+    /// `DepartureTime`: seconds from the schedule exchange.
+    pub departure_time_s: u32,
+    pub target_energy_wh: u32,
+    pub max_energy_wh: u32,
+    pub min_energy_wh: u32,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_charge_power_w: 100_000,
+            min_charge_power_w: 100,
+            max_charge_current_a: 200,
+            min_charge_current_a: 1,
+            max_voltage_v: 450,
+            min_voltage_v: 200,
+            target_soc: 80,
+            min_soc: None,
+            departure_time_s: 3600,
+            target_energy_wh: 40_000,
+            max_energy_wh: 60_000,
+            min_energy_wh: 0,
+        }
+    }
+}
+
 /// TLS 1.3 with mutual authentication; the files are PEM.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -109,6 +151,14 @@ pub struct Settings {
     /// Overrides of the session timing (milliseconds), for quicker runs.
     pub poll_interval_ms: Option<u32>,
     pub charge_loop_interval_ms: Option<u32>,
+    /// The vehicle's needs, as sent to the charger.
+    pub limits: Limits,
+    /// State of charge (percent) at the start of the session, for the battery model.
+    pub start_soc: u8,
+    /// How much faster than real time the battery model runs (1: real time).
+    pub time_scale: u32,
+    /// Ask to stop when the state of charge reaches `limits.target_soc`.
+    pub stop_at_target_soc: bool,
 }
 
 impl Default for Settings {
@@ -131,6 +181,10 @@ impl Default for Settings {
             log: LogLevel::Info,
             poll_interval_ms: None,
             charge_loop_interval_ms: None,
+            limits: Limits::default(),
+            start_soc: 20,
+            time_scale: 1,
+            stop_at_target_soc: false,
         }
     }
 }

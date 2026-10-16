@@ -189,6 +189,8 @@ dependencies = [
  "iso15118-20",
  "schemars",
  "serde",
+ "serde_json",
+ "sim-control",
  "toml",
  "v2gtp",
 ]
@@ -221,7 +223,9 @@ dependencies = [
  "iso15118-20",
  "schemars",
  "serde",
+ "serde_json",
  "sha2",
+ "sim-control",
  "toml",
  "v2gtp",
 ]
@@ -592,6 +596,7 @@ dependencies = [
  "openssl",
  "sandbox",
  "serde",
+ "serde_json",
  "toml",
  "v2gtp",
 ]
@@ -732,6 +737,15 @@ checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
  "errno",
  "libc",
+]
+
+[[package]]
+name = "sim-control"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

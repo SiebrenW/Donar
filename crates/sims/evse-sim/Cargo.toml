@@ -14,6 +14,8 @@ app-protocol = { path = "../../codec/app-protocol" }
 exi = { path = "../../codec/exi" }
 toml = "1"
 schemars = "1"
+sim-control = { path = "../control" }
+serde_json = "1"
 # For the `evse-sim` command only: the TLS profile and the packet socket of the Linux adapter.
 evcc-linux = { path = "../../evcc/linux" }
 

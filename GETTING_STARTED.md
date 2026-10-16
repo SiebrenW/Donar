@@ -75,6 +75,10 @@ cargo xtask web          # http://127.0.0.1:8080/ (an argument picks another por
 
 Starts `evcc-web` in the Linux container and publishes it on localhost. Pick a scenario, change the settings of the vehicle and the charger in the forms (a value you set is highlighted, × resets it), press **Run** and follow both logs live; the verdict is the runner's `PASS` or `FAIL`. The server runs as the container's user and starts each run through `sudo`; the logs and settings of a run stay in `target/web/run-N/` in the container's build volume. Inside the dev container run `cargo run -p evcc-web` after `cargo build --workspace --bins`. It is meant for your own machine: no authentication.
 
+#### Simulation tab
+
+*Simulation* opens a sandbox with a charger and runs a vehicle session in it one step at a time: **Open simulation** (TLS, SLAC and the PKI are chosen here), edit the charge parameters of both sides (left and right tables: the value for the *next* session beside the one *in use*), **New session**, then pick a phase and press **Advance**. The vehicle waits before each phase until told to go on, with protocol timers frozen; measurements (battery voltage, SoC, the charger's voltage, current and maximum power) can be changed at any time, or left to the model with Auto. **Stop charging** advances to the stop; **Close simulation** removes the namespaces. `?static` in the URL skips the live connection, for screenshots.
+
 ### Interoperability with another charger implementation
 
 ```sh

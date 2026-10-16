@@ -12,6 +12,7 @@ evse-sim = { path = "../evse-sim" }
 openssl = "0.10"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
+serde_json = "1"
 
 [dev-dependencies]
 evcc-core = { path = "../../evcc/core" }
@@ -26,3 +27,7 @@ libc = "0.2"
 [[bin]]
 name = "scenario"
 path = "src/bin/scenario.rs"
+
+[[bin]]
+name = "simulate"
+path = "src/bin/simulate.rs"

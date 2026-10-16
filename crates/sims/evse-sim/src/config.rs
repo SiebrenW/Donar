@@ -100,9 +100,39 @@ impl OfferedSet {
     }
 }
 
+/// What the charger offers in `DC_ChargeParameterDiscoveryRes` and the charge loop. Whole units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Limits {
+    pub max_charge_power_w: u32,
+    pub min_charge_power_w: u32,
+    pub max_charge_current_a: u32,
+    pub min_charge_current_a: u32,
+    pub max_voltage_v: u32,
+    pub min_voltage_v: u32,
+    /// `EVSEPowerRampLimitation` in watts per second, when the charger limits the ramp.
+    pub power_ramp_limitation_w: Option<u32>,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_charge_power_w: 150_000,
+            min_charge_power_w: 1000,
+            max_charge_current_a: 300,
+            min_charge_current_a: 2,
+            max_voltage_v: 920,
+            min_voltage_v: 150,
+            power_ramp_limitation_w: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    /// The limits offered to the vehicle.
+    pub limits: Limits,
     pub evse_id: String,
     pub session_id: [u8; 8],
     /// Answer the SupportedAppProtocolReq with `FailedNoNegotiation` regardless of the offer.
@@ -194,6 +224,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            limits: Limits::default(),
             evse_id: "DE*SIM*E0001".into(),
             session_id: [0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18],
             reject_protocol: false,

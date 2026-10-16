@@ -5,8 +5,10 @@
 //! ```text
 //! evse-sim --interface eth1 --address fe80::2 [--config FILE] [--slac]
 //!          [--chain F --key F --trust F [--key-password P] [--backwards-compatible]]
-//!          [--sessions N]
+//!          [--sessions N] [--control SOCKET]
 //! ```
+//! `--control` serves the live state and commands of a test platform on a Unix socket
+//! (`sim_control`): measurements to set, and the settings of the next session.
 //! TLS is on when `--chain` is given. `--sessions N` serves N sessions one after the other
 //! (default: the settings file's `sessions`, 1; 0 for ever). The settings file is `evse_sim::Settings` in TOML. Exit status 0
 //! when every session ended with `SessionStop`, 1 when one did not, 2 for bad arguments.
@@ -29,9 +31,10 @@ struct Args {
     key_password: Option<String>,
     backwards_compatible: bool,
     sessions: Option<u32>,
+    control: Option<String>,
 }
 
-const USAGE: &str = "usage: evse-sim --interface IF --address ADDR [--config FILE] [--slac] [--chain F --key F --trust F [--key-password P] [--backwards-compatible]] [--sessions N]";
+const USAGE: &str = "usage: evse-sim --interface IF --address ADDR [--config FILE] [--slac] [--chain F --key F --trust F [--key-password P] [--backwards-compatible]] [--sessions N] [--control SOCKET]";
 
 fn parse() -> Result<Args, String> {
     let mut a = Args {
@@ -45,6 +48,7 @@ fn parse() -> Result<Args, String> {
         key_password: None,
         backwards_compatible: false,
         sessions: None,
+        control: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -57,6 +61,7 @@ fn parse() -> Result<Args, String> {
                     .map_err(|_| "--address: not an IPv6 address")?
             }
             "--config" => a.config = Some(value("--config")?),
+            "--control" => a.control = Some(value("--control")?),
             "--slac" => a.slac = true,
             "--chain" => a.chain = Some(value("--chain")?),
             "--key" => a.key = Some(value("--key")?),
@@ -138,6 +143,14 @@ fn run(args: &Args) -> io::Result<bool> {
         transport: Transport::Tcp,
     };
     eprintln!("ready: {}", evcc_linux::sdp::address(&response, ifindex));
+    let live = match &args.control {
+        Some(path) => {
+            let live = evse_sim::EvseLive::new(settings.session.clone());
+            sim_control::serve(std::path::Path::new(path), live.clone())?;
+            Some(live)
+        }
+        None => None,
+    };
     let mut served = 0;
     let mut all_stopped = true;
     let sessions = args.sessions.unwrap_or(settings.sessions);
@@ -153,10 +166,19 @@ fn run(args: &Args) -> io::Result<bool> {
                     stream.ssl().version_str(),
                     stream.ssl().current_cipher().map_or("?", |c| c.name())
                 );
-                evse_sim::serve(&mut stream, settings.session.clone())?
+                match &live {
+                    Some(live) => evse_sim::serve_live(&mut stream, live)?,
+                    None => evse_sim::serve(&mut stream, settings.session.clone())?,
+                }
             }
-            None => evse_sim::serve_one(&tcp, settings.session.clone())?,
+            None => match &live {
+                Some(live) => evse_sim::serve_live(&mut tcp.accept()?.0, live)?,
+                None => evse_sim::serve_one(&tcp, settings.session.clone())?,
+            },
         };
+        if let Some(live) = &live {
+            live.set_state("Waiting");
+        }
         eprintln!("session: {state:?}");
         all_stopped &= matches!(state, State::Stopped | State::Paused);
         served += 1;

@@ -160,19 +160,24 @@ fn finish(scenario: &Scenario, sb: &Sandbox, mut failures: Vec<String>, secc: &m
     Report { failures, artifacts: sb.artifacts().to_path_buf(), evcc_log, secc_log }
 }
 
-struct Files {
-    secc_chain: String,
-    secc_key: String,
-    secc_trust: String,
-    evcc_tls: evcc_sim::Tls,
+/// Certificates of a run, as paths in the artifacts directory.
+pub struct Files {
+    pub secc_chain: String,
+    pub secc_key: String,
+    pub secc_trust: String,
+    pub evcc_tls: evcc_sim::Tls,
 }
 
-/// Makes certificates for both sides and writes them into the artifacts directory.
 fn generated_pki(sb: &Sandbox, scenario: &Scenario) -> io::Result<Files> {
     let curve = scenario
         .pki()
         .curve()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "pki = \"partner\" needs an external charger"))?;
+    write_pki(sb, curve)
+}
+
+/// Makes certificates for both sides and writes them into the artifacts directory.
+pub fn write_pki(sb: &Sandbox, curve: pki::Curve) -> io::Result<Files> {
     let m = pki::material(curve);
     let put = |name: &str, bytes: &[u8]| sb.write_artifact(&format!("pki/{name}"), bytes).map(|p| p.display().to_string());
     Ok(Files {

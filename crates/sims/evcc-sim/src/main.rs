@@ -6,9 +6,11 @@
 //! evcc-sim --interface eth1 [--config FILE] [--slac] [--no-tls | --chain F --key F --trust F
 //!                        [--key-password P] [--backwards-compatible]]
 //!      [--stop-after N | --never-stop] [--connector core|extended|dual2|dual4]
-//!      [--log error|info|debug|trace]
+//!      [--log error|info|debug|trace] [--control SOCKET]
 //! ```
 //! `--config` names a TOML file with `evcc_sim::Settings`; the other options override it.
+//! `--control` serves the live state and commands of a test platform on a Unix socket and holds the
+//! session before each phase until it is told to advance (`sim_control`, the web UI).
 //! Exit status 0 when the session ran to its end, 1 when it did not, 2 for bad arguments.
 
 use std::io;
@@ -17,12 +19,12 @@ use std::process::ExitCode;
 use evcc_core::sdp::Outcome as SdpOutcome;
 use evcc_core::session::EndReason;
 use evcc_linux::{Outcome, sdp, tls};
-use evcc_sim::{Behaviour, Connector, LogLevel, Settings, StderrLog, Tls, run_car};
+use evcc_sim::{Behaviour, Connector, EvLive, LogLevel, Settings, StderrLog, Tls, run_car_live};
 use v2gtp::sdp::Security;
 
-const USAGE: &str = "usage: evcc-sim --interface IF [--config FILE] [--slac] [--no-tls | --chain F --key F --trust F [--key-password P] [--backwards-compatible]] [--stop-after N | --never-stop] [--connector INLET] [--log LEVEL]";
+const USAGE: &str = "usage: evcc-sim --interface IF [--config FILE] [--slac] [--no-tls | --chain F --key F --trust F [--key-password P] [--backwards-compatible]] [--stop-after N | --never-stop] [--connector INLET] [--log LEVEL] [--control SOCKET]";
 
-fn parse() -> Result<(String, Settings), String> {
+fn parse() -> Result<(String, Settings, Option<String>), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut settings = Settings::default();
     // The file first, so that the options override it wherever they stand.
@@ -32,6 +34,7 @@ fn parse() -> Result<(String, Settings), String> {
         settings = toml::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
     }
     let mut interface = String::new();
+    let mut control = None;
     let (mut chain, mut key, mut trust, mut key_password, mut backwards_compatible) =
         (None, None, None, None, false);
     let mut it = args.into_iter();
@@ -42,6 +45,7 @@ fn parse() -> Result<(String, Settings), String> {
                 value("--config")?;
             }
             "--interface" => interface = value("--interface")?,
+            "--control" => control = Some(value("--control")?),
             "--slac" => settings.slac = true,
             "--no-tls" => settings.tls = None,
             "--chain" => chain = Some(value("--chain")?),
@@ -102,18 +106,18 @@ fn parse() -> Result<(String, Settings), String> {
     if interface.is_empty() {
         return Err("--interface is required".into());
     }
-    Ok((interface, settings))
+    Ok((interface, settings, control))
 }
 
 fn main() -> ExitCode {
-    let (interface, settings) = match parse() {
+    let (interface, settings, control) = match parse() {
         Ok(a) => a,
         Err(e) => {
             eprintln!("evcc-sim: {e}\n{USAGE}");
             return ExitCode::from(2);
         }
     };
-    match run(&interface, &settings) {
+    match run(&interface, &settings, control.as_deref()) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(e) => {
@@ -123,23 +127,35 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(interface: &str, settings: &Settings) -> io::Result<bool> {
+fn run(interface: &str, settings: &Settings, control: Option<&str>) -> io::Result<bool> {
+    let live = match control {
+        Some(path) => {
+            let live = EvLive::new(settings.limits, settings.start_soc, settings.time_scale, settings.stop_at_target_soc);
+            sim_control::serve(std::path::Path::new(path), live.clone())?;
+            Some(live)
+        }
+        None => None,
+    };
     let ifindex = sdp::interface_index(interface)?;
     if settings.slac && !run_slac(interface, settings)? {
         return Ok(false);
     }
-    let mut outcome = attempt(ifindex, settings, None, settings.pause_after)?;
+    let mut outcome = attempt(ifindex, settings, None, settings.pause_after, &live)?;
     // A paused session is resumed on a new connection (V2G20-2073); the data link stays up.
     while let (Outcome::Ended(EndReason::Paused(resume)), Some(ms)) = (outcome, settings.resume_after_ms) {
         eprintln!("paused; resuming session {:02x?} in {ms} ms", resume.session_id);
         std::thread::sleep(std::time::Duration::from_millis(ms.into()));
-        outcome = attempt(ifindex, settings, Some(resume), None)?;
+        outcome = attempt(ifindex, settings, Some(resume), None, &live)?;
+    }
+    if live.is_some() {
+        // Time for the control socket to deliver the last state.
+        std::thread::sleep(std::time::Duration::from_millis(300));
     }
     Ok(outcome == Outcome::Ended(EndReason::Completed))
 }
 
 /// One connection: SDP, TCP, TLS if wanted, and a session on it.
-fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session::Resume>, pause_after: Option<u32>) -> io::Result<Outcome> {
+fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session::Resume>, pause_after: Option<u32>, live: &Option<std::sync::Arc<EvLive>>) -> io::Result<Outcome> {
     let security = if settings.tls.is_some() {
         Security::Tls
     } else {
@@ -164,7 +180,7 @@ fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session:
     let outcome = match &settings.tls {
         None => {
             let mut stream = tcp;
-            run_car(&mut stream, false, config, behaviour, log)?
+            run_car_live(&mut stream, false, config, behaviour, log, live.clone(), settings.limits)?
         }
         Some(t) => {
             let (chain, key, trust) = (
@@ -186,7 +202,7 @@ fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session:
                 stream.ssl().version_str(),
                 stream.ssl().current_cipher().map_or("?", |c| c.name())
             );
-            run_car(&mut stream, true, config, behaviour, log)?
+            run_car_live(&mut stream, true, config, behaviour, log, live.clone(), settings.limits)?
         }
     };
     eprintln!("session: {outcome:?}");

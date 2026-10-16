@@ -5,20 +5,25 @@
 use std::cell::Cell;
 use std::io;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use evcc_core::ev::{DcConnector, DcLimits, Ev, ScheduleRequest};
 use evcc_core::log::LogSink;
 use evcc_core::session::{Buffers, Config, Event, Notice, Session};
 use iso15118_20::common_types::RationalNumber;
 
-use evcc_linux::{Outcome, Transport, run};
+use evcc_linux::{Outcome, Transport};
 
+mod live;
 mod settings;
 
-pub use settings::{Connector, LogLevel, Settings, SlacValidation, Tls};
+pub use live::{EvLive, Phase};
+pub use settings::{Connector, Limits, LogLevel, Settings, SlacValidation, Tls};
 
 pub struct SimulatedEv {
     connector: DcConnector,
+    limits: Limits,
+    live: Option<Arc<EvLive>>,
     reads: Cell<u32>,
     /// Set by the host when the contactors are open: the inlet voltage then drops to zero.
     open: Rc<Cell<bool>>,
@@ -26,12 +31,24 @@ pub struct SimulatedEv {
 
 impl SimulatedEv {
     pub fn new(open: Rc<Cell<bool>>, connector: DcConnector) -> Self {
-        Self { connector, reads: Cell::new(0), open }
+        Self { connector, limits: Limits::default(), live: None, reads: Cell::new(0), open }
+    }
+
+    /// A car whose limits are `limits` and whose measurements the test platform sees and sets.
+    pub fn with_live(mut self, live: Arc<EvLive>) -> Self {
+        self.limits = live.limits();
+        self.live = Some(live);
+        self
+    }
+
+    pub fn with_limits(mut self, limits: Limits) -> Self {
+        self.limits = limits;
+        self
     }
 }
 
-fn rn(exponent: i8, value: i16) -> RationalNumber {
-    RationalNumber { exponent, value }
+fn rn(x: u32) -> RationalNumber {
+    RationalNumber::from_f64(f64::from(x))
 }
 
 impl Ev for SimulatedEv {
@@ -39,34 +56,40 @@ impl Ev for SimulatedEv {
         "WMIV1234567890ABCDEX"
     }
     fn schedule_request(&self) -> ScheduleRequest {
+        let l = &self.limits;
         ScheduleRequest {
-            departure_time: 3600,
-            minimum_soc: None,
-            target_soc: Some(80),
-            target_energy: rn(3, 40),
-            maximum_energy: rn(3, 60),
-            minimum_energy: rn(0, 0),
+            departure_time: l.departure_time_s.max(1),
+            minimum_soc: l.min_soc,
+            target_soc: Some(l.target_soc),
+            target_energy: rn(l.target_energy_wh),
+            maximum_energy: rn(l.max_energy_wh),
+            minimum_energy: rn(l.min_energy_wh),
         }
     }
     fn dc_limits(&self) -> DcLimits {
+        let l = &self.limits;
         DcLimits {
-            maximum_charge_power: rn(3, 100),
-            minimum_charge_power: rn(0, 100),
-            maximum_charge_current: rn(0, 200),
-            minimum_charge_current: rn(0, 1),
-            maximum_voltage: rn(0, 450),
-            minimum_voltage: rn(0, 200),
-            target_soc: Some(80),
+            maximum_charge_power: rn(l.max_charge_power_w),
+            minimum_charge_power: rn(l.min_charge_power_w),
+            maximum_charge_current: rn(l.max_charge_current_a),
+            minimum_charge_current: rn(l.min_charge_current_a),
+            maximum_voltage: rn(l.max_voltage_v),
+            minimum_voltage: rn(l.min_voltage_v),
+            target_soc: Some(l.target_soc),
         }
     }
     fn battery_voltage(&self) -> RationalNumber {
-        rn(0, 400)
+        RationalNumber::from_f64(self.live.as_ref().map_or(400.0, |l| l.battery_voltage()))
     }
     /// The first reading is below the battery voltage, the later ones match it.
     fn inlet_voltage(&self) -> RationalNumber {
         let reads = self.reads.get();
         self.reads.set(reads + 1);
-        rn(0, if self.open.get() { 0 } else if reads == 0 { 300 } else { 400 })
+        let battery = self.live.as_ref().map_or(400.0, |l| l.battery_voltage());
+        RationalNumber::from_f64(if self.open.get() { 0.0 } else if reads == 0 { battery * 0.75 } else { battery })
+    }
+    fn present_soc(&self) -> Option<u8> {
+        self.live.as_ref().map(|l| l.present_soc().round_ties_even().clamp(0.0, 100.0) as u8)
     }
     fn dc_connector(&self) -> DcConnector {
         self.connector
@@ -116,12 +139,30 @@ pub fn run_car(
     behaviour: Behaviour,
     log: impl LogSink,
 ) -> io::Result<Outcome> {
+    run_car_live(stream, secured, config, behaviour, log, None, Limits::default())
+}
+
+/// [`run_car`] with the live state of a test platform (held at the start of each phase, with
+/// measurements to see and set) and the vehicle's limits.
+pub fn run_car_live(
+    stream: &mut impl Transport,
+    secured: bool,
+    config: Config,
+    behaviour: Behaviour,
+    log: impl LogSink,
+    live: Option<Arc<EvLive>>,
+    limits: Limits,
+) -> io::Result<Outcome> {
     let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
     let open = Rc::new(Cell::new(false));
-    let car = SimulatedEv::new(open.clone(), behaviour.connector);
+    let mut car = SimulatedEv::new(open.clone(), behaviour.connector).with_limits(limits);
+    if let Some(live) = &live {
+        car = car.with_live(live.clone());
+    }
     let mut session = Session::new(config, car, log, Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
     let (mut loops, mut renegotiated, mut rescheduled) = (0, false, false);
-    run(stream, &mut session, secured, &mut |n| match n {
+    let mut gate = |state| live.as_ref().is_some_and(|l| l.gate(state));
+    let outcome = evcc_linux::run_gated(stream, &mut session, secured, &mut |n| match n {
         // The car closes its contactors and stops drawing current as soon as it is asked to.
         Notice::CloseContactors => Some(Event::ContactorsClosed),
         Notice::StopEnergyTransfer { .. } => Some(Event::EnergyTransferStopped),
@@ -135,9 +176,9 @@ pub fn run_car(
             None
         }
         Notice::ScheduleRenegotiated => behaviour.stop_when_rescheduled.then_some(Event::StopRequested),
-        Notice::ChargeLoop(_) => {
+        Notice::ChargeLoop(status) => {
             loops += 1;
-            if Some(loops) == behaviour.stop_after {
+            if live.as_ref().is_some_and(|l| l.charge_loop(status)) || Some(loops) == behaviour.stop_after {
                 Some(Event::StopRequested)
             } else if Some(loops) == behaviour.pause_after {
                 Some(Event::PauseRequested)
@@ -152,7 +193,11 @@ pub fn run_car(
             }
         }
         _ => None,
-    })
+    }, &mut gate);
+    if let Some(live) = &live {
+        live.finished(format!("{outcome:?}"));
+    }
+    outcome
 }
 
 /// Prints records of at most `level` to standard error.

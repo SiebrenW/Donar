@@ -4,46 +4,97 @@
 <meta charset="utf-8">
 <title>evcc-rs scenarios</title>
 <style>
-  :root { --line: #ccd; --accent: #1a5fb4; --set: #fff6d6; }
+  :root {
+    --bg: #f6f4ef; --panel: #fffdf8; --text: #2b3440; --muted: #6b7480; --line: #ddd8cc;
+    --accent: #3b7f86; --accent-text: #ffffff; --hover: #ece9e0; --set: #f4e8c4;
+    --ok: #3f7d4e; --bad: #b0483e; --warn: #b07a2a; --log-bg: #262d36; --log-text: #d8dde3;
+    --input: #ffffff; color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme=light]) {
+      --bg: #171b22; --panel: #1e242d; --text: #d5dae1; --muted: #8d97a4; --line: #2f3946;
+      --accent: #5fb0b7; --accent-text: #10252a; --hover: #263040; --set: #493f21;
+      --ok: #7fc08f; --bad: #e0897f; --warn: #e3b567; --log-bg: #11151b; --log-text: #cdd3da;
+      --input: #171c24; color-scheme: dark;
+    }
+  }
+  :root[data-theme=dark] {
+    --bg: #171b22; --panel: #1e242d; --text: #d5dae1; --muted: #8d97a4; --line: #2f3946;
+    --accent: #5fb0b7; --accent-text: #10252a; --hover: #263040; --set: #493f21;
+    --ok: #7fc08f; --bad: #e0897f; --warn: #e3b567; --log-bg: #11151b; --log-text: #cdd3da;
+    --input: #171c24; color-scheme: dark;
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 14px system-ui, sans-serif; display: grid; grid-template-columns: 16rem 1fr; height: 100vh; }
-  nav { border-right: 1px solid var(--line); overflow: auto; padding: .5rem; }
+  body { margin: 0; font: 14px system-ui, sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: grid; grid-template-rows: auto 1fr; }
+  header { display: flex; gap: 1rem; align-items: center; padding: .45rem 1rem; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 1rem; margin: 0; font-weight: 600; }
+  header .tabs { display: flex; gap: .25rem; flex: 1; }
+  header .tabs button { background: none; color: var(--text); border: 1px solid transparent; }
+  header .tabs button.current { background: var(--accent); color: var(--accent-text); }
+  header .theme { background: none; color: var(--muted); border-color: var(--line); }
+  .split { display: grid; grid-template-columns: 16rem 1fr; min-height: 0; }
+  nav { border-right: 1px solid var(--line); overflow: auto; padding: .5rem; background: var(--panel); }
   nav h1 { font-size: 1rem; margin: .2rem 0 .6rem; }
   nav a { display: block; padding: .25rem .4rem; border-radius: 4px; color: inherit; text-decoration: none; cursor: pointer; }
-  nav a:hover { background: #eef; }
-  nav a.current { background: var(--accent); color: white; }
-  main { overflow: auto; padding: 1rem; display: grid; gap: 1rem; align-content: start; }
+  nav a:hover { background: var(--hover); }
+  nav a.current { background: var(--accent); color: var(--accent-text); }
+  main, #sim-view { overflow: auto; padding: 1rem; display: grid; gap: 1rem; align-content: start; }
   h2 { font-size: 1.1rem; margin: 0; }
-  p.desc { margin: .2rem 0 0; color: #445; }
+  p.desc { margin: .2rem 0 0; color: var(--muted); }
   .row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: end; }
   label { display: grid; gap: .15rem; font-size: .85rem; }
+  label.inline { display: flex; gap: .4rem; align-items: center; }
   .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-  @media (max-width: 1100px) { .columns { grid-template-columns: 1fr; } }
-  fieldset { border: 1px solid var(--line); border-radius: 6px; padding: .5rem .7rem; }
+  .three { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; align-items: start; }
+  @media (max-width: 1100px) { .columns, .three { grid-template-columns: 1fr; } }
+  fieldset, .panel { border: 1px solid var(--line); border-radius: 6px; padding: .5rem .7rem; background: var(--panel); margin: 0; min-width: 0; }
   fieldset fieldset { margin: .4rem 0; }
-  legend { font-weight: 600; }
+  legend, .panel h3 { font-weight: 600; font-size: .95rem; margin: 0 0 .3rem; }
   .field { display: grid; grid-template-columns: 13rem 1fr auto; gap: .4rem; align-items: center; padding: .12rem 0; }
   .field .name { font-family: ui-monospace, monospace; font-size: .8rem; overflow-wrap: anywhere; }
-  .field .doc { grid-column: 2 / 4; color: #667; font-size: .75rem; margin-top: -.1rem; }
-  input[type=text], input[type=number], select, textarea { width: 100%; padding: .2rem .3rem; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
+  .field .doc { grid-column: 2 / 4; color: var(--muted); font-size: .75rem; margin-top: -.1rem; }
+  input[type=text], input[type=number], select, textarea { width: 100%; padding: .2rem .3rem; border: 1px solid var(--line); border-radius: 4px; font: inherit; background: var(--input); color: var(--text); }
   textarea { font-family: ui-monospace, monospace; font-size: .8rem; }
-  .set input, .set select, .set textarea { background: var(--set); }
-  button { padding: .35rem .9rem; border: 1px solid var(--accent); background: var(--accent); color: white; border-radius: 4px; cursor: pointer; font: inherit; }
-  button:disabled { opacity: .5; cursor: default; }
+  .set input, .set select, .set textarea, input.set { background: var(--set); }
+  button { padding: .35rem .9rem; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-text); border-radius: 4px; cursor: pointer; font: inherit; }
+  button:disabled { opacity: .45; cursor: default; }
   button.reset { padding: 0 .4rem; background: none; color: var(--accent); border-color: transparent; }
+  button.quiet { background: none; color: var(--text); border-color: var(--line); }
   #verdict { font-weight: 600; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: .8rem; }
-  #verdict.pass { color: #1c7a2e; }
-  #verdict.fail { color: #b3261e; }
+  .pass { color: var(--ok); } .fail, .error { color: var(--bad); }
   .logs { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
   .log h3 { margin: 0 0 .2rem; font-size: .85rem; font-family: ui-monospace, monospace; }
-  .log pre { margin: 0; height: 22rem; overflow: auto; background: #12141c; color: #d7dae0; padding: .5rem; border-radius: 6px; font-size: .75rem; white-space: pre-wrap; }
-  .error { color: #b3261e; }
-  details pre { background: #f4f4f8; padding: .5rem; overflow: auto; font-size: .75rem; }
+  .log pre { margin: 0; height: 22rem; overflow: auto; background: var(--log-bg); color: var(--log-text); padding: .5rem; border-radius: 6px; font-size: .75rem; white-space: pre-wrap; }
+  details pre { background: var(--hover); padding: .5rem; overflow: auto; font-size: .75rem; border-radius: 4px; }
+  /* simulation */
+  .stepper { display: flex; flex-wrap: wrap; gap: .3rem; }
+  .stepper span { padding: .2rem .55rem; border: 1px solid var(--line); border-radius: 999px; font-size: .8rem; color: var(--muted); background: var(--panel); }
+  .stepper span.done { color: var(--text); border-color: var(--accent); }
+  .stepper span.current { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .stepper span.held { box-shadow: 0 0 0 2px var(--warn); }
+  table.values { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  table.values th { text-align: left; font-weight: 500; color: var(--muted); font-size: .75rem; padding: 0 .3rem .2rem 0; }
+  table.values td { padding: .12rem .3rem .12rem 0; vertical-align: middle; }
+  table.values td.name { font-family: ui-monospace, monospace; font-size: .78rem; overflow-wrap: anywhere; }
+  table.values td.used { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  table.values td.used.pending { color: var(--warn); }
+  table.values input[type=number] { width: 7.5rem; }
+  .chips { display: flex; gap: .5rem; flex-wrap: wrap; font-size: .8rem; color: var(--muted); }
+  .chips b { color: var(--text); font-weight: 600; }
+  .note { color: var(--muted); font-size: .8rem; margin: .3rem 0 0; }
 </style>
 </head>
 <body>
-<nav><h1>Scenarios</h1><div id="list"></div></nav>
-<main id="main"><p>Pick a scenario.</p></main>
+<header>
+  <h1>evcc-rs</h1>
+  <div class="tabs"><button id="tab-scenarios" class="current" type="button">Scenarios</button><button id="tab-sim" type="button">Simulation</button></div>
+  <button id="theme" class="theme" type="button" title="colour theme">auto</button>
+</header>
+<div class="split" id="scenarios-view">
+  <nav><h1>Scenarios</h1><div id="list"></div></nav>
+  <main id="main"><p>Pick a scenario.</p></main>
+</div>
+<div id="sim-view" hidden></div>
 <script>
 "use strict";
 const $ = (tag, props = {}, ...kids) => {
@@ -103,29 +154,30 @@ const setPath = (obj, path, value) => {
 
 // ---- forms made from the schema ------------------------------------------
 
-function form(root, schema, settings, defaults, path = []) {
+function form(root, schema, settings, defaults, path = [], hook = refresh, omit = []) {
   const props = strip(root, schema).properties || {};
   const box = $("div");
   for (const [name, raw] of Object.entries(props)) {
+    if (!path.length && omit.includes(name)) continue;
     const s = strip(root, raw);
     const here = [...path, name];
     if (s.type === "object" && s.properties) {
-      box.append($("fieldset", {}, $("legend", { textContent: name }), form(root, s, settings, defaults, here)));
+      box.append($("fieldset", {}, $("legend", { textContent: name }), form(root, s, settings, defaults, here, hook, omit)));
       continue;
     }
-    box.append(field(root, name, raw, s, here, settings, defaults));
+    box.append(field(root, name, raw, s, here, settings, defaults, hook));
   }
   return box;
 }
 
-function field(root, name, raw, s, here, settings, defaults) {
+function field(root, name, raw, s, here, settings, defaults, hook) {
   const row = $("div", { className: "field" });
   const dflt = getPath(defaults, here);
   const set = () => getPath(settings, here) !== undefined;
   const value = () => (set() ? getPath(settings, here) : dflt);
   const mark = () => { row.classList.toggle("set", set()); reset.hidden = !set(); };
   const reset = $("button", { className: "reset", title: "back to the default", textContent: "×", type: "button" });
-  const put = v => { setPath(settings, here, v); mark(); refresh(); };
+  const put = v => { setPath(settings, here, v); mark(); hook(); };
   let input;
   if (s.type === "boolean") {
     input = $("input", { type: "checkbox", checked: !!value() });
@@ -273,6 +325,261 @@ function start() {
     .catch(e => { verdict.className = "fail"; verdict.textContent = e.message; });
 }
 
+// ---- theme and tabs ------------------------------------------------------
+
+const themes = ["auto", "light", "dark"];
+function setTheme(t) {
+  if (t === "auto") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.dataset.theme = t;
+  document.getElementById("theme").textContent = t;
+  localStorage.setItem("theme", t);
+}
+document.getElementById("theme").onclick = () => {
+  const now = localStorage.getItem("theme") || "auto";
+  setTheme(themes[(themes.indexOf(now) + 1) % themes.length]);
+};
+setTheme(localStorage.getItem("theme") || "auto");
+
+function showTab(name) {
+  document.getElementById("scenarios-view").hidden = name !== "scenarios";
+  document.getElementById("sim-view").hidden = name !== "sim";
+  document.getElementById("tab-scenarios").classList.toggle("current", name === "scenarios");
+  document.getElementById("tab-sim").classList.toggle("current", name === "sim");
+  document.title = name === "sim" ? "evcc-rs simulation" : "evcc-rs scenarios";
+}
+document.getElementById("tab-scenarios").onclick = () => showTab("scenarios");
+document.getElementById("tab-sim").onclick = () => { showTab("sim"); location.hash = "simulation"; };
+
+// ---- the simulation page -------------------------------------------------
+
+const PHASES = [
+  ["connecting", "Connecting"], ["setup", "Setup"], ["authorization", "Authorization"],
+  ["service", "Service selection"], ["charge_parameters", "Charge parameters"],
+  ["schedule_exchange", "Schedule exchange"], ["cable_check", "Cable check"],
+  ["pre_charge", "Pre-charge"], ["power_delivery", "Power delivery"],
+  ["charge_loop", "Charge loop"], ["stop", "Stop and welding"], ["ended", "Ended"],
+];
+const phaseIndex = p => PHASES.findIndex(x => x[0] === p);
+const phaseName = p => (PHASES[phaseIndex(p)] || ["", p])[1];
+
+// What the next session will use. The vehicle runs a battery model faster than real time and
+// stops at its target; those are the page's defaults, the limits come from the schemas.
+const sim = {
+  evcc: { time_scale: 60, stop_at_target_soc: true, stop_after: 0, charge_loop_interval_ms: 500, log: "debug" },
+  secc: {},
+  view: {},
+  ui: {},
+};
+const simOmitEv = ["limits", "tls", "slac", "slac_repetition_ms", "slac_validation", "slac_toggles", "control_pilot_file", "stop_after", "pause_after", "resume_after_ms", "renegotiate_after", "renegotiate_schedule_after", "stop_when_rescheduled"];
+const simOmitSecc = ["limits"];
+
+async function simPost(path, body) {
+  const msg = document.getElementById("sim-msg");
+  try {
+    const r = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    msg.textContent = "";
+    return data;
+  } catch (e) { msg.textContent = e.message; }
+}
+const simCmd = (target, cmd) => simPost("/api/sim/cmd", { target, cmd });
+
+const fmt = v => (v == null ? "–" : Number.isInteger(v) ? String(v) : (Math.round(v * 100) / 100).toString());
+
+// A table of limits: the value for the next session (editable) next to the one in use.
+function limitsTable(title, root, owner, state, defaults, usedKey) {
+  const props = strip(root, strip(root, owner).properties.limits).properties;
+  const table = $("table", { className: "values" });
+  table.append($("tr", {}, $("th", { textContent: "limit" }), $("th", { textContent: "next session" }), $("th", { textContent: "in use" })));
+  const base = getPath(defaults, ["limits"]) ?? {};
+  for (const name of Object.keys(props)) {
+    const input = $("input", { type: "number", step: "any", placeholder: base[name] == null ? "unset" : String(base[name]) });
+    const cur = getPath(state, ["limits", name]);
+    input.value = cur ?? (base[name] ?? "");
+    input.classList.toggle("set", cur !== undefined);
+    input.oninput = () => {
+      setPath(state, ["limits", name], input.value === "" ? undefined : Number(input.value));
+      input.classList.toggle("set", input.value !== "");
+      updateUsed();
+    };
+    const used = $("td", { className: "used", id: `used-${usedKey}-${name}` });
+    table.append($("tr", {}, $("td", { className: "name", textContent: name }), $("td", {}, input), used));
+  }
+  return $("div", { className: "panel" }, $("h3", { textContent: title }), table);
+}
+
+// "In use" shows the limits of the session in progress; amber when the next session differs.
+function updateUsed() {
+  for (const [key, side, root, state, defaults] of [["ev", sim.view.ev, schemas.evcc.schema, sim.evcc, schemas.evcc.defaults], ["evse", sim.view.evse, schemas.secc.schema, sim.secc, schemas.secc.defaults.session]]) {
+    const used = side?.limits;
+    for (const el of document.querySelectorAll(`[id^="used-${key}-"]`)) {
+      const name = el.id.slice(`used-${key}-`.length);
+      const u = used?.[name];
+      el.textContent = fmt(u);
+      const next = getPath(state, ["limits", name]) ?? getPath(defaults, ["limits", name]);
+      el.classList.toggle("pending", used != null && (next ?? null) !== (u ?? null));
+    }
+  }
+}
+
+// A measurement: value (typing sets it by hand), Auto (the model's value), what was sent.
+function measureRow(target, key, label, unit) {
+  const input = $("input", { type: "number", step: "any" });
+  const auto = $("input", { type: "checkbox" });
+  const sent = $("td", { className: "used" });
+  input.onchange = () => { if (input.value !== "") simCmd(target, { cmd: "measure", key, value: Number(input.value) }); };
+  auto.onchange = () => simCmd(target, { cmd: "measure", key, auto: auto.checked });
+  sim.ui[`${target}.${key}`] = { input, auto, sent, unit };
+  return $("tr", {}, $("td", { className: "name", textContent: label }), $("td", {}, input), $("td", {}, auto), sent);
+}
+
+function measureTable(title, rows) {
+  const table = $("table", { className: "values" });
+  table.append($("tr", {}, $("th", { textContent: "measurement" }), $("th", { textContent: "value" }), $("th", { textContent: "auto" }), $("th", { textContent: "sent" })));
+  for (const r of rows) table.append(r);
+  return $("div", { className: "panel" }, $("h3", { textContent: title }), table);
+}
+
+function buildSim() {
+  const view = document.getElementById("sim-view");
+  const tls = $("input", { type: "checkbox", id: "sim-tls" });
+  const slac = $("input", { type: "checkbox", id: "sim-slac" });
+  const pki = $("select", { id: "sim-pki" });
+  for (const p of ["p521", "ed448", "p256"]) pki.append($("option", { value: p, textContent: p }));
+  const open = $("button", { id: "sim-open", textContent: "Open simulation" });
+  open.onclick = () => simPost("/api/sim/open", { tls: tls.checked, slac: slac.checked, pki: pki.value });
+  const close = $("button", { id: "sim-close", className: "quiet", textContent: "Close simulation" });
+  close.onclick = () => simPost("/api/sim/close");
+
+  const stepper = $("div", { className: "stepper", id: "stepper" });
+  for (const [id, name] of PHASES) stepper.append($("span", { id: `phase-${id}`, textContent: name }));
+  const target = $("select", { id: "advance-to" });
+  for (const [id, name] of PHASES.slice(1)) target.append($("option", { value: id, textContent: id === "ended" ? "Ended (run to the end)" : name }));
+  const advance = $("button", { id: "advance", textContent: "Advance ▶" });
+  advance.onclick = () => simCmd("ev", { cmd: "advance", to: target.value });
+  const next = $("button", { id: "next-session", textContent: "New session" });
+  next.onclick = () => simPost("/api/sim/session", { evcc: sim.evcc, secc: sim.secc });
+  const stop = $("button", { id: "stop", className: "quiet", textContent: "Stop charging" });
+  stop.onclick = () => simCmd("ev", { cmd: "stop" });
+  const real = $("input", { type: "checkbox", id: "real-timers" });
+  real.onchange = () => simCmd("ev", { cmd: "real_timers", on: real.checked });
+
+  const evTable = limitsTable("Vehicle: charge parameters", schemas.evcc.schema, schemas.evcc.schema, sim.evcc, schemas.evcc.defaults, "ev");
+  const seccRoot = schemas.secc.schema;
+  const seccSchema = seccRoot.properties.session;
+  const evseTable = limitsTable("Charger: charge parameters", seccRoot, seccSchema, sim.secc, schemas.secc.defaults.session, "evse");
+  // Start state of charge sits with the vehicle's numbers.
+  const start = $("input", { type: "number", min: 0, max: 100, value: sim.evcc.start_soc ?? schemas.evcc.defaults.start_soc });
+  start.oninput = () => setPath(sim.evcc, ["start_soc"], start.value === "" ? undefined : Number(start.value));
+  evTable.append($("label", { className: "inline" }, "start SoC (%) ", start));
+
+  const middle = $("div", { style: "display:grid;gap:1rem" },
+    measureTable("Vehicle measurements", [measureRow("ev", "voltage", "battery voltage (V)"), measureRow("ev", "soc", "state of charge (%)")]),
+    measureTable("Charger measurements", [measureRow("evse", "voltage", "present voltage (V)"), measureRow("evse", "current", "present current (A)"), measureRow("evse", "max_power", "maximum power (W)")]),
+    $("div", { className: "panel" }, $("h3", { textContent: "Session" }), $("div", { className: "chips", id: "chips" })));
+
+  const more = (title, root, schema, state, defaults, omit) =>
+    $("details", {}, $("summary", { textContent: title }), form(root, schema, state, defaults, [], () => {}, omit));
+
+  view.replaceChildren(
+    $("div", { className: "row" },
+      $("label", { className: "inline" }, tls, "TLS"), $("label", { className: "inline" }, slac, "SLAC"),
+      $("label", {}, "PKI", pki), open, close, $("span", { id: "sim-status", className: "note" })),
+    $("div", { className: "panel" }, stepper,
+      $("div", { className: "row", style: "margin-top:.6rem" },
+        $("label", {}, "Advance to", target), advance, stop, next,
+        $("label", { className: "inline", title: "off: the time spent held does not count against the protocol timeouts" }, real, "real timers while held"),
+        $("span", { id: "sim-held", className: "note" }))),
+    $("div", { id: "sim-msg", className: "error" }),
+    $("div", { className: "three" }, evTable, middle, evseTable),
+    $("div", { className: "columns" },
+      more("More vehicle settings", schemas.evcc.schema, schemas.evcc.schema, sim.evcc, schemas.evcc.defaults, simOmitEv),
+      more("More charger settings", seccRoot, seccSchema, sim.secc, schemas.secc.defaults.session, simOmitSecc)),
+    $("div", { className: "logs", id: "sim-logs" }));
+  updateUsed();
+  applyView();
+}
+
+function applyView() {
+  const v = sim.view, ev = v.ev, evse = v.evse;
+  const $id = id => document.getElementById(id);
+  const phase = ev?.phase ?? "connecting";
+  const cur = phaseIndex(phase);
+  for (const [id] of PHASES) {
+    const el = $id(`phase-${id}`);
+    const i = phaseIndex(id);
+    el.className = !v.running && !ev ? "" : i < cur ? "done" : i === cur ? "current" + (ev?.held ? " held" : "") : "";
+  }
+  $id("sim-status").textContent = v.opening ? "opening…" : v.open ? (v.running ? `session ${v.session} running` : v.session ? `session ${v.session} ended (exit ${v.exit_code ?? "?"})` : "open, no session yet") : "closed";
+  $id("sim-open").disabled = v.open || v.opening;
+  $id("sim-close").disabled = !v.open;
+  for (const id of ["sim-tls", "sim-slac", "sim-pki"]) $id(id).disabled = v.open || v.opening;
+  $id("next-session").disabled = !v.open || v.running;
+  const live = v.running && !!ev;
+  $id("advance").disabled = !live;
+  $id("stop").disabled = !live;
+  $id("advance-to").disabled = !live;
+  $id("sim-held").textContent = !ev ? "" : ev.held ? `held before ${phaseName(ev.phase)}` : v.running ? `running to ${phaseName(ev.target)}` : "";
+  if (ev && document.activeElement !== $id("advance-to") && ev.held) {
+    // The natural next step: one phase on.
+    $id("advance-to").value = PHASES[Math.min(cur + 1, PHASES.length - 1)][0];
+  }
+  if (document.activeElement !== $id("real-timers")) $id("real-timers").checked = !!ev?.real_timers;
+  for (const [target, side] of [["ev", ev], ["evse", evse]]) {
+    for (const [key, m] of Object.entries(side?.measurements ?? {})) {
+      const ui = sim.ui[`${target}.${key}`];
+      if (!ui) continue;
+      ui.auto.checked = m.auto;
+      if (document.activeElement !== ui.input) ui.input.value = fmt(m.auto ? m.effective : m.manual);
+      ui.sent.textContent = fmt(m.effective);
+    }
+  }
+  const chips = [];
+  const add = (k, val) => chips.push($("span", {}, k + " ", $("b", { textContent: val })));
+  if (ev) {
+    add("vehicle", ev.state ?? "–"); add("loops", ev.loops); add("battery model", fmt(ev.model_soc) + " %");
+    add("charger reports", `${fmt(ev.evse_reports.voltage)} V, ${fmt(ev.evse_reports.current)} A`);
+    if (ev.result) add("result", ev.result);
+  }
+  if (evse) {
+    add("charger", evse.state);
+    add("vehicle reports", `${fmt(evse.ev_reports.voltage)} V, ≤ ${fmt(evse.ev_reports.max_current)} A, ≤ ${fmt(evse.ev_reports.max_power)} W`);
+  }
+  $id("chips").replaceChildren(...chips);
+  if (v.error) $id("sim-msg").textContent = v.error;
+  updateUsed();
+}
+
+function connectSim() {
+  const es = new EventSource("/api/sim/events");
+  const panes = {};
+  es.addEventListener("state", e => {
+    const next = JSON.parse(e.data);
+    // A new simulation or session starts with clean logs.
+    if (next.artifacts !== sim.view.artifacts || next.session !== sim.view.session) {
+      if (next.artifacts !== sim.view.artifacts) for (const k of Object.keys(panes)) delete panes[k];
+      const logs = document.getElementById("sim-logs");
+      if (logs && next.artifacts !== sim.view.artifacts) logs.replaceChildren();
+    }
+    sim.view = next;
+    applyView();
+  });
+  es.addEventListener("log", e => {
+    const { file, text } = JSON.parse(e.data);
+    const logs = document.getElementById("sim-logs");
+    if (!logs) return;
+    if (!panes[file]) {
+      panes[file] = $("pre");
+      logs.append($("div", { className: "log" }, $("h3", { textContent: file }), panes[file]));
+    }
+    const pre = panes[file];
+    const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 8;
+    pre.append(text);
+    if (atEnd) pre.scrollTop = pre.scrollHeight;
+  });
+}
+
 // ---- start ---------------------------------------------------------------
 
 async function load(file, link) {
@@ -284,12 +591,15 @@ async function load(file, link) {
 
 (async () => {
   schemas = await api("/api/schema");
+  buildSim();
+  if (!location.search.includes("static")) connectSim();
+  if (location.hash === "#simulation") showTab("sim");
   const list = document.getElementById("list");
   for (const s of await api("/api/scenarios")) {
     const a = $("a", { textContent: s.file, title: s.description });
     a.onclick = () => load(s.file, a);
     list.append(a);
-    if (location.hash.slice(1) === s.file) a.click();
+    if (location.hash.slice(1) === s.file) { showTab("scenarios"); a.click(); }
   }
 })();
 </script>

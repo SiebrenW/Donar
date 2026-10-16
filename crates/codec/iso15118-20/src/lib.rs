@@ -9,6 +9,7 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 mod generated;
+mod rational;
 pub mod signature;
 
 pub use generated::{common, common_types, dc, xmldsig};

@@ -1,0 +1,300 @@
+//! The live side of the simulated vehicle for a test platform: the phases of a session, a hold
+//! at the start of each (the gate of `evcc_linux::run_gated`), the measurements that are either
+//! modelled or set by hand, and the commands and state of the control socket.
+
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Instant;
+
+use evcc_core::session::{ChargeLoopStatus, State};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sim_control::{Endpoint, Metric};
+
+use crate::settings::Limits;
+
+/// The battery the model charges.
+const CAPACITY_WH: f64 = 60_000.0;
+/// The battery voltage the model reports.
+const NOMINAL_VOLTAGE: f64 = 400.0;
+
+/// A session in coarse steps. The vehicle holds before the first message of a phase it was not
+/// asked to enter yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    /// Before the session: SLAC, SDP, the connection.
+    Connecting,
+    Setup,
+    Authorization,
+    Service,
+    ChargeParameters,
+    ScheduleExchange,
+    CableCheck,
+    PreCharge,
+    PowerDelivery,
+    ChargeLoop,
+    /// The orderly stop: current down, `PowerDeliveryReq(Stop)`, contactors, welding detection,
+    /// `SessionStopReq`.
+    Stop,
+    Ended,
+}
+
+impl Phase {
+    pub fn of(state: State) -> Phase {
+        use State::*;
+        match state {
+            Idle => Phase::Connecting,
+            AwaitSupportedAppProtocolRes | AwaitSessionSetupRes => Phase::Setup,
+            AwaitAuthorizationSetupRes | AwaitAuthorizationRes => Phase::Authorization,
+            AwaitServiceDiscoveryRes | AwaitServiceDetailRes | AwaitServiceSelectionRes => Phase::Service,
+            AwaitChargeParameterDiscoveryRes => Phase::ChargeParameters,
+            AwaitScheduleExchangeRes => Phase::ScheduleExchange,
+            AwaitCableCheckRes => Phase::CableCheck,
+            AwaitPreChargeRes | AwaitContactors => Phase::PreCharge,
+            AwaitPowerDeliveryRes => Phase::PowerDelivery,
+            AwaitChargeLoopRes | AwaitPowerDeliveryStandbyRes => Phase::ChargeLoop,
+            AwaitCurrentStopped | AwaitPowerDeliveryStopRes | AwaitContactorsOpened | AwaitWeldingDetectionRes | AwaitSessionStopRes => Phase::Stop,
+            Ended => Phase::Ended,
+        }
+    }
+}
+
+struct Inner {
+    limits: Limits,
+    voltage: Metric,
+    soc: Metric,
+    /// The state of charge of the battery model, percent.
+    model_soc: f64,
+    updated: Option<Instant>,
+    time_scale: f64,
+    stop_at_target_soc: bool,
+    /// What the charger reported in the last charge loop answer.
+    seen_voltage: f64,
+    seen_current: f64,
+    loops: u32,
+    phase: Phase,
+    state: Option<State>,
+    held: bool,
+    /// The phase to run to; the vehicle holds at its start.
+    target: Phase,
+    real_timers: bool,
+    stop_asked: bool,
+    closed: bool,
+    result: Option<String>,
+}
+
+pub struct EvLive {
+    inner: Mutex<Inner>,
+    changed: Condvar,
+}
+
+impl EvLive {
+    /// A session with `limits`, held before its first message.
+    pub fn new(limits: Limits, start_soc: u8, time_scale: u32, stop_at_target_soc: bool) -> Arc<EvLive> {
+        Arc::new(EvLive {
+            inner: Mutex::new(Inner {
+                limits,
+                voltage: Metric::new(NOMINAL_VOLTAGE),
+                soc: Metric::new(f64::from(start_soc)),
+                model_soc: f64::from(start_soc),
+                updated: None,
+                time_scale: f64::from(time_scale.max(1)),
+                stop_at_target_soc,
+                seen_voltage: 0.0,
+                seen_current: 0.0,
+                loops: 0,
+                phase: Phase::Connecting,
+                state: None,
+                held: false,
+                target: Phase::Setup,
+                real_timers: false,
+                stop_asked: false,
+                closed: false,
+                result: None,
+            }),
+            changed: Condvar::new(),
+        })
+    }
+
+    pub fn battery_voltage(&self) -> f64 {
+        self.inner.lock().unwrap().voltage.resolve(NOMINAL_VOLTAGE)
+    }
+
+    pub fn present_soc(&self) -> f64 {
+        let mut g = self.inner.lock().unwrap();
+        let modelled = g.model_soc;
+        g.soc.resolve(modelled)
+    }
+
+    /// The vehicle's limits of this session.
+    pub fn limits(&self) -> Limits {
+        self.inner.lock().unwrap().limits
+    }
+
+    /// A charge loop answer arrived: the battery takes what the charger delivers. True when
+    /// the vehicle should stop now: it was asked to advance to the stop, or the target state
+    /// of charge is reached.
+    pub fn charge_loop(&self, status: &ChargeLoopStatus) -> bool {
+        let mut g = self.inner.lock().unwrap();
+        g.loops += 1;
+        g.seen_voltage = status.present_voltage.to_f64();
+        g.seen_current = status.present_current.to_f64();
+        let now = Instant::now();
+        if let Some(before) = g.updated.replace(now) {
+            let hours = now.duration_since(before).as_secs_f64() * g.time_scale / 3600.0;
+            let energy_wh = g.seen_voltage * g.seen_current * hours;
+            g.model_soc = (g.model_soc + energy_wh / CAPACITY_WH * 100.0).min(100.0);
+        }
+        let reached = g.stop_at_target_soc && g.model_soc >= f64::from(g.limits.target_soc);
+        let stop = reached || g.target >= Phase::Stop;
+        if stop && !g.stop_asked {
+            g.stop_asked = true;
+            return true;
+        }
+        false
+    }
+
+    /// Called with every state the session enters, before its frame goes out. Blocks while the
+    /// vehicle is held; true when the wait is not to count against the timers.
+    pub fn gate(&self, state: State) -> bool {
+        let mut g = self.inner.lock().unwrap();
+        g.state = Some(state);
+        let phase = Phase::of(state);
+        if phase == g.phase {
+            return false;
+        }
+        g.phase = phase;
+        if phase < g.target || g.closed {
+            return false;
+        }
+        g.held = true;
+        while g.phase >= g.target && !g.closed {
+            g = self.changed.wait(g).unwrap();
+        }
+        g.held = false;
+        !g.real_timers
+    }
+
+    pub fn finished(&self, result: String) {
+        let mut g = self.inner.lock().unwrap();
+        g.phase = Phase::Ended;
+        g.held = false;
+        g.result = Some(result);
+    }
+
+    /// Releases a held session for good (the simulation is closing).
+    pub fn close(&self) {
+        self.inner.lock().unwrap().closed = true;
+        self.changed.notify_all();
+    }
+}
+
+impl Endpoint for EvLive {
+    fn snapshot(&self) -> Value {
+        let g = self.inner.lock().unwrap();
+        json!({
+            "phase": g.phase,
+            "held": g.held,
+            "target": g.target,
+            "state": g.state.map(|s| format!("{s:?}")),
+            "real_timers": g.real_timers,
+            "limits": g.limits,
+            "measurements": { "voltage": g.voltage, "soc": g.soc },
+            "evse_reports": { "voltage": g.seen_voltage, "current": g.seen_current },
+            "model_soc": g.model_soc,
+            "loops": g.loops,
+            "result": g.result,
+        })
+    }
+
+    fn command(&self, cmd: Value) -> Result<(), String> {
+        let mut g = self.inner.lock().unwrap();
+        match cmd.get("cmd").and_then(Value::as_str) {
+            Some("advance") => {
+                let to: Phase = serde_json::from_value(cmd.get("to").cloned().unwrap_or_default()).map_err(|e| format!("to: {e}"))?;
+                if to <= Phase::Connecting {
+                    return Err("nothing before the session to advance to".into());
+                }
+                g.target = to;
+            }
+            Some("stop") => g.target = Phase::Stop,
+            Some("real_timers") => g.real_timers = cmd.get("on").and_then(Value::as_bool).ok_or("on: a boolean")?,
+            Some("measure") => {
+                let metric = match cmd.get("key").and_then(Value::as_str) {
+                    Some("voltage") => &mut g.voltage,
+                    Some("soc") => &mut g.soc,
+                    other => return Err(format!("no such measurement: {other:?}")),
+                };
+                metric.apply(&cmd);
+            }
+            other => return Err(format!("unknown command {other:?}")),
+        }
+        drop(g);
+        self.changed.notify_all();
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iso15118_20::common_types::RationalNumber;
+
+    fn status(volts: f64, amps: f64) -> ChargeLoopStatus {
+        let rn = RationalNumber::from_f64;
+        ChargeLoopStatus {
+            present_current: rn(amps),
+            present_voltage: rn(volts),
+            power_limit_achieved: false,
+            current_limit_achieved: false,
+            voltage_limit_achieved: false,
+            maximum_charge_power: rn(100_000.0),
+            maximum_charge_current: rn(200.0),
+            maximum_voltage: rn(450.0),
+        }
+    }
+
+    #[test]
+    fn the_battery_charges_with_what_the_charger_delivers_and_stops_at_the_target() {
+        let live = EvLive::new(Limits { target_soc: 30, ..Limits::default() }, 20, 3600, true);
+        live.command(json!({ "cmd": "advance", "to": "charge_loop" })).unwrap();
+        // The first answer only starts the clock; one real millisecond is 3.6 s of battery time.
+        assert!(!live.charge_loop(&status(400.0, 100.0)));
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        let stop = live.charge_loop(&status(400.0, 100.0));
+        assert!(live.present_soc() > 20.0);
+        assert_eq!(stop, live.present_soc() >= 30.0);
+        // Far past the target it asks once, not at every answer.
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        assert!(live.charge_loop(&status(400.0, 100.0)));
+        assert!(!live.charge_loop(&status(400.0, 100.0)));
+    }
+
+    #[test]
+    fn advancing_to_the_stop_stops_the_charge_and_a_hand_set_soc_wins() {
+        let live = EvLive::new(Limits::default(), 20, 1, false);
+        assert!(!live.charge_loop(&status(400.0, 100.0)));
+        live.command(json!({ "cmd": "advance", "to": "stop" })).unwrap();
+        assert!(live.charge_loop(&status(400.0, 100.0)));
+        live.command(json!({ "cmd": "measure", "key": "soc", "value": 55 })).unwrap();
+        assert_eq!(live.present_soc(), 55.0);
+        assert!(live.command(json!({ "cmd": "measure", "key": "nope" })).is_err());
+        assert!(live.command(json!({ "cmd": "advance", "to": "connecting" })).is_err());
+    }
+
+    #[test]
+    fn the_gate_holds_at_the_target_phase_until_advanced() {
+        let live = EvLive::new(Limits::default(), 20, 1, false);
+        let other = live.clone();
+        let held = std::thread::spawn(move || other.gate(State::AwaitSupportedAppProtocolRes));
+        let started = Instant::now();
+        while !live.snapshot()["held"].as_bool().unwrap() {
+            assert!(started.elapsed().as_secs() < 5, "never held");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // Phases before the target are passed without a hold; the target is held at.
+        live.command(json!({ "cmd": "advance", "to": "authorization" })).unwrap();
+        assert!(held.join().unwrap(), "frozen timers by default");
+        assert!(!live.gate(State::AwaitSessionSetupRes), "same phase: no hold");
+    }
+}

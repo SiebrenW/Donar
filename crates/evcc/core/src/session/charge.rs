@@ -1,7 +1,7 @@
 //! Cable check, pre-charge, power delivery start and the charge loop.
 
 use iso15118_20::common::{self, *};
-use iso15118_20::common_types::{EvseNotification, Processing, ResponseCode};
+use iso15118_20::common_types::{self, EvseNotification, Processing, ResponseCode};
 use iso15118_20::dc;
 use v2gtp::PayloadType;
 
@@ -195,7 +195,18 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         let l = self.ev.dc_limits();
         let msg = dc::DcChargeLoopReq {
             header: self.header(),
-            display_parameters: None,
+            display_parameters: self.ev.present_soc().map(|soc| common_types::DisplayParameters {
+                present_soc: Some(soc.min(100) as i8),
+                minimum_soc: None,
+                target_soc: None,
+                maximum_soc: None,
+                remaining_time_to_minimum_soc: None,
+                remaining_time_to_target_soc: None,
+                remaining_time_to_maximum_soc: None,
+                charging_complete: None,
+                battery_energy_capacity: None,
+                inlet_hot: None,
+            }),
             meter_info_requested: false,
             ev_present_voltage: self.ev.battery_voltage(),
             cl_req_control_mode: dc::ClReqControlModeChoice::DynamicDc(dc::DynamicDcClReqControlMode {

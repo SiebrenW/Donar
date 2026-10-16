@@ -114,3 +114,82 @@ fn runs_a_scenario_and_streams_its_logs() {
     assert!(events.contains("PASS dc-plain"), "{events}");
     assert!(events.contains("event: end"), "{events}");
 }
+
+#[cfg(target_os = "linux")]
+mod simulation {
+    use super::*;
+    use serde_json::{Value, json};
+    use std::time::{Duration, Instant};
+
+    fn view(server: &Server) -> Value {
+        serde_json::from_str(&http(server, "GET", "/api/sim", "").1).unwrap()
+    }
+
+    fn post(server: &Server, path: &str, body: Value) -> Value {
+        let (status, text) = http(server, "POST", path, &body.to_string());
+        assert_eq!(status, 200, "{path}: {text}");
+        serde_json::from_str(&text).unwrap()
+    }
+
+    fn wait(server: &Server, what: &str, until: impl Fn(&Value) -> bool) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let v = view(server);
+            if until(&v) {
+                return v;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for {what}; last view: {v}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn held_at(phase: &'static str) -> impl Fn(&Value) -> bool {
+        move |v| v["ev"]["phase"] == phase && v["ev"]["held"] == true
+    }
+
+    fn advance(server: &Server, to: &str) {
+        post(server, "/api/sim/cmd", json!({ "target": "ev", "cmd": { "cmd": "advance", "to": to } }));
+    }
+
+    /// Two sessions in one open simulation, stepped: held at the first phase, advanced to the
+    /// cable check, a charger measurement set by hand showing up at the vehicle, the stop held
+    /// and released, and the next session started with other values.
+    #[test]
+    fn steps_a_session_and_starts_another() {
+        let server = start();
+        post(&server, "/api/sim/open", json!({}));
+        wait(&server, "the simulation to open", |v| v["open"] == true && v["evse"].is_object());
+        let vehicle = json!({ "charge_loop_interval_ms": 40, "poll_interval_ms": 10, "stop_after": 0, "time_scale": 3600, "stop_at_target_soc": true, "limits": { "target_soc": 30, "max_charge_current_a": 150 } });
+        post(&server, "/api/sim/session", json!({ "evcc": vehicle, "secc": { "limits": { "max_charge_current_a": 120 } } }));
+
+        let v = wait(&server, "the hold before setup", held_at("setup"));
+        assert_eq!(v["ev"]["limits"]["max_charge_current_a"], 150);
+        advance(&server, "cable_check");
+        wait(&server, "the hold before the cable check", held_at("cable_check"));
+        let v = view(&server);
+        assert_eq!(v["evse"]["state"], "AwaitCableCheckReq", "{v}");
+        assert_eq!(v["evse"]["limits"]["max_charge_current_a"], 120, "the charger's limits of this session");
+
+        // A hand-set present current reaches the vehicle in the charge loop.
+        post(&server, "/api/sim/cmd", json!({ "target": "evse", "cmd": { "cmd": "measure", "key": "current", "value": 77 } }));
+        advance(&server, "charge_loop");
+        wait(&server, "the hold before the charge loop", held_at("charge_loop"));
+        advance(&server, "stop");
+        let v = wait(&server, "the hold before the stop", held_at("stop"));
+        assert_eq!(v["ev"]["evse_reports"]["current"], 77.0, "{v}");
+        assert!(v["ev"]["loops"].as_u64().unwrap() >= 1, "{v}");
+
+        advance(&server, "ended");
+        let v = wait(&server, "the session to end", |v| v["running"] == false && v["session"] == 1);
+        assert_eq!(v["exit_code"], 0, "{v}");
+
+        // The next session: the charger's measurement edit stays, its settings are new.
+        post(&server, "/api/sim/session", json!({ "evcc": vehicle, "secc": { "limits": { "max_charge_current_a": 90 } } }));
+        wait(&server, "the second session's hold", |v| v["session"] == 2 && v["ev"]["phase"] == "setup" && v["ev"]["held"] == true);
+        advance(&server, "cable_check");
+        let v = wait(&server, "the hold before the cable check", held_at("cable_check"));
+        assert_eq!(v["evse"]["limits"]["max_charge_current_a"], 90, "{v}");
+        post(&server, "/api/sim/close", json!({}));
+        wait(&server, "the simulation to close", |v| v["open"] == false);
+    }
+}

@@ -62,4 +62,9 @@ pub trait Ev {
     fn inlet_voltage(&self) -> RationalNumber;
     /// The vehicle's energy needs for the schedule exchange.
     fn schedule_request(&self) -> ScheduleRequest;
+    /// The present state of charge in percent, reported in the charge loop (`DisplayParameters`)
+    /// when the vehicle knows it.
+    fn present_soc(&self) -> Option<u8> {
+        None
+    }
 }

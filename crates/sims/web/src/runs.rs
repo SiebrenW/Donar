@@ -97,25 +97,35 @@ impl Runs {
     pub fn follow(&self, id: u32) -> Option<Follower> {
         let all = self.all.lock().unwrap();
         let run = all.get(&id)?;
-        Some(Follower { artifacts: run.dir.join("artifacts"), outcome: run.outcome.clone(), offsets: HashMap::new() })
+        Some(Follower { artifacts: run.dir.join("artifacts"), outcome: Some(run.outcome.clone()), offsets: HashMap::new() })
     }
 }
 
 /// One client's position in the logs of a run.
 pub struct Follower {
     artifacts: PathBuf,
-    outcome: Arc<Mutex<Outcome>>,
+    /// Absent for logs that have no end (a simulation).
+    outcome: Option<Arc<Mutex<Outcome>>>,
     offsets: HashMap<PathBuf, u64>,
 }
 
 impl Follower {
+    /// Follows the logs below `artifacts` (a directory with one directory per run) without
+    /// a verdict.
+    pub fn logs(artifacts: PathBuf) -> Follower {
+        Follower { artifacts, outcome: None, offsets: HashMap::new() }
+    }
+
     /// New log text since the last call, by file name, and the verdict once the run has ended
     /// and everything was delivered.
     pub async fn poll(&mut self) -> (Vec<(String, String)>, Option<String>) {
         // Read `done` before the files, so that nothing written before the end is missed.
-        let (done, output) = {
-            let o = self.outcome.lock().unwrap();
-            (o.done, o.output.clone())
+        let (done, output) = match &self.outcome {
+            Some(o) => {
+                let o = o.lock().unwrap();
+                (o.done, o.output.clone())
+            }
+            None => (false, String::new()),
         };
         let mut chunks = Vec::new();
         for path in log_files(&self.artifacts) {

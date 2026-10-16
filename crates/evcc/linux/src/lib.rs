@@ -53,7 +53,22 @@ pub fn run<E: Ev, L: LogSink>(
     secured: bool,
     host: &mut impl FnMut(&Notice) -> Option<Event>,
 ) -> io::Result<Outcome> {
-    match drive(stream, session, secured, host) {
+    run_gated(stream, session, secured, host, &mut |_| false)
+}
+
+/// Like [`run`], with a gate the host can hold a session at: `gate` is called with the state
+/// the session just entered, before the frame of that step goes out or its timers start, and
+/// may block (a test platform stepping through a session). When it returns true the time it
+/// took is added to every pending timer, so a wait does not count against the protocol's
+/// timeouts; with false the timers ran in real time.
+pub fn run_gated<E: Ev, L: LogSink>(
+    stream: &mut impl Transport,
+    session: &mut Session<'_, E, L>,
+    secured: bool,
+    host: &mut impl FnMut(&Notice) -> Option<Event>,
+    gate: &mut impl FnMut(evcc_core::session::State) -> bool,
+) -> io::Result<Outcome> {
+    match drive(stream, session, secured, host, gate) {
         Err(e) if is_hang_up(&e) => Ok(Outcome::ConnectionClosed),
         other => other,
     }
@@ -71,10 +86,17 @@ fn drive<E: Ev, L: LogSink>(
     session: &mut Session<'_, E, L>,
     secured: bool,
     host: &mut impl FnMut(&Notice) -> Option<Event>,
+    gate: &mut impl FnMut(evcc_core::session::State) -> bool,
 ) -> io::Result<Outcome> {
     let mut deadlines = Deadlines::default();
     let mut step = session.handle(Event::Start { secured });
     loop {
+        if step.end.is_none() {
+            let held_from = Instant::now();
+            if gate(session.state()) {
+                deadlines.postpone(held_from.elapsed());
+            }
+        }
         if let Some(n) = step.send {
             stream.write_all(&session.tx()[..n])?;
         }
@@ -137,6 +159,13 @@ impl Deadlines {
                 self.0[Self::slot(timer)] = Some(Instant::now() + Duration::from_millis(u64::from(ms)));
             }
             TimerCmd::Cancel(timer) => self.0[Self::slot(timer)] = None,
+        }
+    }
+
+    /// Moves every pending expiry later by `by`.
+    pub(crate) fn postpone(&mut self, by: Duration) {
+        for d in self.0.iter_mut().flatten() {
+            *d += by;
         }
     }
 

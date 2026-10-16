@@ -14,7 +14,10 @@ use iso15118_20::common_types::{self, MessageHeader, Processing, RationalNumber,
 use iso15118_20::dc;
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
+use std::sync::Arc;
+
 use crate::config::Config;
+use crate::live::EvseLive;
 
 const DC_NAMESPACE: &str = "urn:iso:std:iso:15118:-20:DC";
 
@@ -75,11 +78,18 @@ pub struct Evse {
     side_schedule_reqs_seen: u32,
     /// A schedule renegotiation finished on the side stream.
     side_renegotiated: bool,
+    live: Option<Arc<EvseLive>>,
 }
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false }
+        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None }
+    }
+
+    /// Reports the charge loop measurements to a test platform and takes its edits.
+    pub fn with_live(mut self, live: Arc<EvseLive>) -> Self {
+        self.live = Some(live);
+        self
     }
 
     pub fn state(&self) -> State {
@@ -381,7 +391,16 @@ impl Evse {
                 } else {
                     None
                 };
-                let rn = |value| RationalNumber { exponent: 0, value };
+                let rn = |value: u32| RationalNumber::from_f64(f64::from(value));
+                let l = &self.config.limits;
+                let (ev_voltage, ev_max_current, ev_max_power) = match &req.cl_req_control_mode {
+                    dc::ClReqControlModeChoice::DynamicDc(m) => (req.ev_present_voltage.to_f64(), m.ev_maximum_charge_current.to_f64(), m.ev_maximum_charge_power.to_f64()),
+                    _ => (req.ev_present_voltage.to_f64(), 0.0, 0.0),
+                };
+                let (voltage, current, max_power) = match &self.live {
+                    Some(live) => live.charge_loop(ev_voltage, ev_max_current, ev_max_power, l),
+                    None => (ev_voltage, crate::live::modelled_current(ev_voltage, ev_max_current, ev_max_power, l), f64::from(l.max_charge_power_w)),
+                };
                 let res = dc::DcChargeLoopRes {
                     header: self.header(),
                     response_code: code,
@@ -391,8 +410,8 @@ impl Evse {
                     }),
                     meter_info: None,
                     receipt: None,
-                    evse_present_current: rn(100),
-                    evse_present_voltage: req.ev_present_voltage,
+                    evse_present_current: RationalNumber::from_f64(current),
+                    evse_present_voltage: RationalNumber::from_f64(voltage),
                     evse_power_limit_achieved: false,
                     evse_current_limit_achieved: false,
                     evse_voltage_limit_achieved: false,
@@ -401,10 +420,10 @@ impl Evse {
                         minimum_soc: None,
                         target_soc: None,
                         ack_max_delay: None,
-                        evse_maximum_charge_power: RationalNumber { exponent: 3, value: 150 },
-                        evse_minimum_charge_power: rn(100),
-                        evse_maximum_charge_current: rn(300),
-                        evse_maximum_voltage: rn(920),
+                        evse_maximum_charge_power: RationalNumber::from_f64(max_power),
+                        evse_minimum_charge_power: rn(l.min_charge_power_w),
+                        evse_maximum_charge_current: rn(l.max_charge_current_a),
+                        evse_maximum_voltage: rn(l.max_voltage_v),
                     }),
                 };
                 Output { send: frame(PayloadType::DC_MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) }
@@ -497,18 +516,19 @@ impl Evse {
 
 impl Evse {
     fn cpd_res(&self, code: ResponseCode) -> dc::DcChargeParameterDiscoveryRes<'static> {
-        let rn = |value| RationalNumber { exponent: 0, value };
+        let rn = |value: u32| RationalNumber::from_f64(f64::from(value));
+        let l = &self.config.limits;
         dc::DcChargeParameterDiscoveryRes {
             header: self.header(),
             response_code: code,
             dc_cpd_res_energy_transfer_mode: dc::DcCpdResEnergyTransferModeChoice::Base(dc::DcCpdResEnergyTransferMode {
-                evse_maximum_charge_power: RationalNumber { exponent: 3, value: 150 },
-                evse_minimum_charge_power: rn(1000),
-                evse_maximum_charge_current: rn(300),
-                evse_minimum_charge_current: rn(2),
-                evse_maximum_voltage: rn(920),
-                evse_minimum_voltage: rn(150),
-                evse_power_ramp_limitation: None,
+                evse_maximum_charge_power: rn(l.max_charge_power_w),
+                evse_minimum_charge_power: rn(l.min_charge_power_w),
+                evse_maximum_charge_current: rn(l.max_charge_current_a),
+                evse_minimum_charge_current: rn(l.min_charge_current_a),
+                evse_maximum_voltage: rn(l.max_voltage_v),
+                evse_minimum_voltage: rn(l.min_voltage_v),
+                evse_power_ramp_limitation: l.power_ramp_limitation_w.map(rn),
             }),
         }
     }

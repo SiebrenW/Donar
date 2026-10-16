@@ -11,6 +11,7 @@
 //! One run at a time. The page is `index.html`, plain JavaScript, no build step.
 
 mod runs;
+mod sim;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -32,6 +33,7 @@ const USAGE: &str = "usage: evcc-web [--listen ADDR] [--scenarios DIR] [--work D
 struct App {
     scenarios: PathBuf,
     runs: Runs,
+    sim: Arc<sim::Sim>,
 }
 
 type Shared = State<Arc<App>>;
@@ -64,6 +66,7 @@ async fn main() -> std::process::ExitCode {
             return std::process::ExitCode::from(2);
         }
     }
+    let sim = sim::Sim::new(work.join("sim"), sudo);
     let runs = match Runs::new(work, sudo) {
         Ok(r) => r,
         Err(e) => {
@@ -71,7 +74,7 @@ async fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    let app = Arc::new(App { scenarios, runs });
+    let app = Arc::new(App { scenarios, runs, sim });
     let router = Router::new()
         .route("/", get(|| async { Html(include_str!("index.html")) }))
         .route("/api/schema", get(schema))
@@ -79,6 +82,12 @@ async fn main() -> std::process::ExitCode {
         .route("/api/scenarios/{name}", get(show))
         .route("/api/runs", post(start))
         .route("/api/runs/{id}/events", get(events))
+        .route("/api/sim", get(sim_view))
+        .route("/api/sim/open", post(sim_open))
+        .route("/api/sim/session", post(sim_session))
+        .route("/api/sim/cmd", post(sim_command))
+        .route("/api/sim/close", post(sim_close))
+        .route("/api/sim/events", get(sim_events))
         .with_state(app);
     let listener = match tokio::net::TcpListener::bind(listen).await {
         Ok(l) => l,
@@ -190,6 +199,87 @@ async fn events(State(app): Shared, Path(id): Path<u32>) -> Response {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+    });
+    Sse::new(ReceiverStream::new(rx)).keep_alive(KeepAlive::default()).into_response()
+}
+
+fn sim_failure(f: sim::Failure) -> Response {
+    match f {
+        sim::Failure::Bad(m) => fail(StatusCode::BAD_REQUEST, m),
+        sim::Failure::Conflict(m) => fail(StatusCode::CONFLICT, m),
+    }
+}
+
+fn done(result: Result<(), sim::Failure>) -> Response {
+    match result {
+        Ok(()) => Json(json!({})).into_response(),
+        Err(f) => sim_failure(f),
+    }
+}
+
+/// The state of the simulation now.
+async fn sim_view(State(app): Shared) -> Json<sim::View> {
+    Json(app.sim.view())
+}
+
+/// Opens the simulation sandbox: `{tls, pki, slac}`.
+async fn sim_open(State(app): Shared, Json(body): Json<Value>) -> Response {
+    done(app.sim.open(body))
+}
+
+/// Starts a session: `{evcc: <evcc_sim::Settings>, secc: <evse_sim::Config>}`.
+async fn sim_session(State(app): Shared, Json(body): Json<Value>) -> Response {
+    match app.sim.start_session(body["evcc"].clone(), body["secc"].clone()) {
+        Ok(n) => Json(json!({ "session": n })).into_response(),
+        Err(f) => sim_failure(f),
+    }
+}
+
+/// A command for a simulator: `{target: "ev" | "evse", cmd: {...}}`.
+async fn sim_command(State(app): Shared, Json(body): Json<Value>) -> Response {
+    let target = match body["target"].as_str() {
+        Some("ev") => sim::Target::Ev,
+        Some("evse") => sim::Target::Evse,
+        _ => return fail(StatusCode::BAD_REQUEST, "target: ev or evse"),
+    };
+    done(app.sim.command(target, &body["cmd"]))
+}
+
+async fn sim_close(State(app): Shared) -> Response {
+    done(app.sim.close())
+}
+
+/// The state of the simulation whenever it changes (`state`) and the logs as they grow (`log`).
+async fn sim_events(State(app): Shared) -> Response {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(64);
+    tokio::spawn(async move {
+        let (mut seen, mut follower, mut watching) = (0, None, None);
+        loop {
+            let version = app.sim.version();
+            if version != seen {
+                seen = version;
+                let view = app.sim.view();
+                // New logs for a new simulation.
+                let dir = view.artifacts.clone();
+                if dir != watching {
+                    follower = dir.as_deref().and_then(|d| d.parent()).map(|p| runs::Follower::logs(p.to_path_buf()));
+                    watching = dir;
+                }
+                let event = Event::default().event("state").data(serde_json::to_string(&view).unwrap_or_default());
+                if tx.send(Ok(event)).await.is_err() {
+                    return;
+                }
+            }
+            if let Some(follower) = &mut follower {
+                for (file, text) in follower.poll().await.0 {
+                    let event = Event::default().event("log").data(json!({ "file": file, "text": text }).to_string());
+                    if tx.send(Ok(event)).await.is_err() {
+                        return;
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     });
     Sse::new(ReceiverStream::new(rx)).keep_alive(KeepAlive::default()).into_response()
