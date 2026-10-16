@@ -80,11 +80,13 @@ impl Default for Settings {
 }
 
 /// Names for the values of the service parameters (ISO 15118-20:2022 Table 207) that a file may
-/// use instead of the numbers: `Connector` (the vehicle's `connector` setting) and `ControlMode`.
+/// use instead of the numbers, and that are written back as names: `Connector` (the names of
+/// the vehicle's `connector` setting), `ControlMode`, `MobilityNeedsMode` and `Pricing`.
 const NAMED_VALUES: &[(&str, &[(&str, i32)])] = &[
     ("Connector", &[("core", 1), ("extended", 2), ("dual2", 3), ("dual4", 4)]),
     ("ControlMode", &[("scheduled", 1), ("dynamic", 2)]),
     ("MobilityNeedsMode", &[("evcc", 1), ("evcc_and_secc", 2)]),
+    ("Pricing", &[("none", 0), ("absolute", 1), ("levels", 2)]),
 ];
 
 /// The name of a parameter value, if it has one.
@@ -95,7 +97,19 @@ pub fn value_name(parameter: &str, value: i32) -> Option<&'static str> {
 
 mod parameter_values {
     use super::*;
-    use serde::{Deserializer, de::Error};
+    use serde::{Deserializer, Serializer, de::Error, ser::SerializeMap};
+
+    /// The names where there are some, the numbers otherwise.
+    pub fn serialize<S: Serializer>(values: &BTreeMap<String, i32>, s: S) -> Result<S::Ok, S::Error> {
+        let mut map = s.serialize_map(Some(values.len()))?;
+        for (parameter, value) in values {
+            match value_name(parameter, *value) {
+                Some(name) => map.serialize_entry(parameter, name)?,
+                None => map.serialize_entry(parameter, value)?,
+            }
+        }
+        map.end()
+    }
 
     /// Numbers, or the names of [`NAMED_VALUES`].
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<String, i32>, D::Error> {
@@ -125,14 +139,14 @@ mod parameter_values {
 }
 
 /// A parameter set offered in `ServiceDetailRes`: the values of ISO 15118-20:2022 Table 207
-/// by parameter name (`Connector`, `ControlMode`, `MobilityNeedsMode`, `Pricing`). A file may
-/// give `Connector` and `ControlMode` by name (`Connector = "extended"`), the same names as the
-/// vehicle's `connector` setting.
+/// by parameter name (`Connector`, `ControlMode`, `MobilityNeedsMode`, `Pricing`). Values are
+/// written and read by name where there is one (`Connector = "extended"`, the names of the
+/// vehicle's `connector` setting); numbers are accepted too.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OfferedSet {
     pub id: u16,
-    #[serde(deserialize_with = "parameter_values::deserialize")]
+    #[serde(with = "parameter_values")]
     #[schemars(with = "BTreeMap<String, serde_json::Value>")]
     pub values: BTreeMap<String, i32>,
 }
@@ -373,10 +387,14 @@ mod tests {
     fn parameter_values_may_be_named() {
         let set: OfferedSet = toml::from_str("id = 3\nvalues = { Connector = \"extended\", ControlMode = \"dynamic\", Pricing = 0 }").unwrap();
         assert_eq!(set, OfferedSet::new(3, [("Connector", 2), ("ControlMode", 2), ("Pricing", 0)]));
-        assert_eq!(set.describe(), "set 3: Connector=extended(2), ControlMode=dynamic(2), Pricing=0");
+        assert_eq!(set.describe(), "set 3: Connector=extended(2), ControlMode=dynamic(2), Pricing=none(0)");
+        // Written back by name, with a number for a value that has none.
+        let json = serde_json::to_string(&OfferedSet::new(1, [("Connector", 1), ("Pricing", 2), ("Other", 9)])).unwrap();
+        assert_eq!(json, r#"{"id":1,"values":{"Connector":"core","Other":9,"Pricing":"levels"}}"#);
         let e = toml::from_str::<OfferedSet>("id = 1\nvalues = { Connector = \"big\" }").unwrap_err().to_string();
         assert!(e.contains("core, extended, dual2, dual4"), "{e}");
         assert!(toml::from_str::<OfferedSet>("id = 1\nvalues = { Pricing = \"free\" }").is_err());
+        assert!(toml::from_str::<OfferedSet>("id = 1\nvalues = { Other = \"x\" }").is_err());
     }
 
     #[test]
