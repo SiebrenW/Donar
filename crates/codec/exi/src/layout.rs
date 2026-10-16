@@ -64,7 +64,7 @@ pub const fn fill(slots: &mut [Slot]) {
 }
 
 /// `fill` for a constant array, so that a layout can be a `const`:
-/// `Layout(&table([Slot::new(1, 1, 1), ...]))`.
+/// `Layout(&table([Slot::new(1, 1, 1), ...]), 0)`.
 pub const fn table<const N: usize>(mut slots: [Slot; N]) -> [Slot; N] {
     fill(&mut slots);
     slots
@@ -94,7 +94,12 @@ pub enum Event {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Layout(pub &'static [Slot]);
+pub struct Layout(
+    pub &'static [Slot],
+    /// Productions after `EE` that are only counted, not used: the generic character events of
+    /// mixed content (xmldsig), present in every state where the element may end.
+    pub u32,
+);
 
 /// `ceil(log2(n))`, 0 for `n <= 1`.
 pub const fn ceil_log2(n: u64) -> u32 {
@@ -158,7 +163,8 @@ impl Layout {
 
     /// Number of productions in state `pos` (without the escape code).
     pub fn production_count(&self, pos: Pos) -> usize {
-        self.total(&self.span(pos)) as usize
+        let span = self.span(pos);
+        (self.total(&span) + self.tail(&span)) as usize
     }
 
     #[inline]
@@ -172,9 +178,16 @@ impl Layout {
         span.repeat + run + u32::from(span.end)
     }
 
+    /// Productions that follow `EE` (mixed content), only in states where the element may end.
+    #[inline]
+    fn tail(&self, span: &Span) -> u32 {
+        if span.end { self.1 } else { 0 }
+    }
+
     /// Bits of an event code in state `pos`.
     pub fn width(&self, pos: Pos) -> u32 {
-        ceil_log2(u64::from(self.total(&self.span(pos))) + 1)
+        let span = self.span(pos);
+        ceil_log2(u64::from(self.total(&span) + self.tail(&span)) + 1)
     }
 
     /// The state after `slot` produced one more element in state `pos`.
@@ -202,7 +215,7 @@ impl Layout {
         } else {
             return Err(not_allowed);
         };
-        w.bits(code, ceil_log2(u64::from(self.total(&span)) + 1))?;
+        w.bits(code, ceil_log2(u64::from(self.total(&span) + self.tail(&span)) + 1))?;
         Ok(Self::after(pos, slot))
     }
 
@@ -214,14 +227,14 @@ impl Layout {
             return Err(EncodeError::InvalidValue("a required element is missing"));
         }
         let total = self.total(&span);
-        w.bits(total - 1, ceil_log2(u64::from(total) + 1))
+        w.bits(total - 1, ceil_log2(u64::from(total + self.tail(&span)) + 1))
     }
 
     #[inline]
     pub fn read(&self, r: &mut BitReader<'_>, pos: Pos) -> Result<Event, DecodeError> {
         let span = self.span(pos);
         let total = self.total(&span);
-        let mut code = r.bits(ceil_log2(u64::from(total) + 1))?;
+        let mut code = r.bits(ceil_log2(u64::from(total + self.tail(&span)) + 1))?;
         if code < span.repeat {
             let slot = usize::from(pos.slot);
             return Ok(Event::Start { slot, alt: code as usize, next: Self::after(pos, slot) });
@@ -261,7 +274,7 @@ mod tests {
     }
 
     /// The message header: SessionID, TimeStamp, optional Signature.
-    const HEADER: Layout = Layout(&table([slot(1, 1), slot(1, 1), slot(0, 1)]));
+    const HEADER: Layout = Layout(&table([slot(1, 1), slot(1, 1), slot(0, 1)]), 0);
 
     fn productions(l: &Layout, pos: Pos) -> Vec<Prod> {
         let mut v = Vec::new();
@@ -289,7 +302,7 @@ mod tests {
     /// list may continue or be left; after the last allowed one only the next element remains.
     #[test]
     fn unrolled_list_states() {
-        const L: Layout = Layout(&table([slot(1, 3), slot(1, 1)]));
+        const L: Layout = Layout(&table([slot(1, 3), slot(1, 1)]), 0);
         let l = L;
         let one = Layout::after(Pos::START, 0);
         assert_eq!(productions(&l, one), [Prod::Start { slot: 0, alt: 0 }, Prod::Start { slot: 1, alt: 0 }]);
@@ -300,7 +313,7 @@ mod tests {
 
     #[test]
     fn a_choice_counts_every_alternative() {
-        const L: Layout = Layout(&table([Slot::new(1, 1, 5)]));
+        const L: Layout = Layout(&table([Slot::new(1, 1, 5)]), 0);
         let l = L;
         assert_eq!(l.production_count(Pos::START), 5);
         assert_eq!(l.width(Pos::START), 3);
@@ -308,7 +321,7 @@ mod tests {
 
     #[test]
     fn write_then_read_round_trips() {
-        const L: Layout = Layout(&table([slot(1, 1), slot(0, 2), slot(0, 1)]));
+        const L: Layout = Layout(&table([slot(1, 1), slot(0, 2), slot(0, 1)]), 0);
         let l = L;
         let mut buf = [0u8; 8];
         let mut w = BitWriter::new(&mut buf);
@@ -329,7 +342,7 @@ mod tests {
 
     #[test]
     fn an_element_the_schema_does_not_allow_is_refused() {
-        const L: Layout = Layout(&table([slot(1, 1), slot(1, 1)]));
+        const L: Layout = Layout(&table([slot(1, 1), slot(1, 1)]), 0);
         let l = L;
         let mut buf = [0u8; 4];
         let mut w = BitWriter::new(&mut buf);
@@ -346,10 +359,10 @@ mod tests {
     /// state of a few layouts that mix mandatory, optional, repeated and choice slots.
     #[test]
     fn arithmetic_codes_agree_with_enumeration() {
-        const A: Layout = Layout(&table([slot(1, 1), slot(0, 1), slot(0, 3), slot(1, 1)]));
-        const B: Layout = Layout(&table([Slot::new(0, 1, 4), Slot::new(0, 2, 3), slot(0, 1)]));
-        const C: Layout = Layout(&table([slot(2, 4), Slot::new(1, 1, 5), slot(0, 5)]));
-        const D: Layout = Layout(&table([slot(0, 1)]));
+        const A: Layout = Layout(&table([slot(1, 1), slot(0, 1), slot(0, 3), slot(1, 1)]), 0);
+        const B: Layout = Layout(&table([Slot::new(0, 1, 4), Slot::new(0, 2, 3), slot(0, 1)]), 0);
+        const C: Layout = Layout(&table([slot(2, 4), Slot::new(1, 1, 5), slot(0, 5)]), 0);
+        const D: Layout = Layout(&table([slot(0, 1)]), 0);
         for layout in [A, B, C, D] {
             let mut states = Vec::from([Pos::START]);
             for (i, s) in layout.0.iter().enumerate() {

@@ -16,8 +16,8 @@ fn vector(name: &str) -> Vec<u8> {
 const TS: u64 = 1_700_000_000;
 const SESSION: [u8; 8] = [0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18];
 
-fn hdr() -> MessageHeader {
-    MessageHeader { session_id: SESSION, time_stamp: TS }
+fn hdr() -> MessageHeader<'static> {
+    MessageHeader::new(SESSION, TS)
 }
 
 fn rn(exponent: i8, value: i16) -> RationalNumber {
@@ -50,7 +50,7 @@ fn check_dc(name: &str, msg: dc::Message<'_>, enc: impl FnOnce(&mut [u8]) -> Res
 #[test]
 fn session_setup_req() {
     let m = SessionSetupReq {
-        header: MessageHeader { session_id: [0; 8], time_stamp: TS },
+        header: MessageHeader::new([0; 8], TS),
         evccid: "WMIV1234567890ABCDEX",
     };
     check("session_setup_req", Message::SessionSetupReq(m), |o| m.encode(o));
@@ -65,7 +65,7 @@ fn session_setup_res() {
         ("wrongcp", ResponseCode::FailedWrongChargeParameter, "X"),
     ] {
         let m = SessionSetupRes {
-            header: MessageHeader { session_id: [1, 2, 3, 4, 5, 6, 7, 8], time_stamp: TS },
+            header: MessageHeader::new([1, 2, 3, 4, 5, 6, 7, 8], TS),
             response_code: code,
             evseid: evse,
         };
@@ -79,7 +79,7 @@ fn session_setup_res() {
 #[test]
 fn empty_string_elements() {
     let m = SessionSetupRes {
-        header: MessageHeader { session_id: [1, 2, 3, 4, 5, 6, 7, 8], time_stamp: TS },
+        header: MessageHeader::new([1, 2, 3, 4, 5, 6, 7, 8], TS),
         response_code: ResponseCode::FailedWrongChargeParameter,
         evseid: "",
     };
@@ -380,7 +380,7 @@ fn dc_charge_parameter_discovery() {
     }
 }
 
-fn charge_loop_req() -> dc::DcChargeLoopReq {
+fn charge_loop_req() -> dc::DcChargeLoopReq<'static> {
     dc::DcChargeLoopReq {
         header: hdr(),
         display_parameters: None,
@@ -643,4 +643,71 @@ fn root_certificate_ids_with_serial_numbers_of_any_size() {
     let mut der = [0xffu8; 21];
     der[0] = 0;
     assert_eq!(exi::Integer::unsigned(&der), serials[3]);
+}
+
+// ---------------------------------------------------------------- header signature
+
+const CANONICAL: &str = "http://www.w3.org/TR/canonical-exi/";
+const ECDSA512: &str = "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha512";
+const SHA512: &str = "http://www.w3.org/2001/04/xmlenc#sha512";
+
+fn bytes(range: std::ops::Range<u8>) -> Vec<u8> {
+    range.collect()
+}
+
+/// The message header's `Signature` (V2G20-771 profile) against EXIficient: the algorithm
+/// strings come from the string table the second time, and the optional ids shift the event codes.
+#[test]
+fn header_signatures() {
+    use iso15118_20::signature::{Reference, Signature, SignatureValue, SignedInfo};
+    let (d1, d2, value) = (bytes(0..64), bytes(64..128), bytes(0..132));
+    let first = Reference { id: None, uri: Some("#id1"), transform_algorithm: Some(CANONICAL), digest_algorithm: SHA512, digest_value: &d1 };
+    let second = Reference { id: Some("r2"), uri: Some("#id2"), transform_algorithm: None, digest_algorithm: SHA512, digest_value: &d2 };
+    let plain = Signature {
+        id: None,
+        signed_info: SignedInfo { id: None, canonicalization_algorithm: CANONICAL, signature_algorithm: ECDSA512, reference: &[first] },
+        signature_value: SignatureValue { id: None, value: &value },
+    };
+    let ids = Signature {
+        id: Some("sig"),
+        signed_info: SignedInfo { id: Some("si"), canonicalization_algorithm: CANONICAL, signature_algorithm: ECDSA512, reference: &[first, second] },
+        signature_value: SignatureValue { id: Some("sv"), value: &value },
+    };
+    for (name, signature) in [("header_signature", plain), ("header_signature_two_references", ids)] {
+        let mut header = hdr();
+        header.signature = Some(signature);
+        let m = SessionStopReq { header, charging_session: ChargingSession::Terminate, ev_termination_code: None, ev_termination_explanation: None };
+        let want = vector(name);
+        let mut out = [0u8; 2048];
+        let n = m.encode(&mut out).unwrap();
+        assert_eq!(&out[..n], &want[..], "{name}: encode differs from EXIficient");
+        let mut mem = [0u8; 8192];
+        let arena = Arena::new(&mut mem);
+        assert_eq!(common::decode(&want, &arena).unwrap(), Message::SessionStopReq(m), "{name}: decode");
+    }
+}
+
+/// A signature cut short never decodes, and damaged ones never panic.
+#[test]
+fn truncated_and_mutated_signatures_never_panic() {
+    let want = vector("header_signature");
+    // A stream cut inside the signature never decodes.
+    for cut in 10..want.len() {
+        let mut mem = [0u8; 8192];
+        let arena = Arena::new(&mut mem);
+        assert!(common::decode(&want[..cut], &arena).is_err(), "cut at {cut}");
+    }
+    // Flipping bits anywhere never panics.
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    for _ in 0..3000 {
+        let mut copy = want.clone();
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let i = (state as usize) % copy.len();
+        copy[i] ^= 1 << ((state >> 40) % 8);
+        let mut mem = [0u8; 8192];
+        let arena = Arena::new(&mut mem);
+        let _ = common::decode(&copy, &arena);
+    }
 }

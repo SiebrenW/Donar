@@ -87,6 +87,7 @@ impl<'a, 'w> Emitter<'a, 'w> {
         match &a.ty {
             AltTy::Scalar(sc) => Self::scalar_lt(sc),
             AltTy::Complex(q) => self.complex_lt(&q.clone()),
+            AltTy::External(_) => true,
             AltTy::Foreign => false,
         }
     }
@@ -111,6 +112,7 @@ impl<'a, 'w> Emitter<'a, 'w> {
                 let p = self.path(&q);
                 if self.complex_lt(&q) { format!("{p}<'a>") } else { p }
             }
+            AltTy::External(path) => format!("{path}<'a>"),
             AltTy::Foreign => "()".into(),
         }
     }
@@ -339,7 +341,7 @@ impl<'a, 'w> Emitter<'a, 'w> {
     /// Statements encoding the content after the start event (`v` is a by-value binding).
     fn enc_alt(&mut self, owner: &QName, alt: &Alt, v: &str, attr: bool) -> Result<String, String> {
         Ok(match &alt.ty {
-            AltTy::Complex(_) => format!("{v}.encode_content(e)?;"),
+            AltTy::Complex(_) | AltTy::External(_) => format!("{v}.encode_content(e)?;"),
             AltTy::Scalar(sc) => {
                 let fused = !attr && Self::fusible(sc);
                 let body = self.enc_scalar(sc, v, owner, &alt.name, fused)?;
@@ -367,6 +369,7 @@ impl<'a, 'w> Emitter<'a, 'w> {
     fn dec_alt(&mut self, alt: &Alt, attr: bool) -> Result<String, String> {
         Ok(match &alt.ty {
             AltTy::Complex(q) => format!("{}::decode_content(d)?", self.path(&q.clone())),
+            AltTy::External(path) => format!("{path}::decode_content(d)?"),
             AltTy::Scalar(sc) => {
                 let fused = !attr && Self::fusible(sc);
                 let body = self.dec_scalar(sc, &alt.name, fused)?;
@@ -398,7 +401,7 @@ impl<'a, 'w> Emitter<'a, 'w> {
             .iter()
             .map(|sl| format!("::exi::layout::Slot::new({}, {}, {})", sl.min, sl.max, sl.alts.len()))
             .collect();
-        let _ = writeln!(s, "const {layout_name}: ::exi::layout::Layout = ::exi::layout::Layout(&::exi::layout::table([{}]));", slots.join(", "));
+        let _ = writeln!(s, "const {layout_name}: ::exi::layout::Layout = ::exi::layout::Layout(&::exi::layout::table([{}]), 0);", slots.join(", "));
 
         // struct
         let _ = writeln!(s, "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct {name}{ltp} {{");
@@ -439,7 +442,7 @@ impl<'a, 'w> Emitter<'a, 'w> {
                 Shape::Value { name, optional, .. } => {
                     let alt = &slot.alts[0];
                     let body = self.enc_alt(q, alt, "v", attr)?;
-                    let complex = matches!(alt.ty, AltTy::Complex(_));
+                    let complex = matches!(alt.ty, AltTy::Complex(_) | AltTy::External(_));
                     let r = if complex { "&" } else { "" };
                     if *optional {
                         let _ = writeln!(s, "        if let Some(v) = {r}self.{name} {{ pos = e.start(&{layout_name}, pos, {si}, 0)?; {body} }}");
@@ -450,7 +453,7 @@ impl<'a, 'w> Emitter<'a, 'w> {
                 Shape::List { name, min, max, .. } => {
                     let alt = &slot.alts[0];
                     let body = self.enc_alt(q, alt, "v", false)?;
-                    let deref = if matches!(alt.ty, AltTy::Complex(_)) { "" } else { "let v = *v; " };
+                    let deref = if matches!(alt.ty, AltTy::Complex(_) | AltTy::External(_)) { "" } else { "let v = *v; " };
                     let lo = if *min > 0 { format!("self.{name}.len() < {min} || ") } else { String::new() };
                     let _ = writeln!(
                         s,
@@ -464,7 +467,7 @@ impl<'a, 'w> Emitter<'a, 'w> {
                     let mut arms = String::new();
                     for (i, a) in &usable {
                         let body = self.enc_alt(q, a, "v", false)?;
-                        let deref = if matches!(a.ty, AltTy::Complex(_)) { "" } else { "let v = *v; " };
+                        let deref = if matches!(a.ty, AltTy::Complex(_) | AltTy::External(_)) { "" } else { "let v = *v; " };
                         let _ = write!(arms, "{enum_name}::{}(v) => {{ {deref}pos = e.start(&{layout_name}, pos, {si}, {i})?; {body} }} ", variants[*i]);
                     }
                     if *optional {

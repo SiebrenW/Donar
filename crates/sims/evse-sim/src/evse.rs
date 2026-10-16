@@ -170,7 +170,7 @@ impl Evse {
                     ResponseCode::Ok | ResponseCode::OkNewSessionEstablished | ResponseCode::OkOldSessionJoined
                 );
                 let res = SessionSetupRes {
-                    header: MessageHeader { session_id: self.session_id, time_stamp: now() },
+                    header: MessageHeader::new(self.session_id, now()),
                     response_code: code,
                     evseid: &self.config.evse_id,
                 };
@@ -496,7 +496,7 @@ impl Evse {
 }
 
 impl Evse {
-    fn cpd_res(&self, code: ResponseCode) -> dc::DcChargeParameterDiscoveryRes {
+    fn cpd_res(&self, code: ResponseCode) -> dc::DcChargeParameterDiscoveryRes<'static> {
         let rn = |value| RationalNumber { exponent: 0, value };
         dc::DcChargeParameterDiscoveryRes {
             header: self.header(),
@@ -625,8 +625,8 @@ impl Evse {
         }
     }
 
-    fn header(&self) -> MessageHeader {
-        MessageHeader { session_id: self.session_id, time_stamp: now() }
+    fn header(&self) -> MessageHeader<'static> {
+        MessageHeader::new(self.session_id, now())
     }
 
     /// Answers a message that carries the wrong session id with `FAILED_UnknownSession`.

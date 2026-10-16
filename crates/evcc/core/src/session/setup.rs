@@ -199,10 +199,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
         let msg = SessionSetupReq {
             // V2G20-1243: zeroes for a new session, V2G20-1541: the old id to resume one.
-            header: MessageHeader {
-                session_id: self.config.resume.map_or([0; 8], |r| r.session_id),
-                time_stamp: self.timestamp(),
-            },
+            header: MessageHeader::new(self.config.resume.map_or([0; 8], |r| r.session_id), self.timestamp()),
             evccid: self.ev.evcc_id(),
         };
         let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));

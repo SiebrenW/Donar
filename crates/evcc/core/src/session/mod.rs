@@ -347,8 +347,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         self.last_timestamp = t;
         t
     }
-    fn header(&mut self) -> MessageHeader {
-        MessageHeader { session_id: self.session_id, time_stamp: self.timestamp() }
+    fn header(&mut self) -> MessageHeader<'static> {
+        MessageHeader::new(self.session_id, self.timestamp())
     }
     /// Records the transmit and arms the response timer for a message framed by [`frame`].
     fn sent(&mut self, msg: MsgKind, framed: Result<usize, ()>) -> Step {

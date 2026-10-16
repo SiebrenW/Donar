@@ -145,7 +145,7 @@ pub enum Notice {
     /// The EVSE accepted the service selection.
     ServiceSelected { service_id: u16, parameter_set_id: u16 },
     /// The EVSE's DC limits, from `DC_ChargeParameterDiscoveryRes`.
-    ChargeParametersDiscovered(dc::DcChargeParameterDiscoveryRes),
+    ChargeParametersDiscovered(dc::DcCpdResEnergyTransferModeChoice),
     /// The EVSE finished the schedule exchange.
     ScheduleExchanged,
     /// The cable check finished successfully.

@@ -43,7 +43,7 @@ impl Dump<'_, '_> {
         let complex = &self.model.complex[q];
         let slots = complex.slots.clone();
         let layout_slots: Vec<exi::layout::Slot> = self.model.layout_of(q);
-        let layout = Layout(Box::leak(layout_slots.into_boxed_slice()));
+        let layout = Layout(Box::leak(layout_slots.into_boxed_slice()), 0);
         let mut prods = Vec::new();
         layout.for_each(pos, |p| {
             prods.push(p);
@@ -66,7 +66,7 @@ impl Dump<'_, '_> {
                         sig.push_str(&format!("{code} AT:{}:{} ->S{next};", name(&a.name), sc.exi_name()));
                     } else {
                         let child = match &a.ty {
-                            AltTy::Foreign => "XMLDSIG".to_string(),
+                            AltTy::Foreign | AltTy::External(_) => "XMLDSIG".to_string(),
                             AltTy::Scalar(sc) => format!("S{}", self.scalar_start(sc)),
                             AltTy::Complex(c) => format!("S{}", self.state(&c.clone(), Pos::START)),
                         };

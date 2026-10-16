@@ -17,7 +17,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
         let mut step = self.send_schedule_exchange_req(tx);
         if step.end.is_none() {
-            step.notice = Some(Notice::ChargeParametersDiscovered(res));
+            step.notice = Some(Notice::ChargeParametersDiscovered(res.dc_cpd_res_energy_transfer_mode));
         }
         step
     }

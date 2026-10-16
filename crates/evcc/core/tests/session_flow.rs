@@ -139,8 +139,8 @@ fn framed(payload_type: PayloadType, encode: impl FnOnce(&mut [u8]) -> usize) ->
 
 const SID: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 
-fn hdr() -> MessageHeader {
-    MessageHeader { session_id: SID, time_stamp: 5 }
+fn hdr() -> MessageHeader<'static> {
+    MessageHeader::new(SID, 5)
 }
 
 fn sap_res(code: SapCode, schema_id: Option<u8>) -> std::vec::Vec<u8> {
@@ -152,7 +152,7 @@ fn sap_res(code: SapCode, schema_id: Option<u8>) -> std::vec::Vec<u8> {
 fn setup_res(code: ResponseCode, session_id: [u8; 8]) -> std::vec::Vec<u8> {
     framed(PayloadType::MAINSTREAM, |out| {
         let msg = SessionSetupRes {
-            header: MessageHeader { session_id, time_stamp: 5 },
+            header: MessageHeader::new(session_id, 5),
             response_code: code,
             evseid: "DE*EVSE*0001",
         };
@@ -897,7 +897,7 @@ fn full_flow_to_authorized() {
 
     let step = deliver(&mut s, &cpd_res(ResponseCode::Ok));
     let Some(Notice::ChargeParametersDiscovered(evse)) = step.notice else { panic!("{step:?}") };
-    let dc::DcCpdResEnergyTransferModeChoice::Base(mode) = evse.dc_cpd_res_energy_transfer_mode else { panic!() };
+    let dc::DcCpdResEnergyTransferModeChoice::Base(mode) = evse else { panic!() };
     assert_eq!(mode.evse_maximum_voltage, rn(0, 920));
     assert_eq!(step.timers, response_timer());
     assert_eq!(s.state(), State::AwaitScheduleExchangeRes);

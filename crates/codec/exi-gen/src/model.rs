@@ -44,12 +44,18 @@ impl Scalar {
     }
 }
 
+/// Where the hand-written message signature lives.
+pub const SIGNATURE_PATH: &str = "crate::signature::Signature";
+
 #[derive(Debug, Clone)]
 pub enum AltTy {
     Scalar(Scalar),
     Complex(QName),
     /// A type from a schema this generator does not model (xmldsig).
     Foreign,
+    /// A hand-written type with `encode_content` and `decode_content` like a generated one
+    /// (the message signature, `iso15118_20::signature::Signature`), by path.
+    External(&'static str),
 }
 
 #[derive(Debug, Clone)]
@@ -237,7 +243,11 @@ impl<'w> Model<'w> {
     fn element_alt(&self, name: &QName) -> Result<Alt, String> {
         let decl = self.world.element(name).ok_or_else(|| format!("unknown element {}:{}", name.ns, name.local))?;
         if name.ns == XMLDSIG {
-            return Ok(Alt { name: name.clone(), ty: AltTy::Foreign, is_abstract: false });
+            let ty = match name.local.as_str() {
+                "Signature" => AltTy::External(SIGNATURE_PATH),
+                _ => AltTy::Foreign,
+            };
+            return Ok(Alt { name: name.clone(), ty, is_abstract: false });
         }
         let ty = decl.ty.as_ref().ok_or_else(|| format!("element {} has no type", name.local))?;
         let abstract_type = self.world.complex(ty).is_some_and(|c| c.is_abstract);
@@ -350,6 +360,7 @@ impl<'w> Model<'w> {
         }
         match &alt.ty {
             AltTy::Foreign => false,
+            AltTy::External(_) => true,
             AltTy::Scalar(_) => true,
             AltTy::Complex(q) => self.is_supported(&q.clone()),
         }
@@ -363,6 +374,7 @@ impl<'w> Model<'w> {
         !alt.is_abstract
             && match &alt.ty {
                 AltTy::Foreign => false,
+                AltTy::External(_) => true,
                 AltTy::Scalar(_) => true,
                 AltTy::Complex(q) => self.complex_supported(q),
             }
