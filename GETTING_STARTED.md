@@ -50,6 +50,7 @@ Both skip what is already there; `setup --force` fetches and generates again. Th
 cargo test --workspace                    # everything that runs on this machine
 cargo test -p evcc-core                   # one crate
 cargo test -p evcc-linux --test tls       # one test file
+cargo bench -p iso15118-20                # codec throughput over the reference vectors
 cargo xtask linux-test                    # the whole workspace inside the Linux container
 cargo xtask linux-test -p evcc-linux --test netns   # only the namespace tests
 ```

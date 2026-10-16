@@ -240,13 +240,19 @@ impl<'a, 'w> Emitter<'a, 'w> {
 
     // ------------------------------------------------------------ values
 
-    fn enc_scalar(&mut self, sc: &Scalar, v: &str, owner: &QName, name: &QName) -> Result<String, String> {
+    /// `fused`: the value is an element's content, so the `CH` and `EE` codes around it are
+    /// written together with it by one call (fixed-width values only, see [`Self::fusible`]).
+    fn enc_scalar(&mut self, sc: &Scalar, v: &str, owner: &QName, name: &QName, fused: bool) -> Result<String, String> {
         Ok(match sc {
+            Scalar::Bool if fused => format!("e.elem_bits(u32::from({v}), 1)?;"),
             Scalar::Bool => format!("e.bool({v})?;"),
             Scalar::Int { min, max, enc, narrowed, .. } => match enc {
-                IntEnc::NBit { bits } => format!(
-                    "{{ let w = i128::from({v}); if w < {min} || w > {max} {{ return Err(::exi::EncodeError::InvalidValue(\"integer outside the schema's range\")); }} e.bits((w - ({min})) as u32, {bits})?; }}"
-                ),
+                IntEnc::NBit { bits } => {
+                    let write = if fused { "elem_bits" } else { "bits" };
+                    format!(
+                        "{{ let w = i128::from({v}); if w < {min} || w > {max} {{ return Err(::exi::EncodeError::InvalidValue(\"integer outside the schema's range\")); }} e.{write}((w - ({min})) as u32, {bits})?; }}"
+                    )
+                }
                 IntEnc::Uint => {
                     let check = if *narrowed {
                         format!("if w < {min} || w > {max} {{ return Err(::exi::EncodeError::InvalidValue(\"integer outside the schema's range\")); }} ")
@@ -265,7 +271,8 @@ impl<'a, 'w> Emitter<'a, 'w> {
                 }
             },
             Scalar::Enum { values, .. } => {
-                format!("e.bits({v} as u32, {})?;", exi::layout::ceil_log2(values.len() as u64))
+                let write = if fused { "elem_bits" } else { "bits" };
+                format!("e.{write}({v} as u32, {})?;", exi::layout::ceil_log2(values.len() as u64))
             }
             Scalar::Str { max } => {
                 let q = self.model.qid(name)?;
@@ -283,13 +290,17 @@ impl<'a, 'w> Emitter<'a, 'w> {
         })
     }
 
-    fn dec_scalar(&mut self, sc: &Scalar, name: &QName) -> Result<String, String> {
+    fn dec_scalar(&mut self, sc: &Scalar, name: &QName, fused: bool) -> Result<String, String> {
         Ok(match sc {
+            Scalar::Bool if fused => "(d.elem_bits(1)? == 1)".into(),
             Scalar::Bool => "d.bool()?".into(),
             Scalar::Int { rust, min, max, enc, narrowed } => match enc {
-                IntEnc::NBit { bits } => format!(
-                    "{{ let w = i128::from(d.bits({bits})?) + ({min}); if w > {max} {{ return Err(::exi::DecodeError::InvalidValue(\"integer outside the schema's range\")); }} {rust}::try_from(w).map_err(|_| ::exi::DecodeError::InvalidValue(\"integer outside the schema's range\"))? }}"
-                ),
+                IntEnc::NBit { bits } => {
+                    let read = if fused { "elem_bits" } else { "bits" };
+                    format!(
+                    "{{ let w = i128::from(d.{read}({bits})?) + ({min}); if w > {max} {{ return Err(::exi::DecodeError::InvalidValue(\"integer outside the schema's range\")); }} {rust}::try_from(w).map_err(|_| ::exi::DecodeError::InvalidValue(\"integer outside the schema's range\"))? }}"
+                    )
+                }
                 IntEnc::Uint => {
                     let check = if *narrowed {
                         format!("if i128::from(w) < {min} || i128::from(w) > {max} {{ return Err(::exi::DecodeError::InvalidValue(\"integer outside the schema's range\")); }} ")
@@ -308,7 +319,8 @@ impl<'a, 'w> Emitter<'a, 'w> {
                 }
             },
             Scalar::Enum { ty, values } => {
-                format!("{}::from_index(d.bits({})?)?", self.path(ty), exi::layout::ceil_log2(values.len() as u64))
+                let read = if fused { "elem_bits" } else { "bits" };
+                format!("{}::from_index(d.{read}({})?)?", self.path(ty), exi::layout::ceil_log2(values.len() as u64))
             }
             Scalar::Str { max } => {
                 let q = self.model.qid(name)?;
@@ -326,19 +338,31 @@ impl<'a, 'w> Emitter<'a, 'w> {
         Ok(match &alt.ty {
             AltTy::Complex(_) => format!("{v}.encode_content(e)?;"),
             AltTy::Scalar(sc) => {
-                let body = self.enc_scalar(sc, v, owner, &alt.name)?;
-                if attr { body } else { format!("e.ch()?; {body} e.ee()?;") }
+                let fused = !attr && Self::fusible(sc);
+                let body = self.enc_scalar(sc, v, owner, &alt.name, fused)?;
+                if attr || fused { body } else { format!("e.ch()?; {body} e.ee()?;") }
             }
             AltTy::Foreign => return Err("cannot encode a foreign element".into()),
         })
+    }
+
+    /// Fixed-width values: `CH`, the value and `EE` fit one 32-bit write.
+    fn fusible(sc: &Scalar) -> bool {
+        match sc {
+            Scalar::Bool => true,
+            Scalar::Enum { values, .. } => exi::layout::ceil_log2(values.len() as u64) <= 30,
+            Scalar::Int { enc: IntEnc::NBit { bits }, .. } => *bits <= 30,
+            _ => false,
+        }
     }
 
     fn dec_alt(&mut self, alt: &Alt, attr: bool) -> Result<String, String> {
         Ok(match &alt.ty {
             AltTy::Complex(q) => format!("{}::decode_content(d)?", self.path(&q.clone())),
             AltTy::Scalar(sc) => {
-                let body = self.dec_scalar(sc, &alt.name)?;
-                if attr { body } else { format!("{{ d.expect_ch()?; let v = {body}; d.expect_ee()?; v }}") }
+                let fused = !attr && Self::fusible(sc);
+                let body = self.dec_scalar(sc, &alt.name, fused)?;
+                if attr || fused { body } else { format!("{{ d.expect_ch()?; let v = {body}; d.expect_ee()?; v }}") }
             }
             AltTy::Foreign => return Err("cannot decode a foreign element".into()),
         })
@@ -359,9 +383,9 @@ impl<'a, 'w> Emitter<'a, 'w> {
         let slots: Vec<String> = c
             .slots
             .iter()
-            .map(|sl| format!("::exi::layout::Slot {{ min: {}, max: {}, alts: {} }}", sl.min, sl.max, sl.alts.len()))
+            .map(|sl| format!("::exi::layout::Slot::new({}, {}, {})", sl.min, sl.max, sl.alts.len()))
             .collect();
-        let _ = writeln!(s, "const {layout_name}: ::exi::layout::Layout = ::exi::layout::Layout(&[{}]);", slots.join(", "));
+        let _ = writeln!(s, "const {layout_name}: ::exi::layout::Layout = ::exi::layout::Layout(&::exi::layout::table([{}]));", slots.join(", "));
 
         // struct
         let _ = writeln!(s, "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct {name}{ltp} {{");
@@ -593,6 +617,7 @@ impl<'a, 'w> Emitter<'a, 'w> {
         let mut tail = String::new();
         let mut variants = String::new();
         let mut arms = String::new();
+        let mut encode_arms = String::new();
         for (el, ty, index) in &messages {
             let tname = names::type_name(&ty.local);
             let lt = self.complex_lt(ty);
@@ -600,17 +625,18 @@ impl<'a, 'w> Emitter<'a, 'w> {
             let impl_head = if lt { "impl<'a>" } else { "impl" };
             let _ = writeln!(
                 tail,
-                "{impl_head} {tname}{ltp} {{\n    /// Encodes the message as a complete EXI stream (root element `{}`).\n    pub fn encode(&self, out: &mut [u8]) -> Result<usize, ::exi::EncodeError> {{\n        let mut e = {E}::new(out)?;\n        e.root({index}, {root_bits})?;\n        self.encode_content(&mut e)?;\n        e.finish()\n    }}\n}}",
+                "{impl_head} {tname}{ltp} {{\n    /// Encodes the message as a complete EXI stream (root element `{}`).\n    pub fn encode(&self, out: &mut [u8]) -> Result<usize, ::exi::EncodeError> {{\n        let mut t = ::exi::strings::Table::new();\n        let mut e = {E}::new(out, &mut t)?;\n        e.root({index}, {root_bits})?;\n        self.encode_content(&mut e)?;\n        e.finish()\n    }}\n}}",
                 el.local
             );
             let vname = names::pascal(&el.local);
             let _ = writeln!(variants, "    {vname}({tname}{ltp}),");
             let _ = writeln!(arms, "        {index} => Message::{vname}({tname}::decode_content(&mut d)?),");
+            let _ = writeln!(encode_arms, "            Message::{vname}(m) => m.encode(out),");
         }
         if has_messages {
         let _ = writeln!(
             tail,
-            "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum Message<'a> {{\n{variants}}}\n\n/// Decodes a complete EXI stream holding one message of this schema.\npub fn decode<'a>(buf: &[u8], arena: &'a ::exi::Arena<'_>) -> Result<Message<'a>, ::exi::DecodeError> {{\n    let mut d = {D}::new(buf, arena)?;\n    Ok(match d.bits({root_bits})? {{\n{arms}        _ => return Err(::exi::DecodeError::Unsupported(\"message not part of this schema or not implemented\")),\n    }})\n}}"
+            "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum Message<'a> {{\n{variants}}}\n\n/// Decodes a complete EXI stream holding one message of this schema.\npub fn decode<'a>(buf: &[u8], arena: &'a ::exi::Arena<'_>) -> Result<Message<'a>, ::exi::DecodeError> {{\n    let mut t = ::exi::strings::Table::new();\n    let mut d = {D}::new(buf, arena, &mut t)?;\n    Ok(match d.bits({root_bits})? {{\n{arms}        _ => return Err(::exi::DecodeError::Unsupported(\"message not part of this schema or not implemented\")),\n    }})\n}}\n\nimpl Message<'_> {{\n    /// Encodes the message as a complete EXI stream.\n    pub fn encode(&self, out: &mut [u8]) -> Result<usize, ::exi::EncodeError> {{\n        match self {{\n{encode_arms}        }}\n    }}\n}}"
         );
         }
 

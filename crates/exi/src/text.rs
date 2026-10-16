@@ -19,6 +19,24 @@ pub fn decode_string<'s>(
         }
         return Ok("");
     };
+    // Nearly every string is ASCII: read it in one pass into exactly `len` bytes. A code
+    // point above 0x7F aborts that attempt (the arena rolls back) and the string is read again
+    // in two passes, one to size it and one to store it.
+    struct NotAscii;
+    impl From<crate::ArenaFull> for NotAscii {
+        fn from(_: crate::ArenaFull) -> Self {
+            NotAscii
+        }
+    }
+    let start = r.clone();
+    let quick = arena.alloc_slice_with(len, |_| match r.uint() {
+        Ok(c) if c < 0x80 => Ok(c as u8),
+        _ => Err(NotAscii),
+    });
+    if let Ok(out) = quick {
+        return core::str::from_utf8(out).map_err(|_| DecodeError::InvalidValue("invalid UTF-8"));
+    }
+    *r = start;
     let mut sizing = r.clone();
     let mut bytes = 0;
     for _ in 0..len {

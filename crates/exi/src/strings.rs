@@ -6,16 +6,30 @@
 //! one (`uint 1`, same index rule), else as a literal (`uint len + 2`, then the code points).
 //! Hits leave the table unchanged. All of this was checked against EXIficient.
 
+use core::mem::MaybeUninit;
+use core::slice;
+
 use crate::layout::ceil_log2;
 
 /// Distinct strings per message. A message with more is refused, not truncated.
 pub const CAPACITY: usize = 64;
 
-#[derive(Clone)]
 pub struct Table<'s> {
-    /// `(qname id, value)` in order of first appearance.
-    entries: [(u8, &'s str); CAPACITY],
+    /// `(qname id, value)` in order of first appearance; the first `len` are initialized.
+    /// Left uninitialized otherwise: a table is made for every message and most messages
+    /// have a handful of strings, so filling 64 entries up front was a quarter of the time.
+    entries: [MaybeUninit<(u8, &'s str)>; CAPACITY],
     len: usize,
+}
+
+impl Clone for Table<'_> {
+    /// Copies the used entries only.
+    fn clone(&self) -> Self {
+        let mut copy = Self::new();
+        copy.entries[..self.len].copy_from_slice(&self.entries[..self.len]);
+        copy.len = self.len;
+        copy
+    }
 }
 
 pub enum Found {
@@ -26,14 +40,23 @@ pub enum Found {
 
 impl<'s> Table<'s> {
     pub fn new() -> Self {
-        Self { entries: [(0, ""); CAPACITY], len: 0 }
+        // SAFETY: an array of `MaybeUninit` needs no initialization (the documented way to make
+        // one; the repeat expression `[MaybeUninit::uninit(); N]` compiles to a memset).
+        let entries = unsafe { MaybeUninit::<[MaybeUninit<(u8, &'s str)>; CAPACITY]>::uninit().assume_init() };
+        Self { entries, len: 0 }
+    }
+
+    fn used(&self) -> &[(u8, &'s str)] {
+        // SAFETY: `push` initializes entry `len - 1` before raising `len`, and `clone` copies
+        // the initialized prefix, so the first `len` entries are initialized.
+        unsafe { slice::from_raw_parts(self.entries.as_ptr().cast(), self.len) }
     }
 
     /// Looks `value` up for qname `q`: `(index, bits)` of a hit.
     pub fn find(&self, q: u8, value: &str) -> Found {
         let mut local_size = 0u64;
         let mut local = None;
-        for (eq, ev) in &self.entries[..self.len] {
+        for (eq, ev) in self.used() {
             if *eq == q {
                 if local.is_none() && *ev == value {
                     local = Some(local_size);
@@ -45,7 +68,7 @@ impl<'s> Table<'s> {
         if let Some(index) = local {
             return Found::Local(index as u32, ceil_log2(local_size));
         }
-        match self.entries[..self.len].iter().position(|(_, ev)| *ev == value) {
+        match self.used().iter().position(|(_, ev)| *ev == value) {
             Some(i) => Found::Global(i as u32, ceil_log2(self.len as u64)),
             None => Found::Miss,
         }
@@ -55,14 +78,14 @@ impl<'s> Table<'s> {
         if self.len == CAPACITY {
             return false;
         }
-        self.entries[self.len] = (q, value);
+        self.entries[self.len] = MaybeUninit::new((q, value));
         self.len += 1;
         true
     }
 
     /// Bits for a local index when the partition of `q` currently has this many entries.
     pub fn local_bits(&self, q: u8) -> u32 {
-        ceil_log2(self.entries[..self.len].iter().filter(|(eq, _)| *eq == q).count() as u64)
+        ceil_log2(self.used().iter().filter(|(eq, _)| *eq == q).count() as u64)
     }
 
     pub fn global_bits(&self) -> u32 {
@@ -71,11 +94,11 @@ impl<'s> Table<'s> {
 
     /// The value at local index `i` of qname `q`.
     pub fn local(&self, q: u8, i: usize) -> Option<&'s str> {
-        self.entries[..self.len].iter().filter(|(eq, _)| *eq == q).nth(i).map(|(_, v)| *v)
+        self.used().iter().filter(|(eq, _)| *eq == q).nth(i).map(|(_, v)| *v)
     }
 
     pub fn global(&self, i: usize) -> Option<&'s str> {
-        self.entries[..self.len].get(i).map(|(_, v)| *v)
+        self.used().get(i).map(|(_, v)| *v)
     }
 }
 

@@ -379,11 +379,13 @@ impl<'w> Model<'w> {
     }
 
     pub fn layout_of(&self, q: &QName) -> Vec<exi::layout::Slot> {
-        self.complex[q]
+        let mut slots: Vec<exi::layout::Slot> = self.complex[q]
             .slots
             .iter()
-            .map(|s| exi::layout::Slot { min: s.min, max: s.max, alts: s.alts.len() as u16 })
-            .collect()
+            .map(|s| exi::layout::Slot::new(s.min, s.max, s.alts.len() as u16))
+            .collect();
+        exi::layout::fill(&mut slots);
+        slots
     }
 
     pub fn module_of(&self, ns: &str) -> Option<&str> {

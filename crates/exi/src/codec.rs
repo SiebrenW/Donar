@@ -10,68 +10,85 @@ pub const HEADER: u8 = 0x80;
 
 pub struct Enc<'b, 'm> {
     w: BitWriter<'b>,
-    strings: Table<'m>,
+    /// The caller owns the table: it is large, and handing it over by value copied it around.
+    strings: &'b mut Table<'m>,
 }
 
 impl<'b, 'm> Enc<'b, 'm> {
-    /// Starts a stream: the header byte is written, then `out[1..]` takes the bits.
-    pub fn new(out: &'b mut [u8]) -> Result<Self, EncodeError> {
+    /// Starts a stream: the header byte is written, then `out[1..]` takes the bits. `strings`
+    /// is an empty string table (`Table::new()`).
+    pub fn new(out: &'b mut [u8], strings: &'b mut Table<'m>) -> Result<Self, EncodeError> {
         let (first, rest) = out.split_first_mut().ok_or(EncodeError::BufferTooSmall)?;
         *first = HEADER;
-        Ok(Self { w: BitWriter::new(rest), strings: Table::new() })
+        Ok(Self { w: BitWriter::new(rest), strings })
     }
 
     /// Pads to a byte and returns the stream length including the header byte.
+    #[inline]
     pub fn finish(self) -> Result<usize, EncodeError> {
         Ok(1 + self.w.finish()?)
     }
 
+    #[inline]
     pub fn bits(&mut self, v: u32, n: u32) -> Result<(), EncodeError> {
         self.w.bits(v, n)
     }
 
     /// A start event of the document grammar (`n` bits wide).
+    #[inline]
     pub fn root(&mut self, code: u32, bits: u32) -> Result<(), EncodeError> {
         self.w.bits(code, bits)
     }
 
+    #[inline]
     pub fn start(&mut self, lay: &Layout, pos: Pos, slot: usize, alt: usize) -> Result<Pos, EncodeError> {
         lay.write_start(&mut self.w, pos, slot, alt)
     }
 
+    #[inline]
     pub fn end(&mut self, lay: &Layout, pos: Pos) -> Result<(), EncodeError> {
         lay.write_end(&mut self.w, pos)
     }
 
     /// The `CH` event that precedes a typed value (the only production, so code 0).
+    #[inline]
     pub fn ch(&mut self) -> Result<(), EncodeError> {
         self.w.bits(0, 1)
     }
 
     /// The `EE` event that follows a typed value.
+    #[inline]
     pub fn ee(&mut self) -> Result<(), EncodeError> {
         self.w.bits(0, 1)
     }
 
+    #[inline]
     pub fn bool(&mut self, v: bool) -> Result<(), EncodeError> {
         self.w.bit(v)
     }
 
+    /// An element whose content is `n` bits (at most 30): the `CH` code (0), the value and
+    /// the `EE` code (0) in one write.
+    #[inline]
+    pub fn elem_bits(&mut self, v: u32, n: u32) -> Result<(), EncodeError> {
+        self.w.bits(v << 1, n + 2)
+    }
+
+    #[inline]
     pub fn uint(&mut self, v: u64) -> Result<(), EncodeError> {
         self.w.uint64(v)
     }
 
+    #[inline]
     pub fn int(&mut self, v: i64) -> Result<(), EncodeError> {
         self.w.bit(v < 0)?;
         self.w.uint64(if v < 0 { !v as u64 } else { v as u64 })
     }
 
+    #[inline]
     pub fn binary(&mut self, v: &[u8]) -> Result<(), EncodeError> {
         self.w.uint64(v.len() as u64)?;
-        for b in v {
-            self.w.bits(u32::from(*b), 8)?;
-        }
-        Ok(())
+        self.w.bytes(v)
     }
 
     /// A string value under qname id `q`; `max_chars` is the schema's `maxLength`.
@@ -98,6 +115,10 @@ impl<'b, 'm> Enc<'b, 'm> {
                     return Err(EncodeError::InvalidValue("too many distinct strings in one message"));
                 }
                 self.w.uint64(chars as u64 + 2)?;
+                if v.is_ascii() {
+                    // One octet per character, as the code point is below 0x80.
+                    return self.w.bytes(v.as_bytes());
+                }
                 for c in v.chars() {
                     self.w.uint64(u64::from(c as u32))?;
                 }
@@ -111,35 +132,41 @@ pub struct Dec<'r, 's> {
     r: BitReader<'r>,
     /// `None` while counting the entries of a list: values are validated but not stored.
     arena: Option<&'s Arena<'s>>,
-    strings: Table<'s>,
+    strings: &'r mut Table<'s>,
 }
 
 impl<'r, 's> Dec<'r, 's> {
-    /// Checks the header byte and starts reading the bits after it.
-    pub fn new(buf: &'r [u8], arena: &'s Arena<'s>) -> Result<Self, DecodeError> {
+    /// Checks the header byte and starts reading the bits after it. `strings` is an empty
+    /// string table (`Table::new()`).
+    pub fn new(buf: &'r [u8], arena: &'s Arena<'s>, strings: &'r mut Table<'s>) -> Result<Self, DecodeError> {
         let (&header, body) = buf.split_first().ok_or(DecodeError::UnexpectedEof)?;
         if header != HEADER {
             return Err(DecodeError::Unsupported("EXI header with options or cookie"));
         }
-        Ok(Self { r: BitReader::new(body), arena: Some(arena), strings: Table::new() })
+        Ok(Self { r: BitReader::new(body), arena: Some(arena), strings })
     }
 
+    #[inline]
     pub fn bits(&mut self, n: u32) -> Result<u32, DecodeError> {
         self.r.bits(n)
     }
 
+    #[inline]
     pub fn event(&mut self, lay: &Layout, pos: Pos) -> Result<Event, DecodeError> {
         lay.read(&mut self.r, pos)
     }
 
+    #[inline]
     pub fn expect_ch(&mut self) -> Result<(), DecodeError> {
         self.expect_zero(1)
     }
 
+    #[inline]
     pub fn expect_ee(&mut self) -> Result<(), DecodeError> {
         self.expect_zero(1)
     }
 
+    #[inline]
     fn expect_zero(&mut self, n: u32) -> Result<(), DecodeError> {
         match self.r.bits(n)? {
             0 => Ok(()),
@@ -147,14 +174,27 @@ impl<'r, 's> Dec<'r, 's> {
         }
     }
 
+    #[inline]
     pub fn bool(&mut self) -> Result<bool, DecodeError> {
         self.r.bit()
     }
 
+    /// Reads what [`Enc::elem_bits`] writes: `CH` (0), `n` bits of value, `EE` (0).
+    #[inline]
+    pub fn elem_bits(&mut self, n: u32) -> Result<u32, DecodeError> {
+        let w = self.r.bits(n + 2)?;
+        if w & 1 != 0 || w >> (n + 1) != 0 {
+            return Err(DecodeError::Unsupported("unexpected event code"));
+        }
+        Ok((w >> 1) & ((1 << n) - 1))
+    }
+
+    #[inline]
     pub fn uint(&mut self) -> Result<u64, DecodeError> {
         self.r.uint64()
     }
 
+    #[inline]
     pub fn int(&mut self) -> Result<i64, DecodeError> {
         let negative = self.r.bit()?;
         let magnitude = self.r.uint64()?;
@@ -165,6 +205,7 @@ impl<'r, 's> Dec<'r, 's> {
     }
 
     /// A binary value of at most `max` bytes (or exactly `fixed`).
+    #[inline]
     pub fn binary(&mut self, max: usize) -> Result<&'s [u8], DecodeError> {
         let len = self.r.uint64()?;
         if len > max as u64 {
@@ -172,27 +213,22 @@ impl<'r, 's> Dec<'r, 's> {
         }
         let len = len as usize;
         let Some(arena) = self.arena else {
-            for _ in 0..len {
-                self.r.bits(8)?;
-            }
+            self.r.skip_bytes(len)?;
             return Ok(&[]);
         };
         let out = arena.alloc_bytes(len)?;
-        for b in out.iter_mut() {
-            *b = self.r.bits(8)? as u8;
-        }
+        self.r.bytes(out)?;
         Ok(out)
     }
 
     /// Exactly `N` bytes (a `length` facet): no arena needed.
+    #[inline]
     pub fn binary_fixed<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
         if self.r.uint64()? != N as u64 {
             return Err(DecodeError::InvalidValue("binary value has the wrong length"));
         }
         let mut out = [0u8; N];
-        for b in &mut out {
-            *b = self.r.bits(8)? as u8;
-        }
+        self.r.bytes(&mut out)?;
         Ok(out)
     }
 
@@ -232,14 +268,15 @@ impl<'r, 's> Dec<'r, 's> {
         lay: &Layout,
         slot: usize,
         next: Pos,
-        mut one: impl FnMut(&mut Dec<'r, 's>) -> Result<T, DecodeError>,
+        mut one: impl for<'x> FnMut(&mut Dec<'x, 's>) -> Result<T, DecodeError>,
     ) -> Result<(&'s [T], Pos), DecodeError> {
         let Some(arena) = self.arena else {
             // Already counting: just consume the list.
             let (_, end) = self.run_list(lay, slot, next, &mut one)?;
             return Ok((&[], end));
         };
-        let mut dry = Dec { r: self.r.clone(), arena: None, strings: self.strings.clone() };
+        let mut table = self.strings.clone();
+        let mut dry = Dec { r: self.r.clone(), arena: None, strings: &mut table };
         let (n, end) = dry.run_list(lay, slot, next, &mut one)?;
         let mut pos = next;
         let items = arena.alloc_slice_with(n, |i| {
@@ -260,7 +297,7 @@ impl<'r, 's> Dec<'r, 's> {
         lay: &Layout,
         slot: usize,
         mut pos: Pos,
-        one: &mut impl FnMut(&mut Dec<'r, 's>) -> Result<T, DecodeError>,
+        one: &mut impl for<'x> FnMut(&mut Dec<'x, 's>) -> Result<T, DecodeError>,
     ) -> Result<(usize, Pos), DecodeError> {
         let mut n = 0;
         loop {
@@ -275,5 +312,30 @@ impl<'r, 's> Dec<'r, 's> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strings_with_non_ascii_characters_round_trip() {
+        let mut out = [0u8; 64];
+        let mut table = Table::new();
+        let mut e = Enc::new(&mut out, &mut table).unwrap();
+        e.string(1, "Grüße 😀", 20).unwrap();
+        e.string(1, "abc", 20).unwrap();
+        e.string(2, "Grüße 😀", 20).unwrap(); // a table hit, from the other partition
+        let n = e.finish().unwrap();
+        let mut mem = [0u8; 256];
+        let arena = Arena::new(&mut mem);
+        let mut table = Table::new();
+        let mut d = Dec::new(&out[..n], &arena, &mut table).unwrap();
+        assert_eq!(d.string(1, 20).unwrap(), "Grüße 😀");
+        assert_eq!(d.string(1, 20).unwrap(), "abc");
+        assert_eq!(d.string(2, 20).unwrap(), "Grüße 😀");
+        // The failed quick path leaves no garbage in the arena: 8 + 3 bytes of text, no more.
+        assert_eq!(arena.used(), "Grüße 😀".len() + 3);
     }
 }

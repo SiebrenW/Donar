@@ -10,3 +10,7 @@ alloc = []
 
 [dependencies]
 exi = { path = "../exi" }
+
+[[bench]]
+name = "codec"
+harness = false
