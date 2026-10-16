@@ -119,9 +119,10 @@ fn run(args: &Args) -> io::Result<bool> {
             if let Some(password) = &args.key_password {
                 credentials = credentials.key_password(password.as_bytes());
             }
-            if args.backwards_compatible {
+            if args.backwards_compatible || settings.backwards_compatible {
                 credentials = credentials.backwards_compatible();
             }
+            credentials = credentials.versions(settings.tls_versions.into());
             Some(evcc_linux::tls::server_context(&credentials).map_err(io::Error::other)?)
         }
         None => None,

@@ -1,0 +1,24 @@
+name = "dc-tls12"
+description = "An ISO 15118-2 charger: TLS 1.2 only, secp256r1 certificates. The vehicle offers TLS 1.3 first and falls back to TLS 1.2 with ECDHE-ECDSA-AES128-SHA256."
+timeout_s = 40
+pki = "p256"
+
+[secc]
+kind = "evse-sim"
+tls = true
+[secc.settings]
+tls_versions = "1.2"
+
+[evcc]
+kind = "evcc-sim"
+tls = true
+[evcc.settings]
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+[evcc.settings.tls]
+versions = "1.3+1.2"
+
+[expect]
+secc_exit = 0
+evcc_log = ["tls: TLSv1.2 ECDHE-ECDSA-AES128-SHA256", "session: Ended(Completed)"]
+secc_log = ["tls: TLSv1.2", "session: Stopped"]

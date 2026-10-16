@@ -21,7 +21,8 @@
 //! [evcc]
 //! kind = "evcc-sim"
 //! tls = true
-//! [evcc.settings]           # evcc_sim::Settings
+//! [evcc.settings]           # evcc_sim::Settings; [evcc.settings.tls] takes only options
+//!                           # (versions, backwards_compatible), the runner makes the files
 //! slac = true
 //!
 //! [expect]
@@ -138,8 +139,11 @@ impl Scenario {
         if self.secc.kind == Kind::EvccSim {
             return bad("the charger (secc) cannot be an evcc-sim".into());
         }
-        if self.evcc.settings.contains_key("tls") || self.secc.settings.contains_key("tls") {
-            return bad("TLS is switched on with `tls = true` on the participant, the runner supplies the files".into());
+        // The vehicle's `tls` table may set options (`versions`, `backwards_compatible`) but not
+        // name files: the runner supplies those.
+        let names_files = |t: &toml::Table| t.get("tls").and_then(toml::Value::as_table).is_some_and(|t| ["chain", "key", "trust", "key_password"].iter().any(|k| t.contains_key(*k)));
+        if self.evcc.settings.get("tls").is_some_and(|t| !t.is_table()) || names_files(&self.evcc.settings) || self.secc.settings.contains_key("tls") {
+            return bad("TLS is switched on with `tls = true` on the participant and the runner supplies the files; the vehicle's `[evcc.settings.tls]` takes only options".into());
         }
         // The settings must be what the participant reads, so that mistakes show when the
         // file is loaded and not in the middle of a run.

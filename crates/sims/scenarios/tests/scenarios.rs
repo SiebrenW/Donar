@@ -63,6 +63,7 @@ mod run {
         slac_too_far => "slac-too-far",
         dc_tls_slac => "dc-tls-slac",
         dc_tls_ed448 => "dc-tls-ed448",
+        dc_tls12 => "dc-tls12",
         dc_delay => "dc-delay",
         charger_ends_charge => "charger-ends-charge",
         standby => "standby",

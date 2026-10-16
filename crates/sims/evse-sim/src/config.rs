@@ -56,6 +56,31 @@ mod codes {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum TlsVersions {
+    /// TLS 1.3 only (ISO 15118-20).
+    #[default]
+    #[serde(rename = "1.3")]
+    Tls13,
+    /// TLS 1.3, and TLS 1.2 with `ECDHE-ECDSA-AES128-SHA256` for an ISO 15118-2 peer; implies
+    /// `backwards_compatible`.
+    #[serde(rename = "1.3+1.2")]
+    Tls13And12,
+    /// TLS 1.2 only: plays an ISO 15118-2 peer; implies `backwards_compatible`.
+    #[serde(rename = "1.2")]
+    Tls12,
+}
+
+impl From<TlsVersions> for evcc_linux::tls::Versions {
+    fn from(v: TlsVersions) -> Self {
+        match v {
+            TlsVersions::Tls13 => Self::Tls13,
+            TlsVersions::Tls13And12 => Self::Tls13And12,
+            TlsVersions::Tls12 => Self::Tls12,
+        }
+    }
+}
+
 /// Everything a simulated charger process reads from its settings file (`evse-sim --config`):
 /// the session knobs and the SLAC responder's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -63,6 +88,10 @@ mod codes {
 pub struct Settings {
     /// Answer SLAC on the interface (the responder follows `slac`).
     pub slac_responder: bool,
+    /// The TLS versions to speak (when the charger has certificates).
+    pub tls_versions: TlsVersions,
+    /// Also accept secp256r1 certificates (the ISO 15118-2 profile).
+    pub backwards_compatible: bool,
     /// The simulated control pilot the vehicle toggles: one octet per toggle is appended to
     /// this file (a path relative to the artifacts directory in a scenario). The charger counts
     /// them when the vehicle asks for the validation by BCB-Toggle.
@@ -75,7 +104,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { slac_responder: false, control_pilot_file: None, sessions: 1, session: Config::default(), slac: Default::default() }
+        Self { slac_responder: false, tls_versions: TlsVersions::Tls13, backwards_compatible: false, control_pilot_file: None, sessions: 1, session: Config::default(), slac: Default::default() }
     }
 }
 

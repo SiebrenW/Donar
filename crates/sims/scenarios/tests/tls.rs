@@ -129,3 +129,49 @@ fn an_encrypted_private_key_needs_its_passphrase() {
     assert!(!with(Some(b"wrong")));
     assert!(!with(None));
 }
+
+/// Runs a session and reports what the client negotiated.
+fn negotiated(addr: std::net::SocketAddr, client: &openssl::ssl::SslContext) -> std::io::Result<(String, String, Outcome)> {
+    let mut stream = tls::connect(client, TcpStream::connect(addr).unwrap())?;
+    let (version, cipher) = (stream.ssl().version_str().to_string(), stream.ssl().current_cipher().unwrap().name().to_string());
+    let outcome = common::run_car(&mut stream, true, fast(), Some(3))?;
+    Ok((version, cipher, outcome))
+}
+
+#[test]
+fn a_tls12_only_charger_is_served_with_the_iso15118_2_suite_when_asked() {
+    // V2G20-2054 ff.: after TLS 1.3, TLS 1.2 with the ISO 15118-2 suite, secp256r1 certificates.
+    let (ca, secc) = pki(Curve::P256, "SECC");
+    let (vca, evcc) = pki(Curve::P256, "EVCC");
+    let server = tls::server_context(&credentials(&secc, &vca).versions(tls::Versions::Tls12)).unwrap();
+    let client = tls::client_context(&credentials(&evcc, &ca).versions(tls::Versions::Tls13And12)).unwrap();
+    let (addr, server) = start(SecContext(server));
+    let (version, cipher, outcome) = negotiated(addr, &client).unwrap();
+    assert_eq!((version.as_str(), cipher.as_str()), ("TLSv1.2", "ECDHE-ECDSA-AES128-SHA256"));
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+}
+
+#[test]
+fn a_tls13_only_vehicle_does_not_fall_back() {
+    let (ca, secc) = pki(Curve::P256, "SECC");
+    let (vca, evcc) = pki(Curve::P256, "EVCC");
+    let server = tls::server_context(&credentials(&secc, &vca).versions(tls::Versions::Tls12)).unwrap();
+    let client = tls::client_context(&credentials(&evcc, &ca).backwards_compatible()).unwrap();
+    let (addr, server) = start(SecContext(server));
+    assert!(negotiated(addr, &client).is_err());
+    assert!(server.join().unwrap().is_err());
+}
+
+#[test]
+fn two_tls13_capable_peers_stay_on_tls13_when_both_offer_the_fallback() {
+    let (ca, secc) = pki(Curve::P256, "SECC");
+    let (vca, evcc) = pki(Curve::P256, "EVCC");
+    let server = tls::server_context(&credentials(&secc, &vca).versions(tls::Versions::Tls13And12)).unwrap();
+    let client = tls::client_context(&credentials(&evcc, &ca).versions(tls::Versions::Tls13And12)).unwrap();
+    let (addr, server) = start(SecContext(server));
+    let (version, _, outcome) = negotiated(addr, &client).unwrap();
+    assert_eq!(version, "TLSv1.3");
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+}

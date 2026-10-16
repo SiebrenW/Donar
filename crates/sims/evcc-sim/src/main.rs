@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! evcc-sim --interface eth1 [--config FILE] [--slac] [--no-tls | --chain F --key F --trust F
-//!                        [--key-password P] [--backwards-compatible]]
+//!                        [--key-password P] [--backwards-compatible] [--tls-versions V]]
 //!      [--stop-after N | --never-stop] [--connector core|extended|dual2|dual4]
 //!      [--log error|info|debug|trace] [--control SOCKET]
 //! ```
@@ -22,7 +22,7 @@ use evcc_linux::{Outcome, sdp, tls};
 use evcc_sim::{Behaviour, Connector, EvLive, LogLevel, Settings, StderrLog, Tls, run_car_live};
 use v2gtp::sdp::Security;
 
-const USAGE: &str = "usage: evcc-sim --interface IF [--config FILE] [--slac] [--no-tls | --chain F --key F --trust F [--key-password P] [--backwards-compatible]] [--stop-after N | --never-stop] [--connector INLET] [--log LEVEL] [--control SOCKET]";
+const USAGE: &str = "usage: evcc-sim --interface IF [--config FILE] [--slac] [--no-tls | --chain F --key F --trust F [--key-password P] [--backwards-compatible] [--tls-versions V]] [--stop-after N | --never-stop] [--connector INLET] [--log LEVEL] [--control SOCKET]";
 
 fn parse() -> Result<(String, Settings, Option<String>), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -37,6 +37,7 @@ fn parse() -> Result<(String, Settings, Option<String>), String> {
     let mut control = None;
     let (mut chain, mut key, mut trust, mut key_password, mut backwards_compatible) =
         (None, None, None, None, false);
+    let mut versions = None;
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
         let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
@@ -53,6 +54,7 @@ fn parse() -> Result<(String, Settings, Option<String>), String> {
             "--trust" => trust = Some(value("--trust")?),
             "--key-password" => key_password = Some(value("--key-password")?),
             "--backwards-compatible" => backwards_compatible = true,
+            "--tls-versions" => versions = Some(parse_versions(&value("--tls-versions")?)?),
             "--stop-after" => {
                 settings.stop_after = value("--stop-after")?
                     .parse()
@@ -97,16 +99,28 @@ fn parse() -> Result<(String, Settings, Option<String>), String> {
             tls.key_password = key_password
         }
         tls.backwards_compatible |= backwards_compatible;
+        if let Some(v) = versions {
+            tls.versions = v;
+        }
         if tls.chain.is_empty() || tls.key.is_empty() || tls.trust.is_empty() {
             return Err("TLS needs a chain, a key and a trust file (or use --no-tls)".into());
         }
-    } else if backwards_compatible || key_password.is_some() {
-        return Err("--backwards-compatible and --key-password belong to TLS".into());
+    } else if backwards_compatible || key_password.is_some() || versions.is_some() {
+        return Err("--backwards-compatible, --tls-versions and --key-password belong to TLS".into());
     }
     if interface.is_empty() {
         return Err("--interface is required".into());
     }
     Ok((interface, settings, control))
+}
+
+fn parse_versions(text: &str) -> Result<evcc_sim::TlsVersions, String> {
+    match text {
+        "1.3" => Ok(evcc_sim::TlsVersions::Tls13),
+        "1.3+1.2" => Ok(evcc_sim::TlsVersions::Tls13And12),
+        "1.2" => Ok(evcc_sim::TlsVersions::Tls12),
+        other => Err(format!("--tls-versions: {other}, expected 1.3, 1.3+1.2 or 1.2")),
+    }
 }
 
 fn main() -> ExitCode {
@@ -195,6 +209,7 @@ fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session:
             if t.backwards_compatible {
                 credentials = credentials.backwards_compatible();
             }
+            credentials = credentials.versions(t.versions.into());
             let context = tls::client_context(&credentials).map_err(io::Error::other)?;
             let mut stream = tls::connect(&context, tcp)?;
             eprintln!(

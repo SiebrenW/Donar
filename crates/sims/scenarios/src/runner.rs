@@ -81,7 +81,9 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
                 if scenario.secc.tls {
                     secc_args.extend(["--chain".into(), files.secc_chain, "--key".into(), files.secc_key, "--trust".into(), files.secc_trust]);
                 }
-                evcc_settings.tls = scenario.evcc.tls.then_some(files.evcc_tls);
+                // The scenario may set the options of the vehicle's TLS; the files are the run's.
+                let own = evcc_settings.tls.take().unwrap_or_default();
+                evcc_settings.tls = scenario.evcc.tls.then_some(evcc_sim::Tls { backwards_compatible: own.backwards_compatible, versions: own.versions, ..files.evcc_tls });
             }
             let program = partners::sibling_binary("evse-sim")?;
             let mut spawn = Spawn::new(program).args(["--interface", sandbox::INTERFACE, "--address", "fe80::2"]).args(&secc_args).label("evse-sim");
@@ -93,7 +95,9 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
         Kind::EvccSim => unreachable!("rejected on load"),
     };
     if let Some(tls) = partner_tls.filter(|_| scenario.evcc.tls) {
+        let versions = evcc_settings.tls.take().map_or_else(Default::default, |t| t.versions);
         evcc_settings.tls = Some(evcc_sim::Tls {
+            versions,
             chain: tls.chain.display().to_string(),
             key: tls.key.display().to_string(),
             trust: tls.trust.display().to_string(),
@@ -190,6 +194,7 @@ pub fn write_pki(sb: &Sandbox, curve: pki::Curve) -> io::Result<Files> {
             trust: put("evcc-trust.pem", &m.evcc_trust)?,
             key_password: None,
             backwards_compatible: false,
+            versions: Default::default(),
         },
     })
 }

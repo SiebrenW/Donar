@@ -99,9 +99,35 @@ impl Default for Limits {
     }
 }
 
-/// TLS 1.3 with mutual authentication; the files are PEM.
+/// The TLS versions a simulator speaks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum TlsVersions {
+    /// TLS 1.3 only (ISO 15118-20).
+    #[default]
+    #[serde(rename = "1.3")]
+    Tls13,
+    /// TLS 1.3, and TLS 1.2 with `ECDHE-ECDSA-AES128-SHA256` for an ISO 15118-2 peer; implies
+    /// `backwards_compatible`.
+    #[serde(rename = "1.3+1.2")]
+    Tls13And12,
+    /// TLS 1.2 only: plays an ISO 15118-2 peer; implies `backwards_compatible`.
+    #[serde(rename = "1.2")]
+    Tls12,
+}
+
+impl From<TlsVersions> for evcc_linux::tls::Versions {
+    fn from(v: TlsVersions) -> Self {
+        match v {
+            TlsVersions::Tls13 => Self::Tls13,
+            TlsVersions::Tls13And12 => Self::Tls13And12,
+            TlsVersions::Tls12 => Self::Tls12,
+        }
+    }
+}
+
+/// TLS with mutual authentication; the files are PEM.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct Tls {
     pub chain: String,
     pub key: String,
@@ -109,6 +135,7 @@ pub struct Tls {
     pub key_password: Option<String>,
     /// Also accept the ISO 15118-2 certificate profile (secp256r1).
     pub backwards_compatible: bool,
+    pub versions: TlsVersions,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -237,6 +264,7 @@ mod tests {
                 trust: "t".into(),
                 key_password: Some("p".into()),
                 backwards_compatible: true,
+                versions: TlsVersions::Tls13And12,
             }),
             stop_after: 0,
             ..Default::default()
