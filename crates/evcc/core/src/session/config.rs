@@ -55,6 +55,13 @@ pub struct Config {
     /// A parameter set is acceptable when it holds every `(name, value)` listed here as an
     /// integer parameter. The first acceptable set is selected.
     pub parameter_filter: &'static [(&'static str, i32)],
+    /// Resume this paused session instead of starting a new one (V2G20-1541): the
+    /// `SessionSetupReq` carries its id; when the charger agrees, authorization and service
+    /// selection are not repeated.
+    pub resume: Option<super::types::Resume>,
+    /// Answer `EVSENotification` Pause (V2G20-1850) with a pause of the session
+    /// (`SessionStopReq` Pause) instead of a standby period; the standard allows either.
+    pub pause_on_notification: bool,
 }
 
 impl Config {
@@ -86,6 +93,8 @@ impl Config {
         // needs provided by the EVCC. `Connector` follows the vehicle's inlet
         // ([`Ev::dc_connector`]) and is matched separately.
         parameter_filter: &[("ControlMode", 2), ("MobilityNeedsMode", 1)],
+        resume: None,
+        pause_on_notification: false,
     };
 }
 

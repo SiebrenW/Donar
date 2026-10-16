@@ -79,6 +79,14 @@ pub struct Settings {
     pub renegotiate_schedule_after: Option<u32>,
     /// Stop as soon as a schedule renegotiation has finished.
     pub stop_when_rescheduled: bool,
+    /// Pause the session (`SessionStopReq` Pause, connection closed) after this many charge
+    /// loop rounds.
+    pub pause_after: Option<u32>,
+    /// Resume a paused session on a new connection after this many milliseconds; without it
+    /// the process ends with the pause.
+    pub resume_after_ms: Option<u32>,
+    /// Answer an `EVSENotification` Pause with a pause of the session instead of a standby period.
+    pub pause_on_notification: bool,
     pub log: LogLevel,
     /// Overrides of the session timing (milliseconds), for quicker runs.
     pub poll_interval_ms: Option<u32>,
@@ -96,6 +104,9 @@ impl Default for Settings {
             renegotiate_after: None,
             renegotiate_schedule_after: None,
             stop_when_rescheduled: false,
+            pause_after: None,
+            resume_after_ms: None,
+            pause_on_notification: false,
             log: LogLevel::Info,
             poll_interval_ms: None,
             charge_loop_interval_ms: None,

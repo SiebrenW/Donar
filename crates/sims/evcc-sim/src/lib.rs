@@ -92,6 +92,8 @@ pub struct Behaviour {
     /// Ask to stop as soon as a schedule renegotiation has finished (for tests that must not
     /// depend on how long it takes).
     pub stop_when_rescheduled: bool,
+    /// After this many charge loop answers the car pauses the session (`SessionStopReq` Pause).
+    pub pause_after: Option<u32>,
 }
 
 /// Runs the simulated car over `stream`; after `stop_after` charge loop answers it asks to
@@ -104,7 +106,7 @@ pub fn run_simulated_car(
     connector: DcConnector,
     log: impl LogSink,
 ) -> io::Result<Outcome> {
-    run_car(stream, secured, config, Behaviour { connector, stop_after, renegotiate_after: None, renegotiate_schedule_after: None, stop_when_rescheduled: false }, log)
+    run_car(stream, secured, config, Behaviour { connector, stop_after, renegotiate_after: None, renegotiate_schedule_after: None, stop_when_rescheduled: false, pause_after: None }, log)
 }
 
 pub fn run_car(
@@ -137,6 +139,8 @@ pub fn run_car(
             loops += 1;
             if Some(loops) == behaviour.stop_after {
                 Some(Event::StopRequested)
+            } else if Some(loops) == behaviour.pause_after {
+                Some(Event::PauseRequested)
             } else if Some(loops) == behaviour.renegotiate_after && !renegotiated {
                 renegotiated = true;
                 Some(Event::RenegotiateServices)

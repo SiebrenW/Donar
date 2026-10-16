@@ -62,6 +62,8 @@ pub enum Record<'a> {
     /// A response code from the EVSE.
     Response { msg: MsgKind, code: ResponseCode },
     SessionSetUp { session_id: [u8; 8], evse_id: &'a str },
+    /// A paused session was resumed (`OK_OldSessionJoined`).
+    SessionResumed { session_id: [u8; 8] },
     /// The `EVSEProcessing` value of an `AuthorizationRes`.
     EvseProcessing { processing: Processing },
     /// The energy transfer service and parameter set the EVSE accepted.
@@ -79,6 +81,7 @@ impl Record<'_> {
             Record::Started { .. }
             | Record::StateChange { .. }
             | Record::SessionSetUp { .. }
+            | Record::SessionResumed { .. }
             | Record::ServiceSelected { .. } => Level::Info,
             Record::Response { code, .. } if !crate::session::is_ok(*code) => Level::Info,
             Record::Response { .. } | Record::EvseProcessing { .. } | Record::MsgTx { .. } | Record::MsgRx { .. } => {

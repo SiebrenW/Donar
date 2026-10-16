@@ -24,7 +24,7 @@ fn files(dir: &Path) -> Vec<PathBuf> {
 #[test]
 fn every_scenario_file_loads() {
     let all: Vec<PathBuf> = [directory(), directory().join("interop")].iter().flat_map(|d| files(d)).collect();
-    assert!(all.len() >= 11, "{all:?}");
+    assert!(all.len() >= 12, "{all:?}");
     for file in all {
         Scenario::load(&file).unwrap_or_else(|e| panic!("{e}"));
     }
@@ -69,6 +69,7 @@ mod run {
         service_renegotiation => "service-renegotiation",
         service_renegotiation_by_car => "service-renegotiation-by-car",
         schedule_renegotiation => "schedule-renegotiation",
+        pause_resume => "pause-resume",
     }
 
     #[test]

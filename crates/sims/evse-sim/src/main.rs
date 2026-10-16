@@ -8,7 +8,7 @@
 //!          [--sessions N]
 //! ```
 //! TLS is on when `--chain` is given. `--sessions N` serves N sessions one after the other
-//! (default 1, 0 for ever). The settings file is `evse_sim::Settings` in TOML. Exit status 0
+//! (default: the settings file's `sessions`, 1; 0 for ever). The settings file is `evse_sim::Settings` in TOML. Exit status 0
 //! when every session ended with `SessionStop`, 1 when one did not, 2 for bad arguments.
 
 use std::io;
@@ -28,7 +28,7 @@ struct Args {
     trust: Option<String>,
     key_password: Option<String>,
     backwards_compatible: bool,
-    sessions: u32,
+    sessions: Option<u32>,
 }
 
 const USAGE: &str = "usage: evse-sim --interface IF --address ADDR [--config FILE] [--slac] [--chain F --key F --trust F [--key-password P] [--backwards-compatible]] [--sessions N]";
@@ -44,7 +44,7 @@ fn parse() -> Result<Args, String> {
         trust: None,
         key_password: None,
         backwards_compatible: false,
-        sessions: 1,
+        sessions: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -64,9 +64,11 @@ fn parse() -> Result<Args, String> {
             "--key-password" => a.key_password = Some(value("--key-password")?),
             "--backwards-compatible" => a.backwards_compatible = true,
             "--sessions" => {
-                a.sessions = value("--sessions")?
-                    .parse()
-                    .map_err(|_| "--sessions: not a number")?
+                a.sessions = Some(
+                    value("--sessions")?
+                        .parse()
+                        .map_err(|_| "--sessions: not a number")?,
+                )
             }
             other => return Err(format!("unknown argument {other}")),
         }
@@ -138,7 +140,8 @@ fn run(args: &Args) -> io::Result<bool> {
     eprintln!("ready: {}", evcc_linux::sdp::address(&response, ifindex));
     let mut served = 0;
     let mut all_stopped = true;
-    while args.sessions == 0 || served < args.sessions {
+    let sessions = args.sessions.unwrap_or(settings.sessions);
+    while sessions == 0 || served < sessions {
         let seen = evse_sim::answer_discovery(&udp, response, 0)?;
         eprintln!("sdp: answered after {seen} request(s)");
         let state = match &context {
@@ -155,7 +158,7 @@ fn run(args: &Args) -> io::Result<bool> {
             None => evse_sim::serve_one(&tcp, settings.session.clone())?,
         };
         eprintln!("session: {state:?}");
-        all_stopped &= state == State::Stopped;
+        all_stopped &= matches!(state, State::Stopped | State::Paused);
         served += 1;
     }
     Ok(all_stopped)

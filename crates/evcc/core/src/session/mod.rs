@@ -36,7 +36,7 @@ mod shutdown;
 mod types;
 
 pub use config::{Config, SERVICE_ID_DC};
-pub use types::{Buffers, ChargeLoopStatus, EndReason, Event, Notice, State, Step};
+pub use types::{Buffers, ChargeLoopStatus, EndReason, Event, Notice, Resume, State, Step};
 
 pub struct Session<'a, E: Ev, L: LogSink> {
     rx: &'a mut [u8],
@@ -67,7 +67,7 @@ struct Machine<E, L> {
     renegotiation_supported: Option<bool>,
     /// The shutdown under way ends in `SessionStopReq(ServiceRenegotiation)` and a new
     /// service discovery instead of the end of the session.
-    renegotiating: bool,
+    stop_kind: types::StopKind,
     /// The schedule renegotiation side stream.
     side: renegotiation::Side,
     side_waited_ms: u32,
@@ -109,7 +109,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 side_waited_ms: 0,
                 side_poll_pending: false,
                 charge_loop_started: false,
-                renegotiating: false,
+                stop_kind: types::StopKind::Terminate,
                 entering_standby: false,
                 standby: false,
                 clock_offset: 0,
@@ -196,7 +196,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 m.sequence_done(step)
             }
             Event::StopRequested => {
-                m.renegotiating = false;
+                m.stop_kind = types::StopKind::Terminate;
                 match m.state {
                 State::AwaitChargeLoopRes if m.poll_pending => {
                     m.poll_pending = false;
@@ -214,6 +214,19 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 _ => Step::default(),
             }
             }
+            Event::PauseRequested => match m.state {
+                State::AwaitChargeLoopRes if m.poll_pending => {
+                    m.poll_pending = false;
+                    m.stop_kind = types::StopKind::Pause;
+                    m.begin_stop(None)
+                }
+                State::AwaitChargeLoopRes => {
+                    m.stop_kind = types::StopKind::Pause;
+                    m.stop_requested = true;
+                    Step::default()
+                }
+                _ => Step::default(),
+            },
             Event::RenegotiateSchedule => m.start_schedule_renegotiation(Step::default(), tx),
             Event::RenegotiateServices => {
                 if m.renegotiation_supported != Some(true) {
@@ -222,11 +235,11 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 match m.state {
                     State::AwaitChargeLoopRes if m.poll_pending => {
                         m.poll_pending = false;
-                        m.renegotiating = true;
+                        m.stop_kind = types::StopKind::ServiceRenegotiation;
                         m.begin_stop(None)
                     }
                     State::AwaitChargeLoopRes => {
-                        m.renegotiating = true;
+                        m.stop_kind = types::StopKind::ServiceRenegotiation;
                         m.stop_requested = true;
                         Step::default()
                     }

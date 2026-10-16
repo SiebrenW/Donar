@@ -128,6 +128,18 @@ fn run(interface: &str, settings: &Settings) -> io::Result<bool> {
     if settings.slac && !run_slac(interface, settings)? {
         return Ok(false);
     }
+    let mut outcome = attempt(ifindex, settings, None, settings.pause_after)?;
+    // A paused session is resumed on a new connection (V2G20-2073); the data link stays up.
+    while let (Outcome::Ended(EndReason::Paused(resume)), Some(ms)) = (outcome, settings.resume_after_ms) {
+        eprintln!("paused; resuming session {:02x?} in {ms} ms", resume.session_id);
+        std::thread::sleep(std::time::Duration::from_millis(ms.into()));
+        outcome = attempt(ifindex, settings, Some(resume), None)?;
+    }
+    Ok(outcome == Outcome::Ended(EndReason::Completed))
+}
+
+/// One connection: SDP, TCP, TLS if wanted, and a session on it.
+fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session::Resume>, pause_after: Option<u32>) -> io::Result<Outcome> {
     let security = if settings.tls.is_some() {
         Security::Tls
     } else {
@@ -140,16 +152,15 @@ fn run(interface: &str, settings: &Settings) -> io::Result<bool> {
         evcc_core::sdp::Config::new(security),
     )?;
     let SdpOutcome::Found(response) = found else {
-        eprintln!("sdp: no charger found");
-        return Ok(false);
+        return Err(io::Error::new(io::ErrorKind::NotFound, "sdp: no charger found"));
     };
     eprintln!("sdp: {}", sdp::address(&response, ifindex));
     let tcp = sdp::connect(&response, ifindex)?;
-    let config = settings.session();
+    let config = evcc_core::session::Config { resume, ..settings.session() };
     let log = StderrLog {
         level: settings.log.into(),
     };
-    let behaviour = Behaviour { connector: settings.connector.into(), stop_after: settings.stop_after(), renegotiate_after: settings.renegotiate_after, renegotiate_schedule_after: settings.renegotiate_schedule_after, stop_when_rescheduled: settings.stop_when_rescheduled };
+    let behaviour = Behaviour { connector: settings.connector.into(), stop_after: settings.stop_after(), renegotiate_after: settings.renegotiate_after, renegotiate_schedule_after: settings.renegotiate_schedule_after, stop_when_rescheduled: settings.stop_when_rescheduled, pause_after };
     let outcome = match &settings.tls {
         None => {
             let mut stream = tcp;
@@ -179,7 +190,7 @@ fn run(interface: &str, settings: &Settings) -> io::Result<bool> {
         }
     };
     eprintln!("session: {outcome:?}");
-    Ok(outcome == Outcome::Ended(EndReason::Completed))
+    Ok(outcome)
 }
 
 #[cfg(target_os = "linux")]

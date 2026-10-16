@@ -2,7 +2,7 @@
 
 use app_protocol::{self, SupportedAppProtocolReq};
 use iso15118_20::common::*;
-use iso15118_20::common_types::{MessageHeader, Processing};
+use iso15118_20::common_types::{MessageHeader, Processing, ResponseCode};
 use iso15118_20::dc;
 use v2gtp::PayloadType;
 
@@ -19,12 +19,38 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         if !is_ok(res.response_code) {
             return self.end(EndReason::Rejected(res.response_code));
         }
+        let resuming = self.config.resume;
         self.session_id = res.header.session_id;
         self.clock_offset = i128::from(res.header.time_stamp) - i128::from(self.ev.now_micros());
         // Switching to EVSE time may move the stamps backwards: the first two
         // messages are exempt from "always increasing" (V2G20-1538).
         self.last_timestamp = 0;
         self.log.record(&Record::SessionSetUp { session_id: self.session_id, evse_id: res.evseid });
+        if let Some(old) = resuming {
+            // V2G20-2539: joined with the id we sent. (That it is still the same charger is
+            // for the host to check: the certificate of the new TLS connection, 8.3.4.1.4.3.)
+            let joined = res.response_code == ResponseCode::OkOldSessionJoined && res.header.session_id == old.session_id;
+            // V2G20-2615: any other id is a new session, with new authorization (V2G20-2617).
+            let new = res.response_code == ResponseCode::OkNewSessionEstablished && res.header.session_id != old.session_id;
+            if joined {
+                // V2G20-1844, V2G20-2098: authorization and service selection are valid; the
+                // next request is the charge parameter discovery.
+                self.log.record(&Record::SessionResumed { session_id: old.session_id });
+                self.selected = old.selected;
+                self.renegotiation_supported = old.renegotiation_supported;
+                let framed = self.frame_charge_parameter_discovery_req(PayloadType::DC_MAINSTREAM, tx);
+                let mut step = self.send_then(State::AwaitChargeParameterDiscoveryRes, MsgKind::DcChargeParameterDiscoveryReq, framed);
+                if step.end.is_none() {
+                    step.timers = step.timers.with(TimerCmd::Cancel(Timer::Setup));
+                    step.notice = Some(Notice::SessionResumed { session_id: old.session_id });
+                }
+                return step;
+            }
+            if !new {
+                // V2G20-2613, V2G20-2614: neither joined nor a clean new session.
+                return self.end(EndReason::UnexpectedMessage);
+            }
+        }
         let msg = AuthorizationSetupReq { header: self.header() };
         let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
         let mut step = self.send_then(State::AwaitAuthorizationSetupRes, MsgKind::AuthorizationSetupReq, framed);
@@ -172,7 +198,11 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             return self.end(EndReason::NoCommonProtocol);
         }
         let msg = SessionSetupReq {
-            header: MessageHeader { session_id: [0; 8], time_stamp: self.timestamp() },
+            // V2G20-1243: zeroes for a new session, V2G20-1541: the old id to resume one.
+            header: MessageHeader {
+                session_id: self.config.resume.map_or([0; 8], |r| r.session_id),
+                time_stamp: self.timestamp(),
+            },
             evccid: self.ev.evcc_id(),
         };
         let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));

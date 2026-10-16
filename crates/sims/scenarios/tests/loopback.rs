@@ -275,6 +275,7 @@ const CAR: evcc_sim::Behaviour = evcc_sim::Behaviour {
     renegotiate_after: None,
     renegotiate_schedule_after: None,
     stop_when_rescheduled: false,
+    pause_after: None,
 };
 
 #[test]
@@ -399,4 +400,74 @@ fn a_renegotiation_the_car_asks_for_too_early_or_twice_is_not_started() {
     // The EVSE's notification and the car's wish came in the same round: one renegotiation.
     assert_eq!(log.count("MsgTx { msg: DcChargeParameterDiscoveryReq }"), 2);
     assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+}
+
+/// A SECC that serves two connections one after the other, like a charger that keeps a paused
+/// session; the second sees the same configuration.
+fn start_twice(config: evse_sim::Config) -> (std::net::SocketAddr, thread::JoinHandle<[EvseState; 2]>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    (
+        addr,
+        thread::spawn(move || {
+            let first = evse_sim::serve_one(&listener, config.clone()).unwrap();
+            [first, evse_sim::serve_one(&listener, config).unwrap()]
+        }),
+    )
+}
+
+fn run_with_resume(addr: std::net::SocketAddr, resume: Option<evcc_core::session::Resume>) -> (Outcome, common::Recording) {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    let config = Config { resume, ..fast() };
+    common::run_behaving_car(&mut stream, config, evcc_sim::Behaviour { stop_after: Some(3), ..CAR })
+}
+
+fn pause_first_session(addr: std::net::SocketAddr) -> evcc_core::session::Resume {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    let (outcome, _) = common::run_behaving_car(&mut stream, fast(), evcc_sim::Behaviour { pause_after: Some(2), ..CAR });
+    let Outcome::Ended(EndReason::Paused(resume)) = outcome else { panic!("{outcome:?}") };
+    resume
+}
+
+#[test]
+fn a_paused_session_is_resumed_on_a_new_connection_without_authorization_or_service_selection() {
+    let (addr, server) = start_twice(evse_sim::Config::default());
+    let resume = pause_first_session(addr);
+    assert_eq!(resume.session_id, evse_sim::Config::default().session_id);
+    assert_eq!(resume.selected.service_id, 2);
+    let (outcome, log) = run_with_resume(addr, Some(resume));
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    assert_eq!(log.count("SessionResumed"), 1);
+    for skipped in ["AuthorizationSetupReq", "AuthorizationReq", "ServiceDiscoveryReq", "ServiceSelectionReq"] {
+        assert_eq!(log.count(&format!("MsgTx {{ msg: {skipped} }}")), 0, "{skipped}");
+    }
+    // Charge parameters, schedule, cable check, pre-charge and the charge itself again.
+    assert_eq!(log.count("MsgTx { msg: DcChargeParameterDiscoveryReq }"), 1);
+    assert_eq!(log.count("MsgTx { msg: DcCableCheckReq }"), 1);
+    assert_eq!(server.join().unwrap(), [EvseState::Paused, EvseState::Stopped]);
+}
+
+#[test]
+fn a_charger_that_forgot_the_paused_session_makes_the_car_authorize_again() {
+    let (addr, server) = start_twice(evse_sim::Config { forget_paused_sessions: true, ..Default::default() });
+    let resume = pause_first_session(addr);
+    let (outcome, log) = run_with_resume(addr, Some(resume));
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    // V2G20-2615 ff.: a new session with a new id and the whole flow from authorization.
+    assert_eq!(log.count("SessionResumed"), 0);
+    assert_eq!(log.count("MsgTx { msg: AuthorizationReq }"), 1);
+    assert_eq!(log.count("MsgTx { msg: ServiceDiscoveryReq }"), 1);
+    assert_eq!(server.join().unwrap(), [EvseState::Paused, EvseState::Stopped]);
+}
+
+#[test]
+fn the_evse_asking_for_a_pause_can_be_answered_with_a_session_pause() {
+    let (addr, server) = start(evse_sim::Config { pause_after_loops: Some(2), ..Default::default() });
+    let mut stream = TcpStream::connect(addr).unwrap();
+    let config = Config { pause_on_notification: true, ..fast() };
+    let (outcome, log) = common::run_behaving_car(&mut stream, config, CAR);
+    assert!(matches!(outcome, Outcome::Ended(EndReason::Paused(_))), "{outcome:?}");
+    assert_eq!(log.count("MsgTx { msg: SessionStopReq }"), 1);
+    assert_eq!(log.count("to: AwaitPowerDeliveryStandbyRes"), 0);
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Paused);
 }

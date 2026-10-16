@@ -57,13 +57,21 @@ mod codes {
 
 /// Everything a simulated charger process reads from its settings file (`evse-sim --config`):
 /// the session knobs and the SLAC responder's.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     /// Answer SLAC on the interface (the responder follows `slac`).
     pub slac_responder: bool,
+    /// Serve this many sessions (connections) one after the other; 0 for ever.
+    pub sessions: u32,
     pub session: Config,
     pub slac: crate::slac::Config,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self { slac_responder: false, sessions: 1, session: Config::default(), slac: Default::default() }
+    }
 }
 
 /// A parameter set offered in `ServiceDetailRes`: the numbers of ISO 15118-20:2022 Table 207
@@ -161,6 +169,9 @@ pub struct Config {
     pub schedule_renegotiation_after_loops: Option<u32>,
     /// Never answer a message on the schedule renegotiation side stream (the EV should time out).
     pub side_stream_silent: bool,
+    /// Do not recognise the id of a paused session in `SessionSetupReq`: answer with a new
+    /// session (V2G20-2547) and make the EV authorize again.
+    pub forget_paused_sessions: bool,
     /// Response code of the `DC_WeldingDetectionRes`.
     #[serde(with = "code")]
     pub welding_code: ResponseCode,
@@ -204,6 +215,7 @@ impl Default for Config {
             refuse_service_renegotiation: false,
             schedule_renegotiation_after_loops: None,
             side_stream_silent: false,
+            forget_paused_sessions: false,
             pause_after_loops: None,
             standby_allowed: true,
             standby_loops: 2,

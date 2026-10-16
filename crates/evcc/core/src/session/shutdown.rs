@@ -37,10 +37,10 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             self.ongoing_armed = false;
             let msg = common::SessionStopReq {
                 header: self.header(),
-                charging_session: if self.renegotiating {
-                    common::ChargingSession::ServiceRenegotiation
-                } else {
-                    common::ChargingSession::Terminate
+                charging_session: match self.stop_kind {
+                    StopKind::Terminate => common::ChargingSession::Terminate,
+                    StopKind::Pause => common::ChargingSession::Pause,
+                    StopKind::ServiceRenegotiation => common::ChargingSession::ServiceRenegotiation,
                 },
                 ev_termination_code: None,
                 ev_termination_explanation: None,
@@ -67,7 +67,14 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         if let Some(end) = self.received(MsgKind::SessionStopRes, res.response_code) {
             return end;
         }
-        if core::mem::take(&mut self.renegotiating) {
+        let kind = core::mem::take(&mut self.stop_kind);
+        if kind == StopKind::Pause {
+            // V2G20-1540: the session stays resumable; the host closes the connection
+            // (V2G20-2071) and may come back with `Config::resume`.
+            let resume = Resume { session_id: self.session_id, selected: self.selected, renegotiation_supported: self.renegotiation_supported };
+            return self.end(EndReason::Paused(resume));
+        }
+        if kind == StopKind::ServiceRenegotiation {
             // V2G20-1477: after SessionStopRes OK the EVCC sends a ServiceDiscoveryReq; the
             // connection and the authorization stay (V2G20-1643).
             self.ongoing_armed = false;

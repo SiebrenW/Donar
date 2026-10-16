@@ -2,6 +2,7 @@
 
 use crate::{Timer, Timers};
 use exi::DecodeError;
+use iso15118_20::common::SelectedService;
 use iso15118_20::common_types::ResponseCode;
 use iso15118_20::dc;
 
@@ -51,6 +52,28 @@ pub enum State {
     Ended,
 }
 
+/// What it takes to resume a paused session (V2G20-1541): its id and, since authorization,
+/// service selection and the charger's offer carry over (V2G20-1844), those facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Resume {
+    pub session_id: [u8; 8],
+    pub selected: SelectedService,
+    /// `ServiceRenegotiationSupported` of the first `ServiceDiscoveryRes` of the session.
+    pub renegotiation_supported: Option<bool>,
+}
+
+/// How the shutdown that is under way ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum StopKind {
+    /// `SessionStopReq(Terminate)`, the session is over.
+    #[default]
+    Terminate,
+    /// `SessionStopReq(Pause)`: the session can be resumed later.
+    Pause,
+    /// `SessionStopReq(ServiceRenegotiation)`: service discovery follows.
+    ServiceRenegotiation,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndReason {
     /// The flow implemented so far finished normally.
@@ -72,6 +95,10 @@ pub enum EndReason {
     /// A valid response whose content this EV cannot work with (e.g. a Scheduled control mode
     /// answer to a Dynamic request).
     UnexpectedMessage,
+    /// The session was paused (`SessionStopReq` Pause, V2G20-1540): close the TLS connection
+    /// (V2G20-2071) and, when the vehicle wants to go on, make a new one and start a session
+    /// with this in `Config::resume` (V2G20-2073).
+    Paused(Resume),
     /// The connection is not secured and `Config::allow_unsecured` is off.
     TlsRequired,
     /// The TX buffer cannot hold the outgoing message.
@@ -92,6 +119,10 @@ pub enum Event {
     StopRequested,
     /// The host opened the vehicle's contactors after [`Notice::OpenContactors`].
     ContactorsOpened,
+    /// The vehicle wants to pause the session (V2G20-1540): an orderly stop of the charge, then
+    /// `SessionStopReq(Pause)`; the session ends with [`EndReason::Paused`]. Only acted on
+    /// while the charge loop runs.
+    PauseRequested,
     /// The vehicle wants new charging targets and a new power profile (V2G20-1046): a schedule
     /// renegotiation runs as a side stream next to the charge loop. Ignored outside the charge
     /// loop, before the first `ChargeLoopReq` and while one is running.
@@ -134,6 +165,9 @@ pub enum Notice {
     /// the charge loop goes on. [`Notice::EnergyTransferStarted`] follows when it ends (the
     /// EVSE sent `ExitStandby`) or when the EVSE refused the standby period.
     StandbyEntered,
+    /// The session was resumed instead of set up anew (`OK_OldSessionJoined`, V2G20-2540):
+    /// authorization and service selection carry over, charge parameter discovery follows.
+    SessionResumed { session_id: [u8; 8] },
     /// A schedule renegotiation finished: the EVSE accepted the new power profile.
     ScheduleRenegotiated,
     /// The EVSE agreed to a service renegotiation: the session goes on with a new service

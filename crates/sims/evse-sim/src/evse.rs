@@ -39,6 +39,8 @@ pub enum State {
     AwaitSessionStopReq,
     /// The session was stopped properly.
     Stopped,
+    /// The EV paused the session (`SessionStopReq` Pause); it can be resumed on a new connection.
+    Paused,
     Closed,
 }
 
@@ -65,6 +67,8 @@ pub struct Evse {
     standby: Option<u32>,
     /// The EV answered the pause request (with standby or a refusal was sent).
     pause_answered: bool,
+    /// The id of this session (the configured one, or a fresh one when a resume is refused).
+    session_id: [u8; 8],
     /// A service renegotiation was requested (and done) in this session.
     renegotiation_requested: bool,
     renegotiated: bool,
@@ -75,7 +79,7 @@ pub struct Evse {
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false }
+        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false }
     }
 
     pub fn state(&self) -> State {
@@ -97,7 +101,7 @@ impl Evse {
             let close = out.close;
             outputs.push(out);
             // A properly stopped session keeps that state (it is what the tests look at).
-            if close && self.state != State::Stopped {
+            if close && !matches!(self.state, State::Stopped | State::Paused) {
                 self.state = State::Closed;
             }
         }
@@ -143,21 +147,37 @@ impl Evse {
                 }
             }
             State::AwaitSessionSetupReq if payload_type == PayloadType::MAINSTREAM => {
-                let Ok(common::Message::SessionSetupReq(_)) = common::decode(payload, &arena) else { return closed };
+                let Ok(common::Message::SessionSetupReq(req)) = common::decode(payload, &arena) else { return closed };
                 if self.config.silent_on_setup {
                     return Output::default();
                 }
+                let asked = req.header.session_id;
+                let mut code = self.config.setup_code;
+                let mut resumed = false;
+                if asked != [0; 8] && is_ok(code) {
+                    if asked == self.config.session_id && !self.config.forget_paused_sessions {
+                        // V2G20-2623: a resumed session; authorization carries over.
+                        code = ResponseCode::OkOldSessionJoined;
+                        resumed = true;
+                    } else {
+                        // V2G20-2547: an id we do not know is a new session, with an id of its own.
+                        code = ResponseCode::OkNewSessionEstablished;
+                        self.session_id = self.config.session_id.map(|b| !b);
+                    }
+                }
                 let ok = matches!(
-                    self.config.setup_code,
+                    code,
                     ResponseCode::Ok | ResponseCode::OkNewSessionEstablished | ResponseCode::OkOldSessionJoined
                 );
                 let res = SessionSetupRes {
-                    header: MessageHeader { session_id: self.config.session_id, time_stamp: now() },
-                    response_code: self.config.setup_code,
+                    header: MessageHeader { session_id: self.session_id, time_stamp: now() },
+                    response_code: code,
                     evseid: &self.config.evse_id,
                 };
                 if ok {
-                    self.state = State::AwaitAuthorizationSetupReq;
+                    // V2G20-1032: after a resumed session the next request is the charge
+                    // parameter discovery.
+                    self.state = if resumed { State::AwaitChargeParameterDiscoveryReq } else { State::AwaitAuthorizationSetupReq };
                 }
                 Output {
                     send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)),
@@ -166,7 +186,7 @@ impl Evse {
             }
             State::AwaitAuthorizationSetupReq if payload_type == PayloadType::MAINSTREAM => {
                 let Ok(common::Message::AuthorizationSetupReq(req)) = common::decode(payload, &arena) else { return closed };
-                if req.header.session_id != self.config.session_id {
+                if req.header.session_id != self.session_id {
                     return self.unknown_session(common::Message::AuthorizationSetupReq(req));
                 }
                 if self.config.offered_authorization.is_empty() || self.config.offered_authorization.len() > 2 {
@@ -184,7 +204,7 @@ impl Evse {
             }
             State::AwaitAuthorizationReq if payload_type == PayloadType::MAINSTREAM => {
                 let Ok(common::Message::AuthorizationReq(req)) = common::decode(payload, &arena) else { return closed };
-                if req.header.session_id != self.config.session_id {
+                if req.header.session_id != self.session_id {
                     return self.unknown_session(common::Message::AuthorizationReq(req));
                 }
                 self.authorization_reqs_seen += 1;
@@ -207,7 +227,7 @@ impl Evse {
             }
             State::AwaitServiceDiscoveryReq if payload_type == PayloadType::MAINSTREAM => {
                 let Ok(common::Message::ServiceDiscoveryReq(req)) = common::decode(payload, &arena) else { return closed };
-                if req.header.session_id != self.config.session_id {
+                if req.header.session_id != self.session_id {
                     return self.discovery_res(ResponseCode::FailedUnknownSession);
                 }
                 self.state = State::AwaitServiceDetailReq;
@@ -215,7 +235,7 @@ impl Evse {
             }
             State::AwaitServiceDetailReq if payload_type == PayloadType::MAINSTREAM => {
                 let Ok(common::Message::ServiceDetailReq(req)) = common::decode(payload, &arena) else { return closed };
-                if req.header.session_id != self.config.session_id {
+                if req.header.session_id != self.session_id {
                     return self.detail_res(ResponseCode::FailedUnknownSession, req.service_id);
                 }
                 if !self.config.energy_services.contains(&req.service_id) {
@@ -226,7 +246,7 @@ impl Evse {
             }
             State::AwaitServiceSelectionReq if payload_type == PayloadType::MAINSTREAM => {
                 let Ok(common::Message::ServiceSelectionReq(req)) = common::decode(payload, &arena) else { return closed };
-                if req.header.session_id != self.config.session_id {
+                if req.header.session_id != self.session_id {
                     return self.selection_res(ResponseCode::FailedUnknownSession);
                 }
                 let SelectedService { service_id, parameter_set_id } = req.selected_energy_transfer_service;
@@ -243,7 +263,7 @@ impl Evse {
             }
             State::AwaitChargeParameterDiscoveryReq if payload_type == PayloadType::DC_MAINSTREAM => {
                 let Ok(dc::Message::DcChargeParameterDiscoveryReq(req)) = dc::decode(payload, &arena) else { return closed };
-                let code = if req.header.session_id != self.config.session_id {
+                let code = if req.header.session_id != self.session_id {
                     ResponseCode::FailedUnknownSession
                 } else {
                     self.config.cpd_code
@@ -260,7 +280,7 @@ impl Evse {
             State::AwaitScheduleExchangeReq if payload_type == PayloadType::MAINSTREAM => {
                 let Ok(common::Message::ScheduleExchangeReq(req)) = common::decode(payload, &arena) else { return closed };
                 self.schedule_reqs_seen += 1;
-                let (processing, code) = if req.header.session_id != self.config.session_id {
+                let (processing, code) = if req.header.session_id != self.session_id {
                     (Processing::Finished, ResponseCode::FailedUnknownSession)
                 } else if !matches!(req.se_req_control_mode, common::SeReqControlModeChoice::Dynamic(_)) {
                     (Processing::Finished, ResponseCode::FailedWrongChargeParameter)
@@ -279,7 +299,7 @@ impl Evse {
             State::AwaitCableCheckReq if payload_type == PayloadType::DC_MAINSTREAM => {
                 let Ok(dc::Message::DcCableCheckReq(req)) = dc::decode(payload, &arena) else { return closed };
                 self.cable_reqs_seen += 1;
-                let (processing, code) = if req.header.session_id != self.config.session_id {
+                let (processing, code) = if req.header.session_id != self.session_id {
                     (Processing::Finished, ResponseCode::FailedUnknownSession)
                 } else if self.cable_reqs_seen <= self.config.cable_check_ongoing_responses {
                     (Processing::Ongoing, ResponseCode::Ok)
@@ -295,7 +315,7 @@ impl Evse {
             }
             State::AwaitPreChargeReq if payload_type == PayloadType::DC_MAINSTREAM => {
                 let Ok(dc::Message::DcPreChargeReq(req)) = dc::decode(payload, &arena) else { return closed };
-                let code = if req.header.session_id != self.config.session_id {
+                let code = if req.header.session_id != self.session_id {
                     ResponseCode::FailedUnknownSession
                 } else {
                     ResponseCode::Ok
@@ -317,7 +337,7 @@ impl Evse {
             }
             State::AwaitPowerDeliveryReq if payload_type == PayloadType::MAINSTREAM => {
                 let Ok(common::Message::PowerDeliveryReq(req)) = common::decode(payload, &arena) else { return closed };
-                let code = if req.header.session_id != self.config.session_id {
+                let code = if req.header.session_id != self.session_id {
                     ResponseCode::FailedUnknownSession
                 } else if req.charge_progress != common::ChargeProgress::Start || req.ev_power_profile.is_none() {
                     // V2G20-1546: the profile must accompany Start.
@@ -334,7 +354,7 @@ impl Evse {
             State::ChargeLoop if payload_type == PayloadType::DC_MAINSTREAM => {
                 let Ok(dc::Message::DcChargeLoopReq(req)) = dc::decode(payload, &arena) else { return closed };
                 self.loops_seen += 1;
-                let code = if req.header.session_id != self.config.session_id {
+                let code = if req.header.session_id != self.session_id {
                     ResponseCode::FailedUnknownSession
                 } else if !matches!(req.cl_req_control_mode, dc::ClReqControlModeChoice::DynamicDc(_)) {
                     ResponseCode::FailedWrongChargeParameter
@@ -391,7 +411,7 @@ impl Evse {
             }
             State::ChargeLoop if payload_type == PayloadType::MAINSTREAM => {
                 let Ok(common::Message::PowerDeliveryReq(req)) = common::decode(payload, &arena) else { return closed };
-                let code = if req.header.session_id != self.config.session_id {
+                let code = if req.header.session_id != self.session_id {
                     ResponseCode::FailedUnknownSession
                 } else {
                     match (req.charge_progress, self.standby.is_some()) {
@@ -423,7 +443,7 @@ impl Evse {
             }
             State::AwaitWeldingReq if payload_type == PayloadType::DC_MAINSTREAM => {
                 let Ok(dc::Message::DcWeldingDetectionReq(req)) = dc::decode(payload, &arena) else { return closed };
-                let code = if req.header.session_id != self.config.session_id {
+                let code = if req.header.session_id != self.session_id {
                     ResponseCode::FailedUnknownSession
                 } else {
                     self.config.welding_code
@@ -440,12 +460,13 @@ impl Evse {
             }
             State::AwaitSessionStopReq if payload_type == PayloadType::MAINSTREAM => {
                 let Ok(common::Message::SessionStopReq(req)) = common::decode(payload, &arena) else { return closed };
-                let code = if req.header.session_id != self.config.session_id {
+                let code = if req.header.session_id != self.session_id {
                     ResponseCode::FailedUnknownSession
                 } else {
                     ResponseCode::Ok
                 };
                 let renegotiation = req.charging_session == common::ChargingSession::ServiceRenegotiation;
+                let pause = req.charging_session == common::ChargingSession::Pause;
                 // V2G20-1643, V2G20-1955.
                 let code = if renegotiation && (!self.config.service_renegotiation_supported || self.config.refuse_service_renegotiation) && is_ok(code) {
                     ResponseCode::FailedNoServiceRenegotiationSupported
@@ -464,7 +485,7 @@ impl Evse {
                     return Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: false };
                 }
                 if is_ok(code) {
-                    self.state = State::Stopped;
+                    self.state = if pause { State::Paused } else { State::Stopped };
                 }
                 Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: true }
             }
@@ -517,7 +538,7 @@ impl Evse {
         }
         let side = PayloadType::SCHEDULE_RENEGOTIATION;
         if let Ok(dc::Message::DcChargeParameterDiscoveryReq(req)) = dc::decode(payload, &arena) {
-            let code = if req.header.session_id != self.config.session_id { ResponseCode::FailedUnknownSession } else { self.config.cpd_code };
+            let code = if req.header.session_id != self.session_id { ResponseCode::FailedUnknownSession } else { self.config.cpd_code };
             self.side_schedule_reqs_seen = 0;
             let res = self.cpd_res(code);
             return Output { send: frame(side, |out| res.encode(out)), close: !is_ok(code) };
@@ -525,7 +546,7 @@ impl Evse {
         match common::decode(payload, &arena) {
             Ok(common::Message::ScheduleExchangeReq(req)) => {
                 self.side_schedule_reqs_seen += 1;
-                let (processing, code) = if req.header.session_id != self.config.session_id {
+                let (processing, code) = if req.header.session_id != self.session_id {
                     (Processing::Finished, ResponseCode::FailedUnknownSession)
                 } else if self.side_schedule_reqs_seen <= self.config.schedule_ongoing_responses {
                     (Processing::Ongoing, ResponseCode::Ok)
@@ -536,7 +557,7 @@ impl Evse {
                 Output { send: frame(side, |out| res.encode(out)), close: processing != Processing::Ongoing && !is_ok(code) }
             }
             Ok(common::Message::PowerDeliveryReq(req)) => {
-                let code = if req.header.session_id != self.config.session_id {
+                let code = if req.header.session_id != self.session_id {
                     ResponseCode::FailedUnknownSession
                 } else if req.charge_progress != common::ChargeProgress::ScheduleRenegotiation || req.ev_power_profile.is_none() {
                     ResponseCode::FailedPowerDeliveryNotApplied
@@ -605,7 +626,7 @@ impl Evse {
     }
 
     fn header(&self) -> MessageHeader {
-        MessageHeader { session_id: self.config.session_id, time_stamp: now() }
+        MessageHeader { session_id: self.session_id, time_stamp: now() }
     }
 
     /// Answers a message that carries the wrong session id with `FAILED_UnknownSession`.
