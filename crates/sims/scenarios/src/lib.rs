@@ -4,6 +4,7 @@
 //! end-to-end tests: wrappers that run a scenario file and assert that it passed.
 
 pub mod pki;
+pub mod profile_pki;
 pub mod scenario;
 
 #[cfg(target_os = "linux")]

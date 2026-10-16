@@ -76,10 +76,25 @@ pub struct Material {
     pub secc_trust: Vec<u8>,
     /// Trust anchors of the EVCC (the SECC's CA).
     pub evcc_trust: Vec<u8>,
+    /// An OCSP response for the SECC's leaf (profile chains only).
+    pub secc_ocsp: Option<Vec<u8>>,
 }
 
+/// P-521 and Ed448 chains follow the certificate profiles of ISO 15118-20 Annex B (V2G root,
+/// two sub-CAs, a SECC or vehicle certificate); P-256 ones, the ISO 15118-2 profile, are plain.
 pub fn material(curve: Curve) -> Material {
-    let (secc_ca, secc) = pki(curve, "SECC");
-    let (evcc_ca, evcc) = pki(curve, "EVCC");
-    Material { secc, evcc, secc_trust: evcc_ca.pem, evcc_trust: secc_ca.pem }
+    use crate::profile_pki::{Flaw, profile_pki};
+    use evcc_linux::certificates::Peer;
+    use crate::profile_pki::{OcspFlaw, profile_pki_with_ocsp};
+    let (secc_ca, secc, evcc_ca, evcc, secc_ocsp);
+    if curve == Curve::P256 {
+        (secc_ca, secc) = pki(curve, "SECC");
+        (evcc_ca, evcc) = pki(curve, "EVCC");
+        secc_ocsp = None;
+    } else {
+        let (ca, identity, response) = profile_pki_with_ocsp(curve, Peer::Secc, Flaw::None, OcspFlaw::Good);
+        (secc_ca, secc, secc_ocsp) = (ca, identity, Some(response));
+        (evcc_ca, evcc) = profile_pki(curve, Peer::Vehicle, Flaw::None);
+    }
+    Material { secc, evcc, secc_trust: evcc_ca.pem, evcc_trust: secc_ca.pem, secc_ocsp }
 }

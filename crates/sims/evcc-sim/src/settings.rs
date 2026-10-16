@@ -125,6 +125,28 @@ impl From<TlsVersions> for evcc_linux::tls::Versions {
     }
 }
 
+/// What to do with a peer certificate chain that does not meet the profiles of ISO 15118-20 Annex B.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CertificateChecks {
+    #[default]
+    Off,
+    /// Check and log the violations, go on.
+    Warn,
+    /// Check; a violation ends the connection.
+    Enforce,
+}
+
+impl From<CertificateChecks> for evcc_linux::tls::CertificateChecks {
+    fn from(v: CertificateChecks) -> Self {
+        match v {
+            CertificateChecks::Off => Self::Off,
+            CertificateChecks::Warn => Self::Warn,
+            CertificateChecks::Enforce => Self::Enforce,
+        }
+    }
+}
+
 /// TLS with mutual authentication; the files are PEM.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -136,6 +158,14 @@ pub struct Tls {
     /// Also accept the ISO 15118-2 certificate profile (secp256r1).
     pub backwards_compatible: bool,
     pub versions: TlsVersions,
+    /// Check the charger's certificate chain against the SECC profiles of Annex B.
+    pub certificate_checks: CertificateChecks,
+    /// Check the revocation status of the charger's certificates with the OCSP response it
+    /// staples (V2G20-1240, 2409 ff.).
+    pub ocsp_checks: CertificateChecks,
+    /// Ask for a status for every certificate below the root (V2G20-2416). OpenSSL delivers only
+    /// the leaf's stapled response, so with a sub-CA this fails; without it only the leaf's is needed.
+    pub ocsp_require_all: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -265,6 +295,9 @@ mod tests {
                 key_password: Some("p".into()),
                 backwards_compatible: true,
                 versions: TlsVersions::Tls13And12,
+                certificate_checks: CertificateChecks::Warn,
+                ocsp_checks: CertificateChecks::Off,
+                ocsp_require_all: false,
             }),
             stop_after: 0,
             ..Default::default()

@@ -58,11 +58,21 @@ pub struct Credentials<'a> {
     /// Also accept secp256r1 certificates and key exchange (the ISO 15118-2 profile).
     pub backwards_compatible: bool,
     pub versions: Versions,
+    /// An OCSP response (DER) to staple to the certificate of a server context, for the
+    /// peer's `status_request` (V2G20-2388).
+    pub ocsp_response: Option<&'a [u8]>,
 }
 
 impl<'a> Credentials<'a> {
     pub fn new(chain_pem: &'a [u8], key_pem: &'a [u8], trust_pem: &'a [u8]) -> Self {
-        Self { chain_pem, key_pem, trust_pem, key_password: None, backwards_compatible: false, versions: Versions::Tls13 }
+        Self { chain_pem, key_pem, trust_pem, key_password: None, backwards_compatible: false, versions: Versions::Tls13, ocsp_response: None }
+    }
+
+    /// Staples this OCSP response (DER, for the leaf certificate) to a server's certificate when the
+    /// client asks for the status.
+    pub fn ocsp_response(mut self, response: &'a [u8]) -> Self {
+        self.ocsp_response = Some(response);
+        self
     }
 
     /// The versions to speak. TLS 1.2 uses the ISO 15118-2 certificate profile, so it also
@@ -120,8 +130,31 @@ fn context(role: SslMethod, c: &Credentials<'_>) -> Result<SslContextBuilder, Er
     }
     b.set_cert_store(store.build());
     // The server requests our certificate (V2G20-1264) and each side insists on the other's.
-    b.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
+    b.set_verify_callback(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT, tolerate_profile_extensions);
     Ok(b)
+}
+
+/// The profiles of Annex B make AuthorityInfoAccess and CRLDistributionPoints critical, which
+/// OpenSSL does not process during path validation and therefore reports as an unhandled critical
+/// extension. Revocation is checked with OCSP and CRLs apart from the path validation, so
+/// those two are let through; any other critical extension OpenSSL does not know still fails.
+fn tolerate_profile_extensions(ok: bool, ctx: &mut openssl::x509::X509StoreContextRef) -> bool {
+    use x509_parser::prelude::*;
+    if ok || ctx.error().as_raw() != 34 /* X509_V_ERR_UNHANDLED_CRITICAL_EXTENSION */ {
+        return ok;
+    }
+    let Some(der) = ctx.current_cert().and_then(|c| c.to_der().ok()) else { return false };
+    let Ok((_, cert)) = X509Certificate::from_der(&der) else { return false };
+    let tolerated = ["1.3.6.1.5.5.7.1.1", "2.5.29.31"];
+    let only_those = cert.extensions().iter().filter(|e| e.critical).all(|e| {
+        let oid = e.oid.to_id_string();
+        // The critical extensions OpenSSL handles itself are not what raised the error.
+        tolerated.contains(&oid.as_str()) || ["2.5.29.15", "2.5.29.19", "2.5.29.37", "2.5.29.17", "2.5.29.30", "2.5.29.36", "2.5.29.32"].contains(&oid.as_str())
+    });
+    if only_those {
+        ctx.set_error(openssl::x509::X509VerifyResult::OK);
+    }
+    only_those
 }
 
 /// A client (EVCC) context.
@@ -131,7 +164,15 @@ pub fn client_context(c: &Credentials<'_>) -> Result<SslContext, ErrorStack> {
 
 /// A server (SECC) context, for the EVSE side of tests.
 pub fn server_context(c: &Credentials<'_>) -> Result<SslContext, ErrorStack> {
-    Ok(context(SslMethod::tls_server(), c)?.build())
+    let mut b = context(SslMethod::tls_server(), c)?;
+    if let Some(response) = c.ocsp_response {
+        let response = response.to_vec();
+        b.set_status_callback(move |ssl| {
+            ssl.set_ocsp_status(&response)?;
+            Ok(true)
+        })?;
+    }
+    Ok(b.build())
 }
 
 fn other(e: impl std::error::Error + Send + Sync + 'static) -> io::Error {
@@ -147,11 +188,73 @@ fn finish<S: std::io::Read + std::io::Write>(r: Result<SslStream<S>, HandshakeEr
 }
 
 /// Performs the client handshake on a connected socket.
+///
+/// The ClientHello carries `status_request` (V2G20-2388), so that a SECC with a response for its
+/// certificate staples it; see [`check_peer_ocsp`].
 pub fn connect(context: &SslContext, stream: TcpStream) -> io::Result<SslStream<TcpStream>> {
-    finish(Ssl::new(context).map_err(other)?.connect(stream))
+    let mut ssl = Ssl::new(context).map_err(other)?;
+    ssl.set_status_type(openssl::ssl::StatusType::OCSP).map_err(other)?;
+    finish(ssl.connect(stream))
 }
 
 /// Performs the server handshake on an accepted socket.
 pub fn accept(context: &SslContext, stream: TcpStream) -> io::Result<SslStream<TcpStream>> {
     finish(Ssl::new(context).map_err(other)?.accept(stream))
+}
+
+/// What to do with a peer certificate chain that does not meet the Annex B profiles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CertificateChecks {
+    /// Do not check.
+    #[default]
+    Off,
+    /// Check and report, go on.
+    Warn,
+    /// Check; a chain with violations ends the connection.
+    Enforce,
+}
+
+/// Checks the chain the peer presented against the profiles of `peer` (see
+/// [`crate::certificates`]) after the handshake. Every violation goes to `report`; with
+/// [`CertificateChecks::Enforce`] there is an error when there was one.
+pub fn check_peer_certificates<S>(stream: &SslStream<S>, peer: crate::certificates::Peer, policy: CertificateChecks, mut report: impl FnMut(&crate::certificates::Violation)) -> io::Result<()> {
+    if policy == CertificateChecks::Off {
+        return Ok(());
+    }
+    let found = crate::certificates::check_peer(stream.ssl(), peer);
+    found.iter().for_each(&mut report);
+    match (policy, found.first()) {
+        (CertificateChecks::Enforce, Some(first)) => Err(io::Error::new(io::ErrorKind::InvalidData, format!("the peer's certificates do not meet the profile: {first} (and {} more)", found.len() - 1))),
+        _ => Ok(()),
+    }
+}
+
+/// Checks the revocation status of the peer's chain with the OCSP response stapled in the
+/// handshake (and `more` that the host has from elsewhere), against `trust_pem` and the rules of
+/// [`crate::ocsp`]. `require_all` asks for a status for every certificate below the root
+/// (V2G20-2416); OpenSSL hands over only the leaf's stapled response, so without more responses
+/// that fails for any chain with a sub-CA.
+pub fn check_peer_ocsp<S>(
+    stream: &SslStream<S>,
+    trust_pem: &[u8],
+    more: &[Vec<u8>],
+    policy: CertificateChecks,
+    require_all: bool,
+    mut report: impl FnMut(&crate::certificates::Violation),
+) -> io::Result<()> {
+    if policy == CertificateChecks::Off {
+        return Ok(());
+    }
+    let ssl = stream.ssl();
+    let chain: Vec<Vec<u8>> = ssl.verified_chain().map(|c| c.iter().filter_map(|x| x.to_der().ok()).collect()).unwrap_or_default();
+    let trust: Vec<Vec<u8>> = X509::stack_from_pem(trust_pem).map_err(other)?.iter().filter_map(|c| c.to_der().ok()).collect();
+    let mut responses: Vec<Vec<u8>> = ssl.ocsp_status().map(|r| vec![r.to_vec()]).unwrap_or_default();
+    responses.extend_from_slice(more);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    let found = crate::ocsp::check_revocation(&chain, &responses, &trust, now, require_all);
+    found.iter().for_each(&mut report);
+    match (policy, found.first()) {
+        (CertificateChecks::Enforce, Some(first)) => Err(io::Error::new(io::ErrorKind::InvalidData, format!("the revocation status of the peer's certificates is not good: {first} (and {} more)", found.len() - 1))),
+        _ => Ok(()),
+    }
 }

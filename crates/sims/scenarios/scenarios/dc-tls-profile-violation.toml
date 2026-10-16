@@ -1,0 +1,24 @@
+name = "dc-tls-profile-violation"
+description = "TLS 1.3 with the ISO 15118-2 certificate profile (P-256 certificates): the handshake works, but the vehicle checks the charger's chain against Annex B of -20 and refuses it."
+timeout_s = 40
+pki = "p256"
+
+[secc]
+kind = "evse-sim"
+tls = true
+[secc.settings]
+backwards_compatible = true
+
+[evcc]
+kind = "evcc-sim"
+tls = true
+[evcc.settings]
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+[evcc.settings.tls]
+backwards_compatible = true
+certificate_checks = "enforce"
+
+[expect]
+evcc_exit = 1
+evcc_log = ["certificates: certificate 0", "do not meet the profile"]

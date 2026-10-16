@@ -212,6 +212,8 @@ fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session:
             credentials = credentials.versions(t.versions.into());
             let context = tls::client_context(&credentials).map_err(io::Error::other)?;
             let mut stream = tls::connect(&context, tcp)?;
+            tls::check_peer_certificates(&stream, evcc_linux::certificates::Peer::Secc, t.certificate_checks.into(), |v| eprintln!("certificates: {v}"))?;
+            tls::check_peer_ocsp(&stream, &trust, &[], t.ocsp_checks.into(), t.ocsp_require_all, |v| eprintln!("ocsp: {v}"))?;
             eprintln!(
                 "tls: {} {}",
                 stream.ssl().version_str(),

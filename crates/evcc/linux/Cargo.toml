@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 evcc-core = { path = "../core" }
 openssl = "0.10"
+x509-parser = "0.18"
 libc = "0.2"
 v2gtp = { path = "../../codec/v2gtp" }
 iso15118-20 = { path = "../../codec/iso15118-20" }

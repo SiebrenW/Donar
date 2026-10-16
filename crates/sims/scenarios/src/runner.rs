@@ -80,10 +80,13 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
                 let files = generated_pki(&sb, scenario)?;
                 if scenario.secc.tls {
                     secc_args.extend(["--chain".into(), files.secc_chain, "--key".into(), files.secc_key, "--trust".into(), files.secc_trust]);
+                    if let Some(ocsp) = files.secc_ocsp {
+                        secc_args.extend(["--ocsp".into(), ocsp]);
+                    }
                 }
                 // The scenario may set the options of the vehicle's TLS; the files are the run's.
                 let own = evcc_settings.tls.take().unwrap_or_default();
-                evcc_settings.tls = scenario.evcc.tls.then_some(evcc_sim::Tls { backwards_compatible: own.backwards_compatible, versions: own.versions, ..files.evcc_tls });
+                evcc_settings.tls = scenario.evcc.tls.then_some(evcc_sim::Tls { backwards_compatible: own.backwards_compatible, versions: own.versions, certificate_checks: own.certificate_checks, ocsp_checks: own.ocsp_checks, ocsp_require_all: own.ocsp_require_all, ..files.evcc_tls });
             }
             let program = partners::sibling_binary("evse-sim")?;
             let mut spawn = Spawn::new(program).args(["--interface", sandbox::INTERFACE, "--address", "fe80::2"]).args(&secc_args).label("evse-sim");
@@ -95,9 +98,12 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
         Kind::EvccSim => unreachable!("rejected on load"),
     };
     if let Some(tls) = partner_tls.filter(|_| scenario.evcc.tls) {
-        let versions = evcc_settings.tls.take().map_or_else(Default::default, |t| t.versions);
+        let own = evcc_settings.tls.take().unwrap_or_default();
         evcc_settings.tls = Some(evcc_sim::Tls {
-            versions,
+            versions: own.versions,
+            certificate_checks: own.certificate_checks,
+            ocsp_checks: own.ocsp_checks,
+            ocsp_require_all: own.ocsp_require_all,
             chain: tls.chain.display().to_string(),
             key: tls.key.display().to_string(),
             trust: tls.trust.display().to_string(),
@@ -170,6 +176,8 @@ pub struct Files {
     pub secc_key: String,
     pub secc_trust: String,
     pub evcc_tls: evcc_sim::Tls,
+    /// A DER OCSP response for the SECC's certificate, when the PKI has one.
+    pub secc_ocsp: Option<String>,
 }
 
 fn generated_pki(sb: &Sandbox, scenario: &Scenario) -> io::Result<Files> {
@@ -188,6 +196,7 @@ pub fn write_pki(sb: &Sandbox, curve: pki::Curve) -> io::Result<Files> {
         secc_chain: put("secc-chain.pem", &m.secc.chain)?,
         secc_key: put("secc-key.pem", &m.secc.key)?,
         secc_trust: put("secc-trust.pem", &m.secc_trust)?,
+        secc_ocsp: m.secc_ocsp.as_deref().map(|r| put("secc-ocsp.der", r)).transpose()?,
         evcc_tls: evcc_sim::Tls {
             chain: put("evcc-chain.pem", &m.evcc.chain)?,
             key: put("evcc-key.pem", &m.evcc.key)?,
@@ -195,6 +204,9 @@ pub fn write_pki(sb: &Sandbox, curve: pki::Curve) -> io::Result<Files> {
             key_password: None,
             backwards_compatible: false,
             versions: Default::default(),
+            certificate_checks: Default::default(),
+            ocsp_checks: Default::default(),
+            ocsp_require_all: false,
         },
     })
 }

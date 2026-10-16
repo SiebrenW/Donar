@@ -5,10 +5,11 @@
 //! ```text
 //! evse-sim --interface eth1 --address fe80::2 [--config FILE] [--slac]
 //!          [--chain F --key F --trust F [--key-password P] [--backwards-compatible]]
-//!          [--sessions N] [--control SOCKET]
+//!          [--sessions N] [--control SOCKET] [--ocsp FILE]
 //! ```
 //! `--control` serves the live state and commands of a test platform on a Unix socket
 //! (`sim_control`): measurements to set, and the settings of the next session.
+//! `--ocsp` names a DER OCSP response for the charger's certificate, stapled when the vehicle asks.
 //! TLS is on when `--chain` is given. `--sessions N` serves N sessions one after the other
 //! (default: the settings file's `sessions`, 1; 0 for ever). The settings file is `evse_sim::Settings` in TOML. Exit status 0
 //! when every session ended with `SessionStop`, 1 when one did not, 2 for bad arguments.
@@ -32,9 +33,10 @@ struct Args {
     backwards_compatible: bool,
     sessions: Option<u32>,
     control: Option<String>,
+    ocsp: Option<String>,
 }
 
-const USAGE: &str = "usage: evse-sim --interface IF --address ADDR [--config FILE] [--slac] [--chain F --key F --trust F [--key-password P] [--backwards-compatible]] [--sessions N] [--control SOCKET]";
+const USAGE: &str = "usage: evse-sim --interface IF --address ADDR [--config FILE] [--slac] [--chain F --key F --trust F [--key-password P] [--backwards-compatible]] [--sessions N] [--control SOCKET] [--ocsp FILE]";
 
 fn parse() -> Result<Args, String> {
     let mut a = Args {
@@ -49,6 +51,7 @@ fn parse() -> Result<Args, String> {
         backwards_compatible: false,
         sessions: None,
         control: None,
+        ocsp: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -62,6 +65,7 @@ fn parse() -> Result<Args, String> {
             }
             "--config" => a.config = Some(value("--config")?),
             "--control" => a.control = Some(value("--control")?),
+            "--ocsp" => a.ocsp = Some(value("--ocsp")?),
             "--slac" => a.slac = true,
             "--chain" => a.chain = Some(value("--chain")?),
             "--key" => a.key = Some(value("--key")?),
@@ -115,7 +119,11 @@ fn run(args: &Args) -> io::Result<bool> {
         Some(_) => {
             let read = |p: &Option<String>| std::fs::read(p.as_deref().unwrap());
             let (chain, key, trust) = (read(&args.chain)?, read(&args.key)?, read(&args.trust)?);
+            let ocsp = args.ocsp.as_deref().map(std::fs::read).transpose()?;
             let mut credentials = evcc_linux::tls::Credentials::new(&chain, &key, &trust);
+            if let Some(ocsp) = &ocsp {
+                credentials = credentials.ocsp_response(ocsp);
+            }
             if let Some(password) = &args.key_password {
                 credentials = credentials.key_password(password.as_bytes());
             }
@@ -161,16 +169,21 @@ fn run(args: &Args) -> io::Result<bool> {
         let state = match &context {
             Some(context) => {
                 let (stream, _) = tcp.accept()?;
-                let mut stream = evcc_linux::tls::accept(context, stream)?;
-                eprintln!(
-                    "tls: {} {}",
-                    stream.ssl().version_str(),
-                    stream.ssl().current_cipher().map_or("?", |c| c.name())
-                );
-                match &live {
-                    Some(live) => evse_sim::serve_live(&mut stream, live)?,
-                    None => evse_sim::serve(&mut stream, settings.session.clone())?,
-                }
+                // A connection that fails the handshake or the certificate checks is a lost
+                // session, not the end of the charger.
+                let session = || -> io::Result<State> {
+                    let mut stream = evcc_linux::tls::accept(context, stream)?;
+                    evcc_linux::tls::check_peer_certificates(&stream, evcc_linux::certificates::Peer::Vehicle, settings.certificate_checks.into(), |v| eprintln!("certificates: {v}"))?;
+                    eprintln!("tls: {} {}", stream.ssl().version_str(), stream.ssl().current_cipher().map_or("?", |c| c.name()));
+                    match &live {
+                        Some(live) => evse_sim::serve_live(&mut stream, live),
+                        None => evse_sim::serve(&mut stream, settings.session.clone()),
+                    }
+                };
+                session().unwrap_or_else(|e| {
+                    eprintln!("tls: {e}");
+                    State::Closed
+                })
             }
             None => match &live {
                 Some(live) => evse_sim::serve_live(&mut tcp.accept()?.0, live)?,

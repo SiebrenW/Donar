@@ -81,6 +81,28 @@ impl From<TlsVersions> for evcc_linux::tls::Versions {
     }
 }
 
+/// What to do with a peer certificate chain that does not meet the profiles of ISO 15118-20 Annex B.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CertificateChecks {
+    #[default]
+    Off,
+    /// Check and log the violations, go on.
+    Warn,
+    /// Check; a violation ends the connection.
+    Enforce,
+}
+
+impl From<CertificateChecks> for evcc_linux::tls::CertificateChecks {
+    fn from(v: CertificateChecks) -> Self {
+        match v {
+            CertificateChecks::Off => Self::Off,
+            CertificateChecks::Warn => Self::Warn,
+            CertificateChecks::Enforce => Self::Enforce,
+        }
+    }
+}
+
 /// Everything a simulated charger process reads from its settings file (`evse-sim --config`):
 /// the session knobs and the SLAC responder's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -92,6 +114,8 @@ pub struct Settings {
     pub tls_versions: TlsVersions,
     /// Also accept secp256r1 certificates (the ISO 15118-2 profile).
     pub backwards_compatible: bool,
+    /// Check the vehicle's certificate chain against the vehicle profiles of Annex B.
+    pub certificate_checks: CertificateChecks,
     /// The simulated control pilot the vehicle toggles: one octet per toggle is appended to
     /// this file (a path relative to the artifacts directory in a scenario). The charger counts
     /// them when the vehicle asks for the validation by BCB-Toggle.
@@ -104,7 +128,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { slac_responder: false, tls_versions: TlsVersions::Tls13, backwards_compatible: false, control_pilot_file: None, sessions: 1, session: Config::default(), slac: Default::default() }
+        Self { slac_responder: false, tls_versions: TlsVersions::Tls13, backwards_compatible: false, certificate_checks: CertificateChecks::Off, control_pilot_file: None, sessions: 1, session: Config::default(), slac: Default::default() }
     }
 }
 

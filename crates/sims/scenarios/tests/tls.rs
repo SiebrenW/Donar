@@ -175,3 +175,88 @@ fn two_tls13_capable_peers_stay_on_tls13_when_both_offer_the_fallback() {
     assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
     assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
 }
+
+/// Both sides check the chain they got against the Annex B profile of the other.
+fn profile_session(curve: Curve, secc_flaw: scenarios::profile_pki::Flaw, vehicle_checks: tls::CertificateChecks) -> std::io::Result<Outcome> {
+    use evcc_linux::certificates::Peer;
+    use scenarios::profile_pki::{Flaw, profile_pki};
+    let (ca, secc) = profile_pki(curve, Peer::Secc, secc_flaw);
+    let (vca, evcc) = profile_pki(curve, Peer::Vehicle, Flaw::None);
+    let server = tls::server_context(&credentials(&secc, &vca)).unwrap();
+    let client = tls::client_context(&credentials(&evcc, &ca)).unwrap();
+    let (addr, server) = start(SecContext(server));
+    let mut stream = tls::connect(&client, TcpStream::connect(addr).unwrap())?;
+    let mut reported = Vec::new();
+    let checked = tls::check_peer_certificates(&stream, evcc_linux::certificates::Peer::Secc, vehicle_checks, |v| reported.push(v.to_string()));
+    if secc_flaw != Flaw::None {
+        assert!(!reported.is_empty(), "the flaw {secc_flaw:?} went unreported");
+    } else {
+        assert!(reported.is_empty(), "{reported:?}");
+    }
+    checked?;
+    let outcome = common::run_car(&mut stream, true, fast(), Some(3))?;
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+    Ok(outcome)
+}
+
+#[test]
+fn sessions_run_over_chains_made_to_the_profiles() {
+    for curve in [Curve::P521, Curve::Ed448] {
+        let outcome = profile_session(curve, scenarios::profile_pki::Flaw::None, tls::CertificateChecks::Enforce).unwrap();
+        assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    }
+}
+
+#[test]
+fn a_chain_against_the_profile_is_refused_only_when_enforced() {
+    use scenarios::profile_pki::Flaw;
+    // The handshake and the session work (OpenSSL has no quarrel with it); the profile check decides.
+    let warned = profile_session(Curve::P521, Flaw::KeyIdMethod1, tls::CertificateChecks::Warn).unwrap();
+    assert_eq!(warned, Outcome::Ended(EndReason::Completed));
+    let err = profile_session(Curve::P521, Flaw::KeyIdMethod1, tls::CertificateChecks::Enforce).unwrap_err();
+    assert!(err.to_string().contains("do not meet the profile"), "{err}");
+}
+
+/// A session where the SECC staples `response` (or nothing) and the vehicle checks the status.
+fn ocsp_session(ocsp: Option<scenarios::profile_pki::OcspFlaw>, require_all: bool) -> std::io::Result<Outcome> {
+    use evcc_linux::certificates::Peer;
+    use scenarios::profile_pki::{Flaw, OcspFlaw, profile_pki, profile_pki_with_ocsp};
+    let (ca, secc, response) = profile_pki_with_ocsp(Curve::P521, Peer::Secc, Flaw::None, ocsp.unwrap_or(OcspFlaw::Good));
+    let (vca, evcc) = profile_pki(Curve::P521, Peer::Vehicle, Flaw::None);
+    let mut server_credentials = credentials(&secc, &vca);
+    if ocsp.is_some() {
+        server_credentials = server_credentials.ocsp_response(&response);
+    }
+    let server = tls::server_context(&server_credentials).unwrap();
+    let client = tls::client_context(&credentials(&evcc, &ca)).unwrap();
+    let (addr, server) = start(SecContext(server));
+    let mut stream = tls::connect(&client, TcpStream::connect(addr).unwrap())?;
+    let stapled = stream.ssl().ocsp_status().is_some();
+    assert_eq!(stapled, ocsp.is_some(), "the response is stapled when the server has one");
+    tls::check_peer_ocsp(&stream, &ca.pem, &[], tls::CertificateChecks::Enforce, require_all, |_| {})?;
+    let outcome = common::run_car(&mut stream, true, fast(), Some(3))?;
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+    Ok(outcome)
+}
+
+#[test]
+fn a_stapled_good_response_for_the_leaf_is_accepted() {
+    use scenarios::profile_pki::OcspFlaw;
+    assert_eq!(ocsp_session(Some(OcspFlaw::Good), false).unwrap(), Outcome::Ended(EndReason::Completed));
+}
+
+#[test]
+fn a_revoked_certificate_and_a_missing_response_are_refused() {
+    use scenarios::profile_pki::OcspFlaw;
+    let revoked = ocsp_session(Some(OcspFlaw::Revoked), false).unwrap_err();
+    assert!(revoked.to_string().contains("V2G20-2415"), "{revoked}");
+    let missing = ocsp_session(None, false).unwrap_err();
+    assert!(missing.to_string().contains("V2G20-2416"), "{missing}");
+}
+
+#[test]
+fn the_sub_ca_statuses_openssl_cannot_deliver_fail_the_strict_check() {
+    use scenarios::profile_pki::OcspFlaw;
+    let err = ocsp_session(Some(OcspFlaw::Good), true).unwrap_err();
+    assert!(err.to_string().contains("V2G20-2416"), "{err}");
+}

@@ -18,7 +18,7 @@ mod live;
 mod settings;
 
 pub use live::{EvLive, Phase};
-pub use settings::{Connector, Limits, LogLevel, Settings, SlacValidation, Tls, TlsVersions};
+pub use settings::{CertificateChecks, Connector, Limits, LogLevel, Settings, SlacValidation, Tls, TlsVersions};
 
 pub struct SimulatedEv {
     connector: DcConnector,
