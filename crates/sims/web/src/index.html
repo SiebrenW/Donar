@@ -25,6 +25,7 @@
     --input: #171c24; color-scheme: dark;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; font: 14px system-ui, sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: grid; grid-template-rows: auto 1fr; }
   header { display: flex; gap: 1rem; align-items: center; padding: .45rem 1rem; border-bottom: 1px solid var(--line); background: var(--panel); }
   header h1 { font-size: 1rem; margin: 0; font-weight: 600; }
@@ -38,7 +39,7 @@
   nav a { display: block; padding: .25rem .4rem; border-radius: 4px; color: inherit; text-decoration: none; cursor: pointer; }
   nav a:hover { background: var(--hover); }
   nav a.current { background: var(--accent); color: var(--accent-text); }
-  main, #sim-view { overflow: auto; padding: 1rem; display: grid; gap: 1rem; align-content: start; }
+  main, #sim-view { min-height: 0; overflow: auto; padding: 1rem; display: grid; gap: 1rem; align-content: start; }
   h2 { font-size: 1.1rem; margin: 0; }
   p.desc { margin: .2rem 0 0; color: var(--muted); }
   .row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: end; }
