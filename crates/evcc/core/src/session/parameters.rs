@@ -51,6 +51,14 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
 
     pub(super) fn send_schedule_exchange_req(&mut self, tx: &mut [u8]) -> Step {
+        let framed = self.frame_schedule_exchange_req(PayloadType::MAINSTREAM, tx);
+        if self.state == State::AwaitScheduleExchangeRes {
+            return self.sent(MsgKind::ScheduleExchangeReq, framed);
+        }
+        self.send_then(State::AwaitScheduleExchangeRes, MsgKind::ScheduleExchangeReq, framed)
+    }
+
+    pub(super) fn frame_schedule_exchange_req(&mut self, payload_type: PayloadType, tx: &mut [u8]) -> Result<usize, ()> {
         let r = self.ev.schedule_request();
         let msg = common::ScheduleExchangeReq {
             header: self.header(),
@@ -66,9 +74,5 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 ev_minimum_v2x_energy_request: None,
             }),
         };
-        let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
-        if self.state == State::AwaitScheduleExchangeRes {
-            return self.sent(MsgKind::ScheduleExchangeReq, framed);
-        }
-        self.send_then(State::AwaitScheduleExchangeRes, MsgKind::ScheduleExchangeReq, framed)
+        frame(tx, payload_type, |out| msg.encode(out))
     }}

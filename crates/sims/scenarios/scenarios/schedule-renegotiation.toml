@@ -1,0 +1,22 @@
+name = "schedule-renegotiation"
+description = "The charger asks for a schedule renegotiation after two charge loop rounds: the vehicle runs charge parameter discovery, schedule exchange (the charger answers Ongoing twice) and a power delivery request on the side stream (payload type 0x8101) while the charge loop goes on; the vehicle stops when it is done."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session]
+schedule_renegotiation_after_loops = 2
+schedule_ongoing_responses = 2
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+stop_after = 0
+stop_when_rescheduled = true
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)"]
+secc_log = ["session: Stopped"]

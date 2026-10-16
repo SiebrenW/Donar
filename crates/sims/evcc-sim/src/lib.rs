@@ -87,6 +87,11 @@ pub struct Behaviour {
     pub stop_after: Option<u32>,
     /// After this many charge loop answers the car asks for a service renegotiation, once.
     pub renegotiate_after: Option<u32>,
+    /// After this many charge loop answers the car asks for a schedule renegotiation, once.
+    pub renegotiate_schedule_after: Option<u32>,
+    /// Ask to stop as soon as a schedule renegotiation has finished (for tests that must not
+    /// depend on how long it takes).
+    pub stop_when_rescheduled: bool,
 }
 
 /// Runs the simulated car over `stream`; after `stop_after` charge loop answers it asks to
@@ -99,7 +104,7 @@ pub fn run_simulated_car(
     connector: DcConnector,
     log: impl LogSink,
 ) -> io::Result<Outcome> {
-    run_car(stream, secured, config, Behaviour { connector, stop_after, renegotiate_after: None }, log)
+    run_car(stream, secured, config, Behaviour { connector, stop_after, renegotiate_after: None, renegotiate_schedule_after: None, stop_when_rescheduled: false }, log)
 }
 
 pub fn run_car(
@@ -113,7 +118,7 @@ pub fn run_car(
     let open = Rc::new(Cell::new(false));
     let car = SimulatedEv::new(open.clone(), behaviour.connector);
     let mut session = Session::new(config, car, log, Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
-    let (mut loops, mut renegotiated) = (0, false);
+    let (mut loops, mut renegotiated, mut rescheduled) = (0, false, false);
     run(stream, &mut session, secured, &mut |n| match n {
         // The car closes its contactors and stops drawing current as soon as it is asked to.
         Notice::CloseContactors => Some(Event::ContactorsClosed),
@@ -127,6 +132,7 @@ pub fn run_car(
             open.set(false);
             None
         }
+        Notice::ScheduleRenegotiated => behaviour.stop_when_rescheduled.then_some(Event::StopRequested),
         Notice::ChargeLoop(_) => {
             loops += 1;
             if Some(loops) == behaviour.stop_after {
@@ -134,6 +140,9 @@ pub fn run_car(
             } else if Some(loops) == behaviour.renegotiate_after && !renegotiated {
                 renegotiated = true;
                 Some(Event::RenegotiateServices)
+            } else if Some(loops) == behaviour.renegotiate_schedule_after && !rescheduled {
+                rescheduled = true;
+                Some(Event::RenegotiateSchedule)
             } else {
                 None
             }

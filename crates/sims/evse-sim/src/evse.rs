@@ -68,11 +68,14 @@ pub struct Evse {
     /// A service renegotiation was requested (and done) in this session.
     renegotiation_requested: bool,
     renegotiated: bool,
+    side_schedule_reqs_seen: u32,
+    /// A schedule renegotiation finished on the side stream.
+    side_renegotiated: bool,
 }
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false }
+        Self { config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false }
     }
 
     pub fn state(&self) -> State {
@@ -111,6 +114,9 @@ impl Evse {
         let mut mem = vec![0u8; 8192];
         let arena = Arena::new(&mut mem);
         let closed = Output { send: None, close: true };
+        if payload_type == PayloadType::SCHEDULE_RENEGOTIATION {
+            return self.on_side(payload);
+        }
         match self.state {
             State::AwaitSupportedAppProtocolReq if payload_type == PayloadType::SAP => {
                 let Ok(app_protocol::Message::SupportedAppProtocolReq(req)) = app_protocol::decode(payload, &arena)
@@ -242,22 +248,7 @@ impl Evse {
                 } else {
                     self.config.cpd_code
                 };
-                let rn = |value| RationalNumber { exponent: 0, value };
-                let res = dc::DcChargeParameterDiscoveryRes {
-                    header: self.header(),
-                    response_code: code,
-                    dc_cpd_res_energy_transfer_mode: dc::DcCpdResEnergyTransferModeChoice::Base(
-                        dc::DcCpdResEnergyTransferMode {
-                            evse_maximum_charge_power: RationalNumber { exponent: 3, value: 150 },
-                            evse_minimum_charge_power: rn(1000),
-                            evse_maximum_charge_current: rn(300),
-                            evse_minimum_charge_current: rn(2),
-                            evse_maximum_voltage: rn(920),
-                            evse_minimum_voltage: rn(150),
-                            evse_power_ramp_limitation: None,
-                        },
-                    ),
-                };
+                let res = self.cpd_res(code);
                 if is_ok(code) {
                     self.state = State::AwaitScheduleExchangeReq;
                 }
@@ -278,18 +269,7 @@ impl Evse {
                 } else {
                     (Processing::Finished, self.config.schedule_code)
                 };
-                let res = common::ScheduleExchangeRes {
-                    header: self.header(),
-                    response_code: code,
-                    evse_processing: processing,
-                    go_to_pause: None,
-                    se_res_control_mode: common::SeResControlModeChoice::Dynamic(common::DynamicSeResControlMode {
-                        departure_time: None,
-                        minimum_soc: None,
-                        target_soc: None,
-                        schedule: None,
-                    }),
-                };
+                let res = self.schedule_res(processing, code);
                 let ongoing = processing == Processing::Ongoing;
                 if !ongoing && is_ok(code) {
                     self.state = State::AwaitCableCheckReq;
@@ -364,6 +344,10 @@ impl Evse {
                 let terminate = self.config.terminate_after_loops.is_some_and(|n| self.loops_seen >= n);
                 let notification = if terminate {
                     Some((common_types::EvseNotification::Terminate, 5))
+                } else if !self.side_renegotiated
+                    && self.config.schedule_renegotiation_after_loops.is_some_and(|n| self.loops_seen >= n)
+                {
+                    Some((common_types::EvseNotification::ScheduleRenegotiation, 10))
                 } else if !self.renegotiated
                     && self.config.service_renegotiation_after_loops.is_some_and(|n| self.loops_seen >= n)
                 {
@@ -491,6 +475,82 @@ impl Evse {
 }
 
 impl Evse {
+    fn cpd_res(&self, code: ResponseCode) -> dc::DcChargeParameterDiscoveryRes {
+        let rn = |value| RationalNumber { exponent: 0, value };
+        dc::DcChargeParameterDiscoveryRes {
+            header: self.header(),
+            response_code: code,
+            dc_cpd_res_energy_transfer_mode: dc::DcCpdResEnergyTransferModeChoice::Base(dc::DcCpdResEnergyTransferMode {
+                evse_maximum_charge_power: RationalNumber { exponent: 3, value: 150 },
+                evse_minimum_charge_power: rn(1000),
+                evse_maximum_charge_current: rn(300),
+                evse_minimum_charge_current: rn(2),
+                evse_maximum_voltage: rn(920),
+                evse_minimum_voltage: rn(150),
+                evse_power_ramp_limitation: None,
+            }),
+        }
+    }
+
+    fn schedule_res(&self, processing: Processing, code: ResponseCode) -> common::ScheduleExchangeRes<'static> {
+        common::ScheduleExchangeRes {
+            header: self.header(),
+            response_code: code,
+            evse_processing: processing,
+            go_to_pause: None,
+            se_res_control_mode: common::SeResControlModeChoice::Dynamic(common::DynamicSeResControlMode {
+                departure_time: None,
+                minimum_soc: None,
+                target_soc: None,
+                schedule: None,
+            }),
+        }
+    }
+
+    /// The schedule renegotiation side stream (V2G20-1046 ff.), answered next to the charge loop.
+    fn on_side(&mut self, payload: &[u8]) -> Output {
+        let mut mem = vec![0u8; 8192];
+        let arena = Arena::new(&mut mem);
+        let nothing = Output { send: None, close: false };
+        if self.state != State::ChargeLoop || self.config.side_stream_silent {
+            return nothing;
+        }
+        let side = PayloadType::SCHEDULE_RENEGOTIATION;
+        if let Ok(dc::Message::DcChargeParameterDiscoveryReq(req)) = dc::decode(payload, &arena) {
+            let code = if req.header.session_id != self.config.session_id { ResponseCode::FailedUnknownSession } else { self.config.cpd_code };
+            self.side_schedule_reqs_seen = 0;
+            let res = self.cpd_res(code);
+            return Output { send: frame(side, |out| res.encode(out)), close: !is_ok(code) };
+        }
+        match common::decode(payload, &arena) {
+            Ok(common::Message::ScheduleExchangeReq(req)) => {
+                self.side_schedule_reqs_seen += 1;
+                let (processing, code) = if req.header.session_id != self.config.session_id {
+                    (Processing::Finished, ResponseCode::FailedUnknownSession)
+                } else if self.side_schedule_reqs_seen <= self.config.schedule_ongoing_responses {
+                    (Processing::Ongoing, ResponseCode::Ok)
+                } else {
+                    (Processing::Finished, self.config.schedule_code)
+                };
+                let res = self.schedule_res(processing, code);
+                Output { send: frame(side, |out| res.encode(out)), close: processing != Processing::Ongoing && !is_ok(code) }
+            }
+            Ok(common::Message::PowerDeliveryReq(req)) => {
+                let code = if req.header.session_id != self.config.session_id {
+                    ResponseCode::FailedUnknownSession
+                } else if req.charge_progress != common::ChargeProgress::ScheduleRenegotiation || req.ev_power_profile.is_none() {
+                    ResponseCode::FailedPowerDeliveryNotApplied
+                } else {
+                    self.side_renegotiated = true;
+                    ResponseCode::Ok
+                };
+                let res = common::PowerDeliveryRes { header: self.header(), response_code: code, evse_status: None };
+                Output { send: frame(side, |out| res.encode(out)), close: !is_ok(code) }
+            }
+            _ => nothing,
+        }
+    }
+
     /// `ServiceDiscoveryRes`; a failure code closes the connection.
     fn discovery_res(&self, code: ResponseCode) -> Output {
         let list: Vec<Service> =

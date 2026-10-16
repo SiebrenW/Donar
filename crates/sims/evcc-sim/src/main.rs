@@ -149,7 +149,7 @@ fn run(interface: &str, settings: &Settings) -> io::Result<bool> {
     let log = StderrLog {
         level: settings.log.into(),
     };
-    let behaviour = Behaviour { connector: settings.connector.into(), stop_after: settings.stop_after(), renegotiate_after: settings.renegotiate_after };
+    let behaviour = Behaviour { connector: settings.connector.into(), stop_after: settings.stop_after(), renegotiate_after: settings.renegotiate_after, renegotiate_schedule_after: settings.renegotiate_schedule_after, stop_when_rescheduled: settings.stop_when_rescheduled };
     let outcome = match &settings.tls {
         None => {
             let mut stream = tcp;

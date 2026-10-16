@@ -30,6 +30,7 @@ use crate::{Timer, TimerCmd, Timers};
 mod charge;
 mod config;
 mod parameters;
+mod renegotiation;
 mod setup;
 mod shutdown;
 mod types;
@@ -67,6 +68,13 @@ struct Machine<E, L> {
     /// The shutdown under way ends in `SessionStopReq(ServiceRenegotiation)` and a new
     /// service discovery instead of the end of the session.
     renegotiating: bool,
+    /// The schedule renegotiation side stream.
+    side: renegotiation::Side,
+    side_waited_ms: u32,
+    /// The side timer is a pause before repeating `ScheduleExchangeReq`, not a response timeout.
+    side_poll_pending: bool,
+    /// At least one `ChargeLoopReq` went out in this charge (V2G20-1846).
+    charge_loop_started: bool,
     /// The host is ramping the current down to enter a standby period.
     entering_standby: bool,
     /// A standby period is on (the EVSE accepted `PowerDeliveryReq(Standby)`).
@@ -97,6 +105,10 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 welding_finishing: false,
                 stop_requested: false,
                 renegotiation_supported: None,
+                side: renegotiation::Side::Idle,
+                side_waited_ms: 0,
+                side_poll_pending: false,
+                charge_loop_started: false,
                 renegotiating: false,
                 entering_standby: false,
                 standby: false,
@@ -161,6 +173,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                     Timer::Sequence,
                     State::AwaitContactors | State::AwaitCurrentStopped | State::AwaitContactorsOpened,
                 ) => m.end(EndReason::Timeout),
+                (Timer::Side, _) => m.on_side_timer(tx),
                 (Timer::Poll, _) if m.poll_pending => {
                     m.poll_pending = false;
                     m.repeat(tx)
@@ -201,6 +214,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 _ => Step::default(),
             }
             }
+            Event::RenegotiateSchedule => m.start_schedule_renegotiation(Step::default(), tx),
             Event::RenegotiateServices => {
                 if m.renegotiation_supported != Some(true) {
                     return Step::default();
@@ -457,6 +471,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     /// A frame arrived: decode it according to what the machine waits for and run the handler.
     fn on_frame(&mut self, payload_type: PayloadType, payload: &[u8], arena: &Arena<'_>, tx: &mut [u8]) -> Step {
         use common::Message as M;
+        if payload_type == PayloadType::SCHEDULE_RENEGOTIATION {
+            return self.on_side_frame(payload_type, payload, arena, tx);
+        }
         match self.state {
             State::AwaitSupportedAppProtocolRes if payload_type == PayloadType::SAP => {
                 match app_protocol::decode(payload, arena) {

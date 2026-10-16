@@ -92,6 +92,10 @@ pub enum Event {
     StopRequested,
     /// The host opened the vehicle's contactors after [`Notice::OpenContactors`].
     ContactorsOpened,
+    /// The vehicle wants new charging targets and a new power profile (V2G20-1046): a schedule
+    /// renegotiation runs as a side stream next to the charge loop. Ignored outside the charge
+    /// loop, before the first `ChargeLoopReq` and while one is running.
+    RenegotiateSchedule,
     /// The vehicle wants to change its service selection (V2G20-1661): the charge ends in an
     /// orderly way, the session is not stopped, and service discovery starts over. Ignored
     /// unless the EVSE offered service renegotiation in its first `ServiceDiscoveryRes`.
@@ -130,6 +134,8 @@ pub enum Notice {
     /// the charge loop goes on. [`Notice::EnergyTransferStarted`] follows when it ends (the
     /// EVSE sent `ExitStandby`) or when the EVSE refused the standby period.
     StandbyEntered,
+    /// A schedule renegotiation finished: the EVSE accepted the new power profile.
+    ScheduleRenegotiated,
     /// The EVSE agreed to a service renegotiation: the session goes on with a new service
     /// discovery, after which the usual notices follow again (pre-charge, close contactors).
     ServicesRenegotiating,

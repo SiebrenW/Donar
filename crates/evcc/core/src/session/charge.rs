@@ -120,8 +120,14 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 self.standby = false;
                 return self.send_power_delivery(common::ChargeProgress::Start, tx);
             }
-            // Schedule and service renegotiation and metering confirmation are not implemented
-            // (the last one belongs to Plug & Charge) and are ignored.
+            // V2G20-1052, V2G20-1845: renegotiate the schedule on the side stream, now.
+            Some((EvseNotification::ScheduleRenegotiation, _)) => {
+                let mut step = self.pace_charge_loop(tx);
+                step = self.start_schedule_renegotiation(step, tx);
+                step.notice = Some(Notice::ChargeLoop(status));
+                return step;
+            }
+            // Metering confirmation belongs to Plug & Charge and is ignored.
             _ => {}
         }
         let mut step = self.pace_charge_loop(tx);
@@ -180,6 +186,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         step
     }
     pub(super) fn send_charge_loop_req(&mut self, tx: &mut [u8]) -> Step {
+        self.charge_loop_started = true;
         let r = self.ev.schedule_request();
         let l = self.ev.dc_limits();
         let msg = dc::DcChargeLoopReq {
@@ -218,6 +225,18 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
     }
     pub(super) fn send_power_delivery(&mut self, progress: common::ChargeProgress, tx: &mut [u8]) -> Step {
+        let framed = self.frame_power_delivery_req(progress, PayloadType::MAINSTREAM, tx);
+        let next = match progress {
+            common::ChargeProgress::Stop => State::AwaitPowerDeliveryStopRes,
+            common::ChargeProgress::Standby => State::AwaitPowerDeliveryStandbyRes,
+            _ => State::AwaitPowerDeliveryRes,
+        };
+        self.send_then(next, MsgKind::PowerDeliveryReq, framed)
+    }
+
+    /// `PowerDeliveryReq` with the vehicle's power profile; on the side stream it ends a schedule
+    /// renegotiation (V2G20-2317).
+    pub(super) fn frame_power_delivery_req(&mut self, progress: common::ChargeProgress, payload_type: PayloadType, tx: &mut [u8]) -> Result<usize, ()> {
         let r = self.ev.schedule_request();
         let limits = self.ev.dc_limits();
         // A single-entry profile at the vehicle's maximum charge power until departure: the
@@ -240,11 +259,5 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             }),
             bpt_channel_selection: None,
         };
-        let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
-        let next = match progress {
-            common::ChargeProgress::Stop => State::AwaitPowerDeliveryStopRes,
-            common::ChargeProgress::Standby => State::AwaitPowerDeliveryStandbyRes,
-            _ => State::AwaitPowerDeliveryRes,
-        };
-        self.send_then(next, MsgKind::PowerDeliveryReq, framed)
+        frame(tx, payload_type, |out| msg.encode(out))
     }}

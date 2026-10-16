@@ -31,6 +31,9 @@ pub enum Timer {
     /// `V2G_EVCC_Sequence_Timer`: how long the EVCC may take before its next request while it
     /// waits for the vehicle (contactors, ramp-down).
     Sequence,
+    /// The side stream of a schedule renegotiation (V2G20-1041: its timing is independent of
+    /// the main stream's): the response to the request in flight, or the pause before a repeat.
+    Side,
     /// The wait of the current SLAC step: response, batch interval, link-up or retry pause.
     Slac,
     /// `TT_EV_atten_results`: how long the EV collects attenuation reports.

@@ -91,6 +91,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
     /// Asks the host to bring the current to zero; the shutdown or a standby period follows.
     pub(super) fn ramp_down(&mut self, within_s: Option<u16>) -> Step {
+        self.abandon_side();
+        self.charge_loop_started = false;
         self.goto(State::AwaitCurrentStopped);
         Step {
             timers: Timers::one(TimerCmd::Cancel(Timer::Response))

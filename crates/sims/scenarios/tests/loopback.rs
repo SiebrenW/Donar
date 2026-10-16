@@ -273,6 +273,8 @@ const CAR: evcc_sim::Behaviour = evcc_sim::Behaviour {
     connector: evcc_core::ev::DcConnector::Core,
     stop_after: None,
     renegotiate_after: None,
+    renegotiate_schedule_after: None,
+    stop_when_rescheduled: false,
 };
 
 #[test]
@@ -339,4 +341,62 @@ fn a_charger_that_refuses_the_renegotiation_it_offered_ends_the_session_with_the
     let (outcome, _) = run_behaving(addr, evcc_sim::Behaviour { stop_after: Some(6), renegotiate_after: Some(2), ..CAR });
     assert_eq!(outcome, Outcome::Ended(EndReason::Rejected(ResponseCode::FailedNoServiceRenegotiationSupported)));
     drop(server);
+}
+
+#[test]
+fn a_schedule_renegotiation_asked_by_the_evse_runs_on_the_side_stream_next_to_the_charge_loop() {
+    let config = evse_sim::Config { schedule_renegotiation_after_loops: Some(2), ..Default::default() };
+    let (addr, server) = start(config);
+    let (outcome, log) = run_behaving(addr, evcc_sim::Behaviour { stop_when_rescheduled: true, ..CAR });
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    // Once in the main flow and once on the side stream.
+    assert_eq!(log.count("MsgTx { msg: DcChargeParameterDiscoveryReq }"), 2);
+    assert_eq!(log.count("MsgTx { msg: ScheduleExchangeReq }"), 2);
+    // Start, the one that ends the renegotiation, Stop; one session, one connection.
+    assert_eq!(log.count("MsgTx { msg: PowerDeliveryReq }"), 3);
+    assert_eq!(log.count("SessionSetUp"), 1);
+    // The charge loop was running when it started.
+    assert!(log.count("MsgTx { msg: DcChargeLoopReq }") >= 2);
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+}
+
+#[test]
+fn a_schedule_renegotiation_asked_by_the_car_waits_for_ongoing_answers() {
+    let config = evse_sim::Config { schedule_ongoing_responses: 2, ..Default::default() };
+    let (addr, server) = start(config);
+    let (outcome, log) = run_behaving(
+        addr,
+        evcc_sim::Behaviour { renegotiate_schedule_after: Some(2), stop_when_rescheduled: true, ..CAR },
+    );
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    // The main exchange needed three requests, the side stream's too.
+    assert_eq!(log.count("MsgTx { msg: ScheduleExchangeReq }"), 6);
+    assert_eq!(log.count("MsgTx { msg: DcChargeParameterDiscoveryReq }"), 2);
+    assert_eq!(log.count("MsgTx { msg: PowerDeliveryReq }"), 3);
+    assert!(log.count("MsgTx { msg: DcChargeLoopReq }") > 2);
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+}
+
+#[test]
+fn a_side_stream_that_goes_unanswered_times_out_the_session() {
+    let config = evse_sim::Config { side_stream_silent: true, ..Default::default() };
+    let (addr, _server) = start(config);
+    let mut stream = TcpStream::connect(addr).unwrap();
+    let car = evcc_sim::Behaviour { renegotiate_schedule_after: Some(2), ..CAR };
+    let (outcome, _) = common::run_behaving_car(&mut stream, Config { response_timeout_ms: 200, ..fast() }, car);
+    assert_eq!(outcome, Outcome::Ended(EndReason::Timeout));
+}
+
+#[test]
+fn a_renegotiation_the_car_asks_for_too_early_or_twice_is_not_started() {
+    // Asked for in the first round: V2G20-1846 wants a ChargeLoopReq before it, which the
+    // first round's answer has satisfied; asked for during one that runs: ignored.
+    let config = evse_sim::Config { schedule_renegotiation_after_loops: Some(2), ..Default::default() };
+    let (addr, server) = start(config);
+    let car = evcc_sim::Behaviour { stop_after: Some(6), renegotiate_schedule_after: Some(2), ..CAR };
+    let (outcome, log) = run_behaving(addr, car);
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    // The EVSE's notification and the car's wish came in the same round: one renegotiation.
+    assert_eq!(log.count("MsgTx { msg: DcChargeParameterDiscoveryReq }"), 2);
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
 }

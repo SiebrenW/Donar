@@ -125,6 +125,20 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
         let SelectedService { service_id, parameter_set_id } = self.selected;
         self.log.record(&Record::ServiceSelected { service_id, parameter_set_id });
+        let framed = self.frame_charge_parameter_discovery_req(PayloadType::DC_MAINSTREAM, tx);
+        let mut step = self.send_then(
+            State::AwaitChargeParameterDiscoveryRes,
+            MsgKind::DcChargeParameterDiscoveryReq,
+            framed,
+        );
+        if step.end.is_none() {
+            step.notice = Some(Notice::ServiceSelected { service_id, parameter_set_id });
+        }
+        step
+    }
+
+    /// The request for the EVSE's DC limits; also the first message of a schedule renegotiation.
+    pub(super) fn frame_charge_parameter_discovery_req(&mut self, payload_type: PayloadType, tx: &mut [u8]) -> Result<usize, ()> {
         let limits = self.ev.dc_limits();
         let msg = dc::DcChargeParameterDiscoveryReq {
             header: self.header(),
@@ -140,16 +154,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 },
             ),
         };
-        let framed = frame(tx, PayloadType::DC_MAINSTREAM, |out| msg.encode(out));
-        let mut step = self.send_then(
-            State::AwaitChargeParameterDiscoveryRes,
-            MsgKind::DcChargeParameterDiscoveryReq,
-            framed,
-        );
-        if step.end.is_none() {
-            step.notice = Some(Notice::ServiceSelected { service_id, parameter_set_id });
-        }
-        step
+        frame(tx, payload_type, |out| msg.encode(out))
     }
 
     pub(super) fn send_supported_app_protocol_req(&mut self, tx: &mut [u8]) -> Step {

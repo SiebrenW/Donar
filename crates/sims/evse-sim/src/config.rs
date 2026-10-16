@@ -155,6 +155,12 @@ pub struct Config {
     /// Offer service renegotiation but answer `SessionStopReq(ServiceRenegotiation)` with
     /// `FAILED_NoServiceRenegotiationSupported` (V2G20-1955).
     pub refuse_service_renegotiation: bool,
+    /// After this many `DC_ChargeLoopRes` the EVSE asks the EV for a schedule renegotiation
+    /// (`EVSENotification`, V2G20-1845) and repeats it until the exchange on the side stream
+    /// is done; once per session.
+    pub schedule_renegotiation_after_loops: Option<u32>,
+    /// Never answer a message on the schedule renegotiation side stream (the EV should time out).
+    pub side_stream_silent: bool,
     /// Response code of the `DC_WeldingDetectionRes`.
     #[serde(with = "code")]
     pub welding_code: ResponseCode,
@@ -196,6 +202,8 @@ impl Default for Config {
             service_renegotiation_supported: false,
             service_renegotiation_after_loops: None,
             refuse_service_renegotiation: false,
+            schedule_renegotiation_after_loops: None,
+            side_stream_silent: false,
             pause_after_loops: None,
             standby_allowed: true,
             standby_loops: 2,

@@ -97,13 +97,14 @@ fn drive<E: Ev, L: LogSink>(
     }
 }
 
-const ALL_TIMERS: [Timer; 9] = [
+const ALL_TIMERS: [Timer; 10] = [
     Timer::Sdp,
     Timer::Response,
     Timer::Ongoing,
     Timer::Poll,
     Timer::Setup,
     Timer::Sequence,
+    Timer::Side,
     Timer::Slac,
     Timer::SlacResults,
     Timer::SlacOverall,
@@ -111,7 +112,7 @@ const ALL_TIMERS: [Timer; 9] = [
 
 /// Pending expiry per timer.
 #[derive(Default)]
-pub(crate) struct Deadlines([Option<Instant>; 9]);
+pub(crate) struct Deadlines([Option<Instant>; 10]);
 
 impl Deadlines {
     pub(crate) fn slot(timer: Timer) -> usize {
@@ -125,6 +126,7 @@ impl Deadlines {
             Timer::Slac => 6,
             Timer::SlacResults => 7,
             Timer::SlacOverall => 8,
+            Timer::Side => 9,
         }
     }
 

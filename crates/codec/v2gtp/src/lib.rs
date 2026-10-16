@@ -30,6 +30,8 @@ impl PayloadType {
     pub const DC_MAINSTREAM: Self = Self(0x8004);
     pub const ACDP_MAINSTREAM: Self = Self(0x8005);
     pub const WPT_MAINSTREAM: Self = Self(0x8006);
+    /// Side stream of a schedule renegotiation, multiplexed with the charge loop (Table 14).
+    pub const SCHEDULE_RENEGOTIATION: Self = Self(0x8101);
     pub const SDP_REQUEST: Self = Self(0x9000);
     pub const SDP_RESPONSE: Self = Self(0x9001);
 }
