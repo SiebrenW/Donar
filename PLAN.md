@@ -82,9 +82,10 @@ crates/
   exi-gen/                  # host tool (lib + bin): XSD -> Rust codec source; `dump` prints the derived grammar
   v2gtp/, homeplug/         # no_std framing: V2GTP + SDP messages, HomePlug MMEs for SLAC
   evcc-core/                # no_std sans-IO EV session, SDP and SLAC machines, Ev trait, actions/events, log records
-  evse-sim/                 # in-repo EVSE simulator, the mirror image of the core
+    src/session/            #   mod.rs: Session, shared state, frame dispatch; config, types; setup, parameters, charge, shutdown: the handlers of one phase each
+  evse-sim/                 # in-repo EVSE simulator, the mirror image of the core (config, evse, net, slac)
   evcc-linux/               # host adapter: sockets, OpenSSL, timers, SLAC; the `evcc` command and a simulated car
-  xtask/                    # `cargo xtask`: setup, generation, reference vectors, linux-test, interop
+  xtask/                    # `cargo xtask`: schemas + generation, java (reference vectors, grammar diff), container (linux-test, interop)
 ```
 
 Naming: directories and packages are kebab-case, files and modules snake_case, types PascalCase. Standard names are not repeated in file names; the crate and module path carry them (`iso15118_20::common::decode`).
@@ -221,5 +222,7 @@ Not covered: SLAC with the partner, other partners (EVerest's Josev/everest-core
 - event codes by arithmetic instead of enumerating productions through closures: per-slot tables (`Slot::new` + `table`/`fill`, computed at compile time: prefix sums of the alternatives, end of the optional run) make `Layout::{width, write_start, write_end, read}` O(1) apart from the scan inside a run; `for_each` stays as the reference (used by `exi-gen dump`), and a test checks both against each other in every state of several layouts;
 - ASCII strings in one pass (the arena rolls back for the rare non-ASCII string), `CH`+value+`EE` of fixed-width values in one write (`elem_bits`).
 Left on the table: what a profile still shows is `Layout::read` (about 9 ns per event) and moving decoded structs through `Result<Self, DecodeError>` (`DecodeError` is 24 bytes, so every `Result` goes through memory; a thin payload would put it in registers), plus straight-line generated code for plain sequences of mandatory elements. Code size was not measured.
+
+**Layout review (2026-10-16).** Done: crates under `crates/`, `data/` for downloaded files, container files in `.devcontainer/`; `session.rs` (1270 lines, one 415-line `on_frame`) became `session/` with the handler of every response as its own method, grouped by phase, and a small dispatcher using `mainstream`/`dc_mainstream` helpers for the repeated decode/ignore/malformed handling; `evse-sim` split into `config`, `evse`, `net`; `xtask` into `schemas`, `java`, `container`. Candidates not done: `crates/evcc-core/tests/session_flow.rs` (1241 lines) could be split per phase like the code; `evse::on_frame` is one long match like the old EV one; `exi-gen/src/emit.rs` (660 lines) mixes type and codec emission; `evcc-linux/src/lib.rs` carries both the `Transport` trait and the run loop.
 
 **Verdict:** on track. With items 1 to 6 fixed, the message flow of milestone 1 follows the standard; TLS, the SDP socket loop and SLAC remain.
