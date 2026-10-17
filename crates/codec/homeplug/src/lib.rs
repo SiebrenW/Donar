@@ -355,6 +355,21 @@ mod tests {
     }
 
     #[test]
+    fn parm_req_is_the_frame_of_the_qualcomm_reference_emulator() {
+        // The CM_SLAC_PARAM.REQ of `pev` (open-plc-utils) as it left a QCA7005 board: version 1,
+        // the fragmentation information, application and security type 0, the run id.
+        let mut reference = [0u8; 60];
+        let head = [
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x01, 0x87, 0x05, 0xF5, 0x05, 0x88, 0xE1, 0x01, 0x64, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x87,
+            0x05, 0xF5, 0x05, 0x00, 0x01,
+        ];
+        reference[..head.len()].copy_from_slice(&head);
+        let mut buf = [0u8; 64];
+        let n = Message::ParmReq { run_id: [0x00, 0x01, 0x87, 0x05, 0xF5, 0x05, 0x00, 0x01] }.write(BROADCAST, [0x00, 0x01, 0x87, 0x05, 0xF5, 0x05], &mut buf).unwrap();
+        assert_eq!(&buf[..n], &reference[..]);
+    }
+
+    #[test]
     fn match_lengths_follow_the_tables() {
         let mut buf = [0u8; 200];
         assert_eq!(Message::MatchReq { pev: EV, evse: EVSE, run_id: RUN }.write(EVSE, EV, &mut buf).unwrap(), HEADER_LEN + 66);

@@ -182,6 +182,22 @@ mod tests {
     }
 
     #[test]
+    fn the_network_id_and_the_key_frame_are_those_of_the_qualcomm_reference() {
+        // The default key and network id of the Qualcomm Atheros `pev` emulator (pev.ini), and the
+        // CM_SET_KEY.REQ it sends (captured on the board; its nonce is `AAAAAAAA`, ours is zero).
+        let nmk = [0x50, 0xD3, 0xE4, 0x93, 0x3F, 0x85, 0x5B, 0x70, 0x40, 0x78, 0x4D, 0xF8, 0x15, 0xAA, 0x8D, 0xB7];
+        let nid = network_id(&nmk);
+        assert_eq!(nid, [0xB0, 0xF2, 0xE6, 0x95, 0x66, 0x6B, 0x03]);
+        let mut reference = hex("00b052000001 000187 05f505 88e1 01 0860 0000 01 aaaaaaaa 00000000 04 0000 00 00 b0f2e695666b03 01 50d3e4933f855b7040784df815aa8db7");
+        reference.resize(60, 0);
+        let mut ours = [0u8; FRAME_MAX];
+        let n = set_key_req([0x00, 0x01, 0x87, 0x05, 0xF5, 0x05], nid, nmk, &mut ours).unwrap();
+        // The same but for the nonce.
+        reference[20..24].fill(0);
+        assert_eq!(&ours[..n], &reference[..]);
+    }
+
+    #[test]
     fn the_key_confirmation_gives_its_result() {
         // As the QCA7005 answered: version 1, the fragmentation information, the result 1, the
         // nonces and the protocol id 4.
