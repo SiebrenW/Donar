@@ -198,6 +198,21 @@ mod simulation {
         wait(&server, "the simulation to close", |v| v["open"] == false);
     }
 
+    /// An ISO 15118-2 session runs through the page's simulation to the end.
+    #[test]
+    fn runs_an_iso2_session() {
+        let server = start();
+        post(&server, "/api/sim/open", json!({}));
+        wait(&server, "the simulation to open", |v| v["open"] == true && v["evse"].is_object());
+        let vehicle = json!({ "protocol": "iso15118-2", "connector": "dual2", "charge_loop_interval_ms": 20, "poll_interval_ms": 10, "stop_after": 0, "time_scale": 3600, "stop_at_target_soc": true, "limits": { "target_soc": 30 } });
+        post(&server, "/api/sim/session", json!({ "evcc": vehicle, "secc": {} }));
+        wait(&server, "the hold before setup", held_at("setup"));
+        advance(&server, "ended");
+        let v = wait(&server, "the session to end", |v| v["running"] == false && v["session"] == 1);
+        assert_eq!(v["exit_code"], 0, "{v}");
+        post(&server, "/api/sim/close", json!({}));
+    }
+
     /// Staying in the charge loop: the messages keep flowing and the limits of both sides change
     /// from the next message on.
     #[test]

@@ -709,11 +709,13 @@ function buildFaults() {
           toggle("authorization stays Ongoing", "AuthorizationRes with Ongoing for ever", [["authorization_never_finishes", true, false]]),
           toggle("cable check stays Ongoing", "DC_CableCheckRes with Ongoing", [["cable_check_ongoing_responses", 1000000, 0]]),
           toggle("schedule exchange stays Ongoing", "ScheduleExchangeRes with Ongoing", [["schedule_ongoing_responses", 1000000, 0]], "iso"),
-          toggle("charge parameters stay Ongoing", "ChargeParameterDiscoveryRes with Ongoing", [["din.cpd_ongoing_responses", 1000000, 0]], "din")),
+          toggle("charge parameters stay Ongoing", "ChargeParameterDiscoveryRes with Ongoing", [["din.cpd_ongoing_responses", 1000000, 0]], "din"),
+          toggle("charge parameters stay Ongoing", "ChargeParameterDiscoveryRes with Ongoing", [["iso2.cpd_ongoing_responses", 1000000, 0]], "iso2")),
         $("div", { className: "row tight" }, $("span", { className: "note", textContent: "respond to" }), message, $("span", { className: "note", textContent: "with" }), code, answer, reset),
         $("div", { className: "row tight" }, $("span", { className: "note", textContent: "ask the vehicle in the charge loop to" }),
           button("terminate", "EVSENotification Terminate", () => evse({ terminate_after_loops: 1 }), "iso"),
           button("shut down", "the status code EVSE_Shutdown: the vehicle stops as if it wanted to itself (V2G-DC-650)", () => evse({ "din.shutdown_after_loops": 1 }), "din"),
+          button("shut down", "EVSE_Shutdown (DC) or the notification StopCharging (AC): the vehicle stops", () => evse({ "iso2.shutdown_after_loops": 1 }), "iso2"),
           button("pause", "EVSENotification Pause", () => evse({ pause_after_loops: 1 }), "iso"),
           button("renegotiate services", "EVSENotification ServiceRenegotiation (needs service_renegotiation_supported)", () => evse({ service_renegotiation_after_loops: 1 }), "iso"),
           button("renegotiate the schedule", "EVSENotification ScheduleRenegotiation", () => evse({ schedule_renegotiation_after_loops: 1 }), "iso"))),
@@ -746,11 +748,13 @@ function buildSim() {
   // The protocol the vehicle offers. DIN SPEC 70121 has no schedule exchange, and a CCS vehicle
   // (the extended inlet) is what a DIN charger offers by default.
   const protocol = $("select", { id: "sim-protocol" });
-  for (const [v, name] of [["iso15118-20", "ISO 15118-20"], ["din70121", "DIN SPEC 70121"]]) protocol.append($("option", { value: v, textContent: name }));
+  for (const [v, name] of [["iso15118-20", "ISO 15118-20"], ["iso15118-2", "ISO 15118-2"], ["din70121", "DIN SPEC 70121"]]) protocol.append($("option", { value: v, textContent: name }));
   protocol.value = sim.evcc.protocol ?? "iso15118-20";
   protocol.onchange = () => {
     setPath(sim.evcc, ["protocol"], protocol.value);
+    // The inlet a charger of that protocol offers: CCS for DIN, the combined inlet for -2.
     if (protocol.value === "din70121") setPath(sim.evcc, ["connector"], "extended");
+    if (protocol.value === "iso15118-2") setPath(sim.evcc, ["connector"], "dual2");
     applyProtocol();
     const old = document.getElementById("more-vehicle");
     if (old) old.replaceWith(moreVehicle());
@@ -817,14 +821,16 @@ function buildSim() {
   setInterval(() => { drawGraph(); drawTimeline(); }, 250);
 }
 
-// DIN SPEC 70121 has no schedule exchange: its phase is not shown and not offered.
+// DIN SPEC 70121 and ISO 15118-2 have no schedule exchange: its phase is not shown and not offered.
 function applyProtocol() {
-  const din = (sim.evcc.protocol ?? "iso15118-20") === "din70121";
-  document.getElementById("phase-schedule_exchange").hidden = din;
+  const protocol = sim.evcc.protocol ?? "iso15118-20";
+  const noSchedule = protocol !== "iso15118-20";
+  document.getElementById("phase-schedule_exchange").hidden = noSchedule;
   const option = [...document.getElementById("advance-to").options].find(o => o.value === "schedule_exchange");
-  if (option) option.hidden = option.disabled = din;
-  document.querySelectorAll(".iso-only").forEach(e => e.hidden = din);
-  document.querySelectorAll(".din-only").forEach(e => e.hidden = !din);
+  if (option) option.hidden = option.disabled = noSchedule;
+  document.querySelectorAll(".iso-only").forEach(e => e.hidden = protocol !== "iso15118-20");
+  document.querySelectorAll(".din-only").forEach(e => e.hidden = protocol !== "din70121");
+  document.querySelectorAll(".iso2-only").forEach(e => e.hidden = protocol !== "iso15118-2");
   document.getElementById("sim-protocol").disabled = !!(sim.view.open || sim.view.opening);
 }
 
