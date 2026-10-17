@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<V2G_Message xmlns="urn:din:70121:2012:MsgDef" xmlns:h="urn:din:70121:2012:MsgHeader" xmlns:b="urn:din:70121:2012:MsgBody" xmlns:t="urn:din:70121:2012:MsgDataTypes">
+  <Header>
+    <h:SessionID>00</h:SessionID>
+  </Header>
+  <Body>
+<b:SessionSetupRes><b:ResponseCode>FAILED</b:ResponseCode><b:EVSEID>00</b:EVSEID></b:SessionSetupRes>
+  </Body>
+</V2G_Message>

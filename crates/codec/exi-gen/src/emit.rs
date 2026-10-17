@@ -34,6 +34,12 @@ pub struct Emitter<'a, 'w> {
     out: String,
     enums: BTreeMap<String, String>,
     lt_memo: BTreeMap<QName, bool>,
+    /// The group's document root `(namespace, element)`, if its messages are not each a root
+    /// but parts of one document element (DIN SPEC 70121, ISO 15118-2: `V2G_Message`).
+    pub document: Option<(String, String)>,
+    /// The namespaces whose global elements make up the document grammar (default: this one's
+    /// imports); for a document root, every namespace of the group.
+    pub grammar_ns: Vec<String>,
 }
 
 fn upper_snake(s: &str) -> String {
@@ -42,7 +48,7 @@ fn upper_snake(s: &str) -> String {
 
 impl<'a, 'w> Emitter<'a, 'w> {
     pub fn new(model: &'a mut Model<'w>, ns: &str) -> Self {
-        Self { model, ns: ns.to_string(), out: String::new(), enums: BTreeMap::new(), lt_memo: BTreeMap::new() }
+        Self { model, ns: ns.to_string(), out: String::new(), enums: BTreeMap::new(), lt_memo: BTreeMap::new(), document: None, grammar_ns: Vec::new() }
     }
 
     fn path(&self, q: &QName) -> String {
@@ -629,12 +635,13 @@ impl<'a, 'w> Emitter<'a, 'w> {
             messages.push((el.clone(), ty.clone(), index));
         }
         let root_bits = exi::layout::ceil_log2(roots.len() as u64 + 1);
-        let has_messages = !messages.is_empty();
+        let has_messages = !messages.is_empty() && self.document.is_none();
         let mut tail = String::new();
         let mut variants = String::new();
         let mut arms = String::new();
         let mut encode_arms = String::new();
-        for (el, ty, index) in &messages {
+        let per_message_roots = self.document.is_none();
+        for (el, ty, index) in messages.iter().filter(|_| per_message_roots) {
             let tname = names::type_name(&ty.local);
             let lt = self.complex_lt(ty);
             let ltp = if lt { "<'a>" } else { "" };
@@ -656,6 +663,15 @@ impl<'a, 'w> Emitter<'a, 'w> {
         );
         }
 
+        if let Some((dns, droot)) = self.document.clone().filter(|(dns, _)| *dns == self.ns) {
+            let index = roots.iter().position(|q| q.ns == dns && q.local == droot).ok_or_else(|| format!("document root {droot} not found"))?;
+            let tname = names::type_name(&droot);
+            let _ = writeln!(
+                tail,
+                "impl<'a> {tname}<'a> {{\n    /// Encodes the message as a complete EXI stream (document root `{droot}`).\n    pub fn encode(&self, out: &mut [u8]) -> Result<usize, ::exi::EncodeError> {{\n        let mut t = ::exi::strings::Table::new();\n        let mut e = {E}::new(out, &mut t)?;\n        e.root({index}, {root_bits})?;\n        self.encode_content(&mut e)?;\n        e.finish()\n    }}\n\n    /// Decodes a complete EXI stream holding one message.\n    pub fn decode(buf: &[u8], arena: &'a ::exi::Arena<'_>) -> Result<Self, ::exi::DecodeError> {{\n        let mut t = ::exi::strings::Table::new();\n        let mut d = {D}::new(buf, arena, &mut t)?;\n        if d.bits({root_bits})? != {index} {{\n            return Err(::exi::DecodeError::Unsupported(\"not a {droot} document\"));\n        }}\n        Self::decode_content(&mut d)\n    }}\n}}"
+            );
+        }
+
         let mut all = String::new();
         let _ = writeln!(
             all,
@@ -672,7 +688,19 @@ impl<'a, 'w> Emitter<'a, 'w> {
     /// All global elements of the schema and its imports sorted by local name: the
     /// document grammar's start events (the generic `SE(*)` comes last).
     pub fn roots(&self) -> Vec<QName> {
-        let mut v: Vec<QName> = self.model.world.global_elements(&self.ns).iter().map(|e| e.name.clone()).collect();
+        let mut v: Vec<QName> = if self.grammar_ns.is_empty() {
+            self.model.world.global_elements(&self.ns).iter().map(|e| e.name.clone()).collect()
+        } else {
+            let mut v: Vec<QName> = Vec::new();
+            for ns in &self.grammar_ns {
+                for e in self.model.world.global_elements(ns) {
+                    if !v.contains(&e.name) {
+                        v.push(e.name.clone());
+                    }
+                }
+            }
+            v
+        };
         v.sort_by(|a, b| (&a.local, &a.ns).cmp(&(&b.local, &b.ns)));
         v
     }

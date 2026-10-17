@@ -120,11 +120,12 @@ fn builtin(local: &str) -> Option<Scalar> {
         "byte" => int("i8", -128, 127),
         "short" => int("i16", -32768, 32767),
         "int" => int("i32", i32::MIN.into(), i32::MAX.into()),
+        "long" => int("i64", i64::MIN.into(), i64::MAX.into()),
         "unsignedByte" => int("u8", 0, 255),
         "unsignedShort" => int("u16", 0, 65535),
         "unsignedInt" => int("u32", 0, u32::MAX.into()),
         "unsignedLong" => int("u64", 0, u64::MAX.into()),
-        "string" | "anyURI" | "ID" => Some(Scalar::Str { max: usize::MAX }),
+        "string" | "anyURI" | "ID" | "IDREF" => Some(Scalar::Str { max: usize::MAX }),
         "hexBinary" => Some(Scalar::Bin { base64: false, fixed: None, max: usize::MAX }),
         "base64Binary" => Some(Scalar::Bin { base64: true, fixed: None, max: usize::MAX }),
         _ => None,
@@ -280,9 +281,6 @@ impl<'w> Model<'w> {
         for p in &def.particles {
             match p {
                 Particle::Element(e) => {
-                    if e.max == u32::MAX {
-                        return Err(format!("unbounded element {}", e.name.local));
-                    }
                     out.push(self.slot_for_elem(e, schema)?);
                 }
                 Particle::Choice { min, max, items } => {

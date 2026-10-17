@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<V2G_Message xmlns="urn:din:70121:2012:MsgDef" xmlns:h="urn:din:70121:2012:MsgHeader" xmlns:b="urn:din:70121:2012:MsgBody" xmlns:t="urn:din:70121:2012:MsgDataTypes">
+  <Header>
+    <h:SessionID>A1B2C3D4E5F60718</h:SessionID>
+  </Header>
+  <Body>
+<b:CurrentDemandRes><b:ResponseCode>OK</b:ResponseCode><b:DC_EVSEStatus><t:EVSEIsolationStatus>Warning</t:EVSEIsolationStatus><t:EVSEStatusCode>EVSE_Shutdown</t:EVSEStatusCode><t:NotificationMaxDelay>10</t:NotificationMaxDelay><t:EVSENotification>ReNegotiation</t:EVSENotification></b:DC_EVSEStatus><b:EVSEPresentVoltage><t:Multiplier>0</t:Multiplier><t:Unit>V</t:Unit><t:Value>400</t:Value></b:EVSEPresentVoltage><b:EVSEPresentCurrent><t:Multiplier>0</t:Multiplier><t:Unit>A</t:Unit><t:Value>98</t:Value></b:EVSEPresentCurrent><b:EVSECurrentLimitAchieved>true</b:EVSECurrentLimitAchieved><b:EVSEVoltageLimitAchieved>false</b:EVSEVoltageLimitAchieved><b:EVSEPowerLimitAchieved>false</b:EVSEPowerLimitAchieved><b:EVSEMaximumVoltageLimit><t:Multiplier>0</t:Multiplier><t:Unit>V</t:Unit><t:Value>920</t:Value></b:EVSEMaximumVoltageLimit><b:EVSEMaximumCurrentLimit><t:Multiplier>0</t:Multiplier><t:Unit>A</t:Unit><t:Value>300</t:Value></b:EVSEMaximumCurrentLimit><b:EVSEMaximumPowerLimit><t:Multiplier>3</t:Multiplier><t:Unit>W</t:Unit><t:Value>150</t:Value></b:EVSEMaximumPowerLimit></b:CurrentDemandRes>
+  </Body>
+</V2G_Message>

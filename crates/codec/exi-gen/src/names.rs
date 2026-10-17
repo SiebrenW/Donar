@@ -7,7 +7,7 @@ pub fn words(s: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut cur = String::new();
     for (i, &c) in chars.iter().enumerate() {
-        if c == '_' || c == '-' || c == '.' {
+        if c == '_' || c == '-' || c == '.' || c == '/' {
             if !cur.is_empty() {
                 out.push(std::mem::take(&mut cur));
             }

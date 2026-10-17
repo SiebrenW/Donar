@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<V2G_Message xmlns="urn:din:70121:2012:MsgDef" xmlns:h="urn:din:70121:2012:MsgHeader" xmlns:b="urn:din:70121:2012:MsgBody" xmlns:t="urn:din:70121:2012:MsgDataTypes">
+  <Header>
+    <h:SessionID>A1B2C3D4E5F60718</h:SessionID>
+  </Header>
+  <Body>
+<b:ChargeParameterDiscoveryReq><b:EVRequestedEnergyTransferType>DC_extended</b:EVRequestedEnergyTransferType><t:DC_EVChargeParameter><t:DC_EVStatus><t:EVReady>true</t:EVReady><t:EVErrorCode>NO_ERROR</t:EVErrorCode><t:EVRESSSOC>30</t:EVRESSSOC></t:DC_EVStatus><t:EVMaximumCurrentLimit><t:Multiplier>0</t:Multiplier><t:Unit>A</t:Unit><t:Value>200</t:Value></t:EVMaximumCurrentLimit><t:EVMaximumPowerLimit><t:Multiplier>3</t:Multiplier><t:Unit>W</t:Unit><t:Value>100</t:Value></t:EVMaximumPowerLimit><t:EVMaximumVoltageLimit><t:Multiplier>0</t:Multiplier><t:Unit>V</t:Unit><t:Value>450</t:Value></t:EVMaximumVoltageLimit><t:EVEnergyCapacity><t:Multiplier>3</t:Multiplier><t:Unit>Wh</t:Unit><t:Value>60</t:Value></t:EVEnergyCapacity><t:EVEnergyRequest><t:Multiplier>3</t:Multiplier><t:Unit>Wh</t:Unit><t:Value>40</t:Value></t:EVEnergyRequest><t:FullSOC>100</t:FullSOC><t:BulkSOC>80</t:BulkSOC></t:DC_EVChargeParameter></b:ChargeParameterDiscoveryReq>
+  </Body>
+</V2G_Message>

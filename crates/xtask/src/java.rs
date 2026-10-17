@@ -57,9 +57,25 @@ fn java_env() -> Result<(PathBuf, String), String> {
 /// rate-limits; nothing in the schema uses what the DTD declares, so the copy omits it.
 fn java_schemas() -> Result<PathBuf, String> {
     let root = workspace_root();
-    let (from, to) = (root.join("data/schemas/iso15118-20"), root.join("data/vectors/schemas"));
-    std::fs::create_dir_all(&to).map_err(|e| e.to_string())?;
-    for entry in std::fs::read_dir(&from).map_err(|e| e.to_string())? {
+    let to = root.join("data/vectors/schemas");
+    // ISO 15118-20 flat in the directory, DIN SPEC 70121 below `din-spec`.
+    copy_schemas(&root.join("data/schemas/iso15118-20"), &to)?;
+    let din = to.join("din-spec");
+    copy_schemas(&root.join("data/schemas/din-spec"), &din)?;
+    // EXIficient builds a grammar from one schema; this one imports them all (the messages of
+    // `V2G_CI_MsgBody.xsd` are only reachable through a substitution group).
+    let all = r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:import namespace="urn:din:70121:2012:MsgDef" schemaLocation="V2G_CI_MsgDef.xsd"/>
+  <xs:import namespace="urn:din:70121:2012:MsgBody" schemaLocation="V2G_CI_MsgBody.xsd"/>
+</xs:schema>
+"#;
+    std::fs::write(din.join("all.xsd"), all).map_err(|e| e.to_string())?;
+    Ok(to)
+}
+
+fn copy_schemas(from: &Path, to: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(to).map_err(|e| e.to_string())?;
+    for entry in std::fs::read_dir(from).map_err(|e| format!("{}: {e}", from.display()))? {
         let path = entry.map_err(|e| e.to_string())?.path();
         if path.extension().is_none_or(|x| x != "xsd") {
             continue;
@@ -71,7 +87,7 @@ fn java_schemas() -> Result<PathBuf, String> {
         };
         std::fs::write(to.join(path.file_name().unwrap()), text).map_err(|e| e.to_string())?;
     }
-    Ok(to)
+    Ok(())
 }
 
 /// Runs a helper program, retrying a few times in case of transient failures.
@@ -113,7 +129,7 @@ pub fn vectors() -> Result<(), String> {
         if mtime(&dest).is_some_and(|h| mtime(&xml).is_some_and(|x| h >= x)) {
             continue; // up to date; delete data/vectors/*.hex to regenerate everything
         }
-        let xsd_path = java_schemas.join(xsd);
+        let xsd_path = java_schemas.join(xsd); // `din-spec/all.xsd` for DIN SPEC 70121
         let mut args = vec![xsd_path.as_os_str(), "lax".as_ref(), "noheader".as_ref(), xml.as_os_str()];
         if fragment {
             args.push("fragment".as_ref());
@@ -134,7 +150,8 @@ pub fn grammars() -> Result<(), String> {
     let (_, cp) = java_env()?;
     let java_schemas = java_schemas()?;
     let mut failed = 0;
-    for group in exi_gen::GROUPS {
+    // Groups with a document root (DIN SPEC 70121) are checked through the vectors only.
+    for group in exi_gen::GROUPS.iter().filter(|g| g.document.is_none()) {
         for (ns, file, root) in exi_gen::message_roots(group, &schemas)? {
             let ours = exi_gen::dump_grammar(group, &schemas, &ns, &root)?;
             let xsd = java_schemas.join(&file);

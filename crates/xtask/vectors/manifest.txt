@@ -1,4 +1,4 @@
-# <vector name> <xsd under data/schemas/iso15118-20> [fragment]; input is crates/xtask/vectors/<name>.xml
+# <vector name> <xsd under data/schemas/iso15118-20, or din-spec/all.xsd> [fragment]; input is crates/xtask/vectors/<name>.xml
 app_protocol_req V2G_CI_AppProtocol.xsd
 session_setup_req V2G_CI_CommonMessages.xsd
 app_protocol_req_2 V2G_CI_AppProtocol.xsd
@@ -65,3 +65,43 @@ header_signature V2G_CI_CommonMessages.xsd
 header_signature_two_references V2G_CI_CommonMessages.xsd
 fragment_signed_certificate_chain V2G_CI_CommonMessages.xsd fragment
 fragment_signed_info V2G_CI_CommonMessages.xsd fragment
+din_session_setup_req din-spec/all.xsd
+din_session_setup_res_new din-spec/all.xsd
+din_session_setup_res_nodate din-spec/all.xsd
+din_session_setup_res_failed din-spec/all.xsd
+din_service_discovery_req din-spec/all.xsd
+din_service_discovery_req_scope din-spec/all.xsd
+din_service_discovery_res din-spec/all.xsd
+din_service_discovery_res_both din-spec/all.xsd
+din_service_payment_selection_req din-spec/all.xsd
+din_service_payment_selection_req_params din-spec/all.xsd
+din_service_payment_selection_res din-spec/all.xsd
+din_contract_authentication_req din-spec/all.xsd
+din_contract_authentication_res_ongoing din-spec/all.xsd
+din_contract_authentication_res_finished din-spec/all.xsd
+din_charge_parameter_discovery_req_min din-spec/all.xsd
+din_charge_parameter_discovery_req_full din-spec/all.xsd
+din_charge_parameter_discovery_res_ongoing din-spec/all.xsd
+din_charge_parameter_discovery_res_finished din-spec/all.xsd
+din_cable_check_req din-spec/all.xsd
+din_cable_check_req_cond din-spec/all.xsd
+din_cable_check_res_ongoing din-spec/all.xsd
+din_cable_check_res_noiso din-spec/all.xsd
+din_pre_charge_req din-spec/all.xsd
+din_pre_charge_res din-spec/all.xsd
+din_power_delivery_req_start din-spec/all.xsd
+din_power_delivery_req_profile din-spec/all.xsd
+din_power_delivery_req_stop din-spec/all.xsd
+din_power_delivery_req_bare din-spec/all.xsd
+din_power_delivery_res din-spec/all.xsd
+din_power_delivery_res_failed din-spec/all.xsd
+din_current_demand_req_min din-spec/all.xsd
+din_current_demand_req_full din-spec/all.xsd
+din_current_demand_res_min din-spec/all.xsd
+din_current_demand_res_full din-spec/all.xsd
+din_welding_detection_req din-spec/all.xsd
+din_welding_detection_res din-spec/all.xsd
+din_session_stop_req din-spec/all.xsd
+din_session_stop_res din-spec/all.xsd
+din_session_stop_res_unknown din-spec/all.xsd
+din_notification din-spec/all.xsd

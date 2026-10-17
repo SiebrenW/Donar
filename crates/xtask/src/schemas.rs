@@ -19,11 +19,29 @@ const ISO20_FILES: &[&str] = &[
     "xmldsig-core-schema.xsd",
 ];
 
+/// DIN SPEC 70121's schemas (the specification's normative annex) as published in the
+/// `iso15118` repository of ecog-io. Copyrighted like the others: gitignored, fetched on demand.
+const DIN_URL: &str = "https://raw.githubusercontent.com/ecog-io/iso15118/main/iso15118/shared/schemas/";
+const DIN_FILES: &[(&str, &str)] = &[
+    ("din_spec/V2G_CI_MsgDataTypes.xsd", "V2G_CI_MsgDataTypes.xsd"),
+    ("din_spec/V2G_CI_MsgBody.xsd", "V2G_CI_MsgBody.xsd"),
+    ("din_spec/V2G_CI_MsgDef.xsd", "V2G_CI_MsgDef.xsd"),
+    ("din_spec/V2G_CI_MsgHeader.xsd", "V2G_CI_MsgHeader.xsd"),
+    ("xmldsig-core-schema.xsd", "xmldsig-core-schema.xsd"),
+];
+
 /// Downloads the XSDs (skipping files already present unless `force`).
 pub fn setup(force: bool) -> Result<(), String> {
-    let dir = workspace_root().join("data/schemas/iso15118-20");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    for name in ISO20_FILES {
+    let iso20: Vec<(String, &str)> = ISO20_FILES.iter().map(|n| (format!("{ISO20_URL}{n}"), *n)).collect();
+    fetch(&workspace_root().join("data/schemas/iso15118-20"), &iso20, force)?;
+    let din: Vec<(String, &str)> = DIN_FILES.iter().map(|(from, to)| (format!("{DIN_URL}{from}"), *to)).collect();
+    fetch(&workspace_root().join("data/schemas/din-spec"), &din, force)
+}
+
+/// Downloads `(url, file name)` into `dir`.
+fn fetch(dir: &Path, files: &[(String, &str)], force: bool) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    for (url, name) in files {
         let dest = dir.join(name);
         if dest.exists() && !force {
             println!("have  {name}");
@@ -34,7 +52,7 @@ pub fn setup(force: bool) -> Result<(), String> {
         let status = Command::new("curl")
             .args(["--fail", "--silent", "--show-error", "--location", "--output"])
             .arg(&tmp)
-            .arg(format!("{ISO20_URL}{name}"))
+            .arg(url)
             .status()
             .map_err(|e| format!("cannot run curl: {e}"))?;
         if !status.success() {
@@ -58,9 +76,9 @@ pub fn mtime(p: &Path) -> Option<std::time::SystemTime> {
 /// Skipped when the output is newer than every schema and than this binary, which carries
 /// the generator.
 pub fn generate(force: bool) -> Result<(), String> {
-    let schemas = workspace_root().join("data/schemas/iso15118-20");
     let exe = std::env::current_exe().ok().and_then(|p| mtime(&p));
     for group in exi_gen::GROUPS {
+        let schemas = workspace_root().join("data/schemas").join(group.dir);
         let out = group_dir(group).join("src/generated");
         let newest_input = group
             .files

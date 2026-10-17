@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<V2G_Message xmlns="urn:din:70121:2012:MsgDef" xmlns:h="urn:din:70121:2012:MsgHeader" xmlns:b="urn:din:70121:2012:MsgBody" xmlns:t="urn:din:70121:2012:MsgDataTypes">
+  <Header>
+    <h:SessionID>A1B2C3D4E5F60718</h:SessionID>
+  </Header>
+  <Body>
+<b:CableCheckRes><b:ResponseCode>OK</b:ResponseCode><b:DC_EVSEStatus><t:EVSEStatusCode>EVSE_Ready</t:EVSEStatusCode><t:NotificationMaxDelay>0</t:NotificationMaxDelay><t:EVSENotification>None</t:EVSENotification></b:DC_EVSEStatus><b:EVSEProcessing>Finished</b:EVSEProcessing></b:CableCheckRes>
+  </Body>
+</V2G_Message>

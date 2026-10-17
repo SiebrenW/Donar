@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<V2G_Message xmlns="urn:din:70121:2012:MsgDef" xmlns:h="urn:din:70121:2012:MsgHeader" xmlns:b="urn:din:70121:2012:MsgBody" xmlns:t="urn:din:70121:2012:MsgDataTypes">
+  <Header>
+    <h:SessionID>A1B2C3D4E5F60718</h:SessionID>
+  </Header>
+  <Body>
+<b:CurrentDemandReq><b:DC_EVStatus><t:EVReady>true</t:EVReady><t:EVErrorCode>NO_ERROR</t:EVErrorCode><t:EVRESSSOC>20</t:EVRESSSOC></b:DC_EVStatus><b:EVTargetCurrent><t:Multiplier>0</t:Multiplier><t:Unit>A</t:Unit><t:Value>100</t:Value></b:EVTargetCurrent><b:ChargingComplete>false</b:ChargingComplete><b:EVTargetVoltage><t:Multiplier>0</t:Multiplier><t:Unit>V</t:Unit><t:Value>400</t:Value></b:EVTargetVoltage></b:CurrentDemandReq>
+  </Body>
+</V2G_Message>
