@@ -334,3 +334,9 @@ Done: the generated codec already had the BPT types; five new EXIficient vectors
 Discharge simulation: with the battery model (a test platform) and `limits.discharge_to_soc` the vehicle requests a negative `EVTargetEnergyRequest` (our reading of the standard: negative means give energy back; to be checked against the text) until the battery is at the floor, then charges to `target_soc`; the simulated charger answers with a negative present current within both sides' discharge limits, and the battery follows. Test `a_bpt_session_discharges_then_charges` (web).
 
 Not done: no V2X energy requests, no separated channel or grid-forming mode, no Scheduled BPT, no independent partner for -20 BPT (the Python library was not tried).
+
+## Web page redesign
+
+Done: the simulation page has one protocol selector (ISO 15118-20, -20 V2G, ISO 15118-2, DIN SPEC 70121), presets, one Start button (it opens the simulation when needed and lets the session run; "Start and step through" holds before the first message, the phase buttons run up to a phase), readouts of power with its direction, battery, voltage, current and phase, limits with words and units, and the message timeline, faults and raw logs below. No framework: the page stays one file without a build step, embedded in the binary. The vehicle gained a `run` command (no holds, charge until the vehicle is done), the AC models report power (charger: nominal voltage and the current summed over the phases; vehicle: assumes the lower of both maximums).
+
+Known gaps: the Scenarios tab keeps its plain form (the keys are those of the scenario files); the page was checked by eye in Chrome (light and dark) and by the web tests for the API, not by browser tests.
