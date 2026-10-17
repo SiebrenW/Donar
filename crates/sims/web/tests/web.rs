@@ -182,6 +182,11 @@ mod simulation {
         advance(&server, "ended");
         let v = wait(&server, "the session to end", |v| v["running"] == false && v["session"] == 1);
         assert_eq!(v["exit_code"], 0, "{v}");
+        // The charge is over: the charger delivers nothing any more.
+        let v = wait(&server, "the charger to be idle", |v| v["evse"]["state"] == "Waiting");
+        for key in ["voltage", "current", "max_power"] {
+            assert_eq!(v["evse"]["measurements"][key]["effective"], 0.0, "{key}: {v}");
+        }
 
         // The next session: the charger's measurement edit stays, its settings are new.
         post(&server, "/api/sim/session", json!({ "evcc": vehicle, "secc": { "limits": { "max_charge_current_a": 90 } } }));

@@ -85,6 +85,10 @@ impl EvseLive {
         g.limits = g.next.limits;
         g.session_config = g.next.clone();
         g.patch = None;
+        // Nothing is delivered before the charge loop.
+        g.voltage.effective = 0.0;
+        g.current.effective = 0.0;
+        g.max_power.effective = 0.0;
         g.next.clone()
     }
 
@@ -93,8 +97,20 @@ impl EvseLive {
         self.inner.lock().unwrap().limits
     }
 
+    /// The state of the session. What the charger reports as delivered follows it: the values of
+    /// the charge loop are only there while it runs. The current is zero once it ends (the
+    /// stop, V2G20-1194), the voltage and the power limit once the session is over.
     pub fn set_state(&self, state: impl std::fmt::Debug) {
-        self.inner.lock().unwrap().state = format!("{state:?}");
+        let mut g = self.inner.lock().unwrap();
+        // A state of the machine, or a name: Debug of a string has quotes.
+        g.state = format!("{state:?}").trim_matches('"').to_string();
+        if g.state != "ChargeLoop" {
+            g.current.effective = 0.0;
+        }
+        if matches!(g.state.as_str(), "Waiting" | "Stopped" | "Paused" | "Closed") {
+            g.voltage.effective = 0.0;
+            g.max_power.effective = 0.0;
+        }
     }
 
     /// The values of a charge loop answer to a request with these values: present voltage and
@@ -180,5 +196,35 @@ impl Endpoint for EvseLive {
             }
             other => Err(format!("unknown command {other:?}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nothing_is_delivered_outside_the_charge_loop() {
+        let live = EvseLive::new(Config::default());
+        live.begin_session();
+        live.set_state("ChargeLoop");
+        let (v, i, p) = live.charge_loop(400.0, 100.0, 50_000.0);
+        assert_eq!((v, i, p), (400.0, 100.0, 150_000.0));
+        let effective = |live: &EvseLive| {
+            let s = live.snapshot();
+            let m = &s["measurements"];
+            [m["voltage"]["effective"].as_f64().unwrap(), m["current"]["effective"].as_f64().unwrap(), m["max_power"]["effective"].as_f64().unwrap()]
+        };
+        assert_eq!(effective(&live), [400.0, 100.0, 150_000.0]);
+        // The stop: the current is gone, the voltage stays until the session is over.
+        live.set_state("AwaitWeldingReq");
+        assert_eq!(effective(&live), [400.0, 0.0, 150_000.0]);
+        live.set_state("Waiting");
+        assert_eq!(effective(&live), [0.0, 0.0, 0.0]);
+        // The next session starts from nothing too, whatever the last values were.
+        live.set_state("ChargeLoop");
+        live.charge_loop(400.0, 100.0, 50_000.0);
+        live.begin_session();
+        assert_eq!(effective(&live), [0.0, 0.0, 0.0]);
     }
 }
