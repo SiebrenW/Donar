@@ -33,7 +33,7 @@ Power on AC is per line (`Phases`: L1, optional L2 and L3). A single-phase car o
 | Protocol | Machine | Configuration |
 |---|---|---|
 | ISO 15118-20 | `evcc_core::session::Session` | `Config::DC_20`, `DC_BPT_20`, `AC_20`, `AC_BPT_20`; `.scheduled()` for Scheduled control mode |
-| ISO 15118-2 | `evcc_core::iso2::Session` | `iso2::Config::ISO2_DC` and the AC variants |
+| ISO 15118-2 | `evcc_core::iso2::Session` | `iso2::Config::ISO2_DC`, `iso2::Config::ac(three_phase)` |
 | DIN SPEC 70121 | `evcc_core::din::Session` | `din::Config::DIN` |
 
 All three implement `evcc_core::machine::Machine`, so the loop below is the same for each. Create one with `Session::new(config, ev, log, Buffers { rx, tx, arena })`: the three buffers are yours (no allocation in the core). `rx` holds one V2GTP frame, `tx` the outgoing one, `arena` the decoded message (a few kB; 8 kB / 8 kB / 32 kB is plenty on a PC).
