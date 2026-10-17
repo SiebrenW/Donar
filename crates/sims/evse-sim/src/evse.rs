@@ -43,6 +43,8 @@ pub enum State {
     AwaitServiceSelectionReq,
     /// DIN SPEC 70121 and ISO 15118-2.
     AwaitServicePaymentSelectionReq,
+    /// ISO 15118-2 Plug & Charge.
+    AwaitPaymentDetailsReq,
     /// DIN SPEC 70121.
     AwaitContractAuthenticationReq,
     AwaitChargeParameterDiscoveryReq,
@@ -108,11 +110,13 @@ pub struct Evse {
     /// ISO 15118-2: the vehicle's announced power limit, and whether this is an AC session.
     iso2_ev_power: Option<f64>,
     iso2_ac: bool,
+    /// ISO 15118-2: the contract certificate of a Plug & Charge session, and whether it expires soon.
+    iso2_contract: Option<(openssl::x509::X509, bool)>,
 }
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, protocol: Protocol::Iso20, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge(), last_stamp: std::cell::Cell::new(0), ev_announced: None, din_ev_announced: None, iso2_ev_power: None, iso2_ac: false }
+        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, protocol: Protocol::Iso20, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge(), last_stamp: std::cell::Cell::new(0), ev_announced: None, din_ev_announced: None, iso2_ev_power: None, iso2_ac: false, iso2_contract: None }
     }
 
     /// Reports the charge loop measurements to a test platform and takes its edits.
@@ -211,6 +215,7 @@ impl Evse {
             State::AwaitServiceDetailReq => "ServiceDetailReq",
             State::AwaitServiceSelectionReq => "ServiceSelectionReq",
             State::AwaitServicePaymentSelectionReq => "ServicePaymentSelectionReq",
+            State::AwaitPaymentDetailsReq => "PaymentDetailsReq",
             State::AwaitContractAuthenticationReq => "ContractAuthenticationReq",
             State::AwaitChargeParameterDiscoveryReq => "DC_ChargeParameterDiscoveryReq",
             State::AwaitScheduleExchangeReq => "ScheduleExchangeReq",

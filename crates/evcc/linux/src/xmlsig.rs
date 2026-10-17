@@ -31,6 +31,8 @@ use openssl::sign::{Signer, Verifier};
 const P521_OCTETS: usize = 66;
 /// Output length of the SHAKE256 digest.
 const SHAKE256_OCTETS: usize = 64;
+/// Size of a P-256 coordinate in octets.
+const P256_OCTETS: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Suite {
@@ -38,6 +40,8 @@ pub enum Suite {
     EcdsaP521,
     /// Ed448 with SHAKE256 digests.
     Ed448,
+    /// ISO 15118-2: ECDSA with secp256r1 and SHA-256 (the signature is `r || s` of 64 octets).
+    EcdsaP256,
 }
 
 impl Suite {
@@ -46,6 +50,7 @@ impl Suite {
         match key.id() {
             Id::ED448 => Some(Suite::Ed448),
             Id::EC if key.ec_key().ok()?.group().curve_name() == Some(Nid::SECP521R1) => Some(Suite::EcdsaP521),
+            Id::EC if key.ec_key().ok()?.group().curve_name() == Some(Nid::X9_62_PRIME256V1) => Some(Suite::EcdsaP256),
             _ => None,
         }
     }
@@ -54,6 +59,7 @@ impl Suite {
         match self {
             Suite::EcdsaP521 => ECDSA_SHA512,
             Suite::Ed448 => ED448,
+            Suite::EcdsaP256 => iso15118_2::signature::ECDSA_SHA256,
         }
     }
 
@@ -61,6 +67,16 @@ impl Suite {
         match self {
             Suite::EcdsaP521 => DIGEST_SHA512,
             Suite::Ed448 => DIGEST_SHAKE256,
+            Suite::EcdsaP256 => iso15118_2::signature::DIGEST_SHA256,
+        }
+    }
+
+    /// The octets a signature value is computed over: the `SignedInfo` as a fragment of the
+    /// schema of the standard the suite belongs to.
+    pub fn signed_info_fragment(self, info: &SignedInfo<'_>, out: &mut [u8]) -> Result<usize, exi::EncodeError> {
+        match self {
+            Suite::EcdsaP256 => iso15118_2::signature::signed_info_fragment(info, out),
+            _ => info.encode_fragment(out),
         }
     }
 
@@ -68,6 +84,7 @@ impl Suite {
     pub fn digest(self, fragment: &[u8]) -> Result<Vec<u8>, ErrorStack> {
         match self {
             Suite::EcdsaP521 => Ok(hash(MessageDigest::sha512(), fragment)?.to_vec()),
+            Suite::EcdsaP256 => Ok(hash(MessageDigest::sha256(), fragment)?.to_vec()),
             Suite::Ed448 => {
                 let mut hasher = Hasher::new(MessageDigest::shake_256())?;
                 hasher.update(fragment)?;
@@ -161,9 +178,9 @@ impl OwnedSignature {
     }
 }
 
-fn fragment_of(info: &SignedInfo<'_>) -> Result<Vec<u8>, Error> {
+fn fragment_of(suite: Suite, info: &SignedInfo<'_>) -> Result<Vec<u8>, Error> {
     let mut buf = vec![0u8; 4096];
-    let n = info.encode_fragment(&mut buf)?;
+    let n = suite.signed_info_fragment(info, &mut buf)?;
     buf.truncate(n);
     Ok(buf)
 }
@@ -176,7 +193,7 @@ pub fn sign(key: &PKeyRef<Private>, fragments: &[(&str, &[u8])]) -> Result<Owned
         .map(|(uri, fragment)| Ok((uri.to_string(), suite.digest(fragment)?)))
         .collect::<Result<Vec<_>, ErrorStack>>()?;
     let mut owned = OwnedSignature { suite, references, value: Vec::new() };
-    let to_sign = owned.with_signature(|s| fragment_of(&s.signed_info))?;
+    let to_sign = owned.with_signature(|s| fragment_of(suite, &s.signed_info))?;
     owned.value = sign_value(key, suite, &to_sign)?;
     Ok(owned)
 }
@@ -191,6 +208,11 @@ pub fn sign_value(key: &PKeyRef<Private>, suite: Suite, signed: &[u8]) -> Result
             [r, s].concat()
         }
         Suite::Ed448 => Signer::new_without_digest(key)?.sign_oneshot_to_vec(signed)?,
+        Suite::EcdsaP256 => {
+            let signature = EcdsaSig::sign(&hash(MessageDigest::sha256(), signed)?, &*key.ec_key()?)?;
+            let (r, s) = (signature.r().to_vec_padded(P256_OCTETS as i32)?, signature.s().to_vec_padded(P256_OCTETS as i32)?);
+            [r, s].concat()
+        }
     })
 }
 
@@ -227,7 +249,7 @@ pub fn verify(key: &PKeyRef<Public>, signature: &Signature<'_>, fragments: &[(&s
     if let Some(i) = used.iter().position(|u| !u) {
         return Err(Error::Reference(fragments[i].0.to_string()));
     }
-    let signed = fragment_of(info)?;
+    let signed = fragment_of(suite, info)?;
     let value = signature.signature_value.value;
     let ok = match suite {
         Suite::EcdsaP521 => {
@@ -240,6 +262,15 @@ pub fn verify(key: &PKeyRef<Public>, signature: &Signature<'_>, fragments: &[(&s
             signature.verify(&hash(MessageDigest::sha512(), &signed)?, &*ec)?
         }
         Suite::Ed448 => Verifier::new_without_digest(key)?.verify_oneshot(value, &signed)?,
+        Suite::EcdsaP256 => {
+            if value.len() != 2 * P256_OCTETS {
+                return Err(Error::Value);
+            }
+            let (r, s) = value.split_at(P256_OCTETS);
+            let signature = EcdsaSig::from_private_components(BigNum::from_slice(r)?, BigNum::from_slice(s)?)?;
+            let ec: EcKey<Public> = key.ec_key()?;
+            signature.verify(&hash(MessageDigest::sha256(), &signed)?, &*ec)?
+        }
     };
     if ok { Ok(()) } else { Err(Error::Value) }
 }

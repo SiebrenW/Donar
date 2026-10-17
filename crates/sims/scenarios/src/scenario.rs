@@ -114,6 +114,9 @@ pub struct Participant {
     /// (`ISO_15118_20_DC` by default, or `DIN_SPEC_70121`).
     #[serde(default)]
     pub protocols: Option<String>,
+    /// For the external charger: its `AUTH_MODES` (`EIM` by default, `PNC`, or both separated by commas).
+    #[serde(default)]
+    pub auth_modes: Option<String>,
     /// The participant's settings file as a table (`evcc_sim::Settings`, `evse_sim::Settings`).
     #[serde(default)]
     pub settings: toml::Table,

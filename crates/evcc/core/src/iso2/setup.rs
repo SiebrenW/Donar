@@ -1,13 +1,16 @@
 //! The handshake, the session setup, payment, authorization and the charge parameters.
 
 use app_protocol::{self, SupportedAppProtocolReq};
-use iso15118_2::body::*;
+use iso15118_2::def::V2gMessage;
+use iso15118_2::header::MessageHeader;
+use iso15118_2::signature::{CANONICAL_EXI, Reference, Signature, SignatureValue, SignedInfo, encode_fragment};
+use iso15118_2::body::{Body, *};
 use iso15118_2::types::*;
 use v2gtp::PayloadType;
 
 use super::convert::{physical, rational};
 use super::{Machine, MAX_ENTRIES, Mode, Schedule, EvseLimits, frame};
-use crate::ev::{DcConnector, Ev};
+use crate::ev::{DcConnector, Ev, MAX_DIGEST_LEN, MAX_SIGNATURE_LEN, MAX_SUB_CERTIFICATES};
 use crate::log::{LogSink, MsgKind, Record};
 use crate::session::{EndReason, Notice, State, Step};
 use crate::{Timer, TimerCmd};
@@ -113,10 +116,22 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         self.next(tx, |m, tx| if m.contract { m.send_payment_details_req(tx) } else { m.send_authorization_req(tx) })
     }
 
-    /// The authorization request: empty for external payment, with the challenge for a contract.
+    /// The authorization request: empty for external payment; for a contract it carries the challenge
+    /// and an `Id`, and the header the signature over it with the contract key.
     pub(super) fn send_authorization_req(&mut self, tx: &mut [u8]) -> Step {
-        let body = BodyElementChoice::AuthorizationReq(AuthorizationReq { id: None, gen_challenge: self.challenge });
-        let step = self.send(body, MsgKind::AuthorizationReqIso2, State::AwaitContractAuthenticationRes, tx);
+        let step = if self.contract {
+            let framed = match (self.ev.contract(), self.challenge) {
+                (Some(contract), Some(challenge)) => frame_signed_authorization(contract, challenge, &self.session_id[..self.session_len], tx),
+                _ => Err(()),
+            };
+            if framed.is_err() {
+                return self.end(EndReason::TxBufferTooSmall);
+            }
+            self.sent(framed, MsgKind::AuthorizationReqIso2, State::AwaitContractAuthenticationRes)
+        } else {
+            let body = BodyElementChoice::AuthorizationReq(AuthorizationReq { id: None, gen_challenge: None });
+            self.send(body, MsgKind::AuthorizationReqIso2, State::AwaitContractAuthenticationRes, tx)
+        };
         let ms = self.config.ongoing_timeout_ms;
         self.time_phase(step, ms)
     }
@@ -139,18 +154,43 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
     }
 
+    /// Plug & Charge: the eMAID and the contract certificate chain.
     pub(super) fn send_payment_details_req(&mut self, tx: &mut [u8]) -> Step {
-        // Plug & Charge is added with the contract signing; until then the vehicle cannot pay with one.
-        let _ = tx;
-        self.end(EndReason::NoCompatibleAuthorization)
+        let framed = match self.ev.contract() {
+            Some(contract) => {
+                let mut subs: [&[u8]; MAX_SUB_CERTIFICATES] = [&[]; MAX_SUB_CERTIFICATES];
+                let mut count = 0;
+                while count < MAX_SUB_CERTIFICATES {
+                    let Some(c) = contract.sub_certificate(count) else { break };
+                    subs[count] = c;
+                    count += 1;
+                }
+                let body = BodyElementChoice::PaymentDetailsReq(PaymentDetailsReq {
+                    e_maid: contract.emaid(),
+                    contract_signature_cert_chain: CertificateChain {
+                        id: None,
+                        certificate: contract.certificate(),
+                        sub_certificates: (count > 0).then_some(SubCertificates { certificate: &subs[..count] }),
+                    },
+                });
+                let message = V2gMessage { header: self.header(), body: Body { body_element: Some(body) } };
+                frame(tx, PayloadType::SAP, |out| message.encode(out))
+            }
+            None => Err(()),
+        };
+        if framed.is_err() {
+            return self.end(EndReason::TxBufferTooSmall);
+        }
+        self.sent(framed, MsgKind::PaymentDetailsReq, State::AwaitPaymentDetailsRes)
     }
 
     pub(super) fn on_payment_details_res(&mut self, res: PaymentDetailsRes, tx: &mut [u8]) -> Step {
-        let _ = tx;
         if let Some(end) = self.received(MsgKind::PaymentDetailsRes, res.response_code) {
             return end;
         }
-        self.end(EndReason::UnexpectedMessage)
+        // The challenge the authorization is signed over.
+        self.challenge = Some(res.gen_challenge);
+        self.next(tx, |m, tx| m.send_authorization_req(tx))
     }
 
     /// The vehicle's limits and needs: DC (9.5.3 of the DC charge parameter) or AC.
@@ -241,4 +281,39 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         next.timers = super::charge::merge(step.timers, next.timers);
         next
     }
+}
+
+/// The `Id` of the signed `AuthorizationReq` and the URI that references it.
+const AUTHORIZATION_ID: &str = "ID1";
+const AUTHORIZATION_URI: &str = "#ID1";
+
+/// A signed `AuthorizationReq`: the element with the challenge and its `Id`, and in the header the
+/// signature over its fragment with the contract key. The second half of `tx` is scratch for the
+/// two fragments that are digested and signed; the frame is built in the first.
+fn frame_signed_authorization(contract: &dyn crate::ev::Contract, challenge: [u8; 16], session_id: &[u8], tx: &mut [u8]) -> Result<usize, ()> {
+    let (out, scratch) = tx.split_at_mut(tx.len() / 2);
+    let request = AuthorizationReq { id: Some(AUTHORIZATION_ID), gen_challenge: Some(challenge) };
+    let length = encode_fragment(scratch, iso15118_2::signature::fragment::AUTHORIZATION_REQ, |e| request.encode_content(e)).map_err(|_| ())?;
+    let mut digest = [0u8; MAX_DIGEST_LEN];
+    let digest_len = contract.digest(&scratch[..length], &mut digest).ok_or(())?;
+    let references = [Reference {
+        id: None,
+        uri: Some(AUTHORIZATION_URI),
+        transform_algorithm: Some(CANONICAL_EXI),
+        digest_algorithm: contract.digest_algorithm(),
+        digest_value: &digest[..digest_len],
+    }];
+    let info = SignedInfo { id: None, canonicalization_algorithm: CANONICAL_EXI, signature_algorithm: contract.signature_algorithm(), reference: &references };
+    let length = iso15118_2::signature::signed_info_fragment(&info, scratch).map_err(|_| ())?;
+    let mut value = [0u8; MAX_SIGNATURE_LEN];
+    let value_len = contract.sign(&scratch[..length], &mut value).ok_or(())?;
+    let message = V2gMessage {
+        header: MessageHeader {
+            session_id,
+            notification: None,
+            signature: Some(Signature { id: None, signed_info: info, signature_value: SignatureValue { id: None, value: &value[..value_len] } }),
+        },
+        body: Body { body_element: Some(BodyElementChoice::AuthorizationReq(request)) },
+    };
+    frame(out, PayloadType::SAP, |o| message.encode(o))
 }

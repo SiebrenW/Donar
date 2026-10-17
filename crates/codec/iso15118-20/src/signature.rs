@@ -372,8 +372,15 @@ pub fn encode_fragment<'v>(
 }
 
 impl<'a> SignedInfo<'a> {
-    /// The octets a signature value is computed over (a `SignedInfo` fragment).
+    /// The octets a signature value is computed over (a `SignedInfo` fragment). The signature header is
+    /// encoded with the xmldsig schema as entry point instead of the schema of the standard (V2G20-1449),
+    /// so the start event is chosen among the declarations of that schema alone.
     pub fn encode_fragment(&self, out: &mut [u8]) -> Result<usize, EncodeError> {
-        encode_fragment(out, fragment::SIGNED_INFO, |e| self.encode_content(e))
+        let mut table = Table::new();
+        let mut e = Enc::new(out, &mut table)?;
+        e.root(fragment::XMLDSIG_SIGNED_INFO, fragment::XMLDSIG_CODE_BITS)?;
+        self.encode_content(&mut e)?;
+        e.root(fragment::XMLDSIG_END, fragment::XMLDSIG_CODE_BITS)?;
+        e.finish()
     }
 }

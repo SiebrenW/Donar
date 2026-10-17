@@ -64,7 +64,7 @@ certificate_installation_req_serials V2G_CI_CommonMessages.xsd
 header_signature V2G_CI_CommonMessages.xsd
 header_signature_two_references V2G_CI_CommonMessages.xsd
 fragment_signed_certificate_chain V2G_CI_CommonMessages.xsd fragment
-fragment_signed_info V2G_CI_CommonMessages.xsd fragment
+fragment_signed_info xmldsig-core-schema.xsd fragment
 din_session_setup_req din-spec/all.xsd
 din_session_setup_res_new din-spec/all.xsd
 din_session_setup_res_nodate din-spec/all.xsd
@@ -157,3 +157,6 @@ iso2_certificate_installation_req iso15118-2/all.xsd
 iso2_certificate_installation_res iso15118-2/all.xsd
 iso2_certificate_update_req iso15118-2/all.xsd
 iso2_notification iso15118-2/all.xsd
+fragment_iso2_authorization_req iso15118-2/all.xsd fragment
+fragment_iso2_signed_info iso15118-2/xmldsig-core-schema.xsd fragment
+iso2_authorization_req_signed iso15118-2/all.xsd

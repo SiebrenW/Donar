@@ -17,8 +17,8 @@ public class EncodeVector {
     Grammars g = GrammarFactory.newInstance().createGrammars(a[0]);
     f.setGrammars(g);
     if (a.length > 4 && a[4].equals("fragment")) f.setFragment(true);
-    // DIN SPEC 70121 (V2G-DC-176): valuePartitionCapacity 0.
-    if (a[0].contains("din-spec")) f.setValuePartitionCapacity(0);
+    // DIN SPEC 70121 (V2G-DC-176) and ISO 15118-2 (Table 11): valuePartitionCapacity 0.
+    if (a[0].contains("din-spec") || a[0].contains("iso15118-2")) f.setValuePartitionCapacity(0);
     f.setFidelityOptions(a[1].equals("strict") ? FidelityOptions.createStrict() : FidelityOptions.createDefault());
     EncodingOptions eo = EncodingOptions.createDefault();
     if (a[2].equals("header")) eo.setOption(EncodingOptions.INCLUDE_OPTIONS);

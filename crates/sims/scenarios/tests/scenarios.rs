@@ -70,6 +70,8 @@ mod run {
         dc_din => "dc-din",
         dc_iso2 => "dc-iso2",
         ac3_iso2 => "ac3-iso2",
+        dc_iso2_pnc => "dc-iso2-pnc",
+        ac3_iso2_pnc => "ac3-iso2-pnc",
         dc_din_ongoing => "dc-din-ongoing",
         dc_din_shutdown => "dc-din-shutdown",
         charger_ends_charge => "charger-ends-charge",

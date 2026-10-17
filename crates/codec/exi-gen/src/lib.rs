@@ -78,9 +78,9 @@ pub const ISO2: Group = Group {
     dir: "iso15118-2",
     files: &["V2G_CI_MsgDataTypes.xsd", "V2G_CI_MsgBody.xsd", "V2G_CI_MsgDef.xsd", "V2G_CI_MsgHeader.xsd", "xmldsig-core-schema.xsd"],
     modules: &[(NS_ISO2_TYPES, "types"), (NS_ISO2_BODY, "body"), (NS_ISO2_DEF, "def"), (NS_ISO2_HEADER, "header"), (xsd::XMLDSIG, "xmldsig")],
-    fragment: &[],
+    fragment: &["V2G_CI_MsgDef.xsd", "V2G_CI_MsgHeader.xsd", "V2G_CI_MsgBody.xsd", "V2G_CI_MsgDataTypes.xsd", "xmldsig-core-schema.xsd"],
     document: Some((NS_ISO2_DEF, "V2G_Message")),
-    value_table: true,
+    value_table: false,
 };
 
 pub const GROUPS: &[&Group] = &[&ISO20, &APP_PROTOCOL, &DIN70121, &ISO2];
@@ -108,7 +108,8 @@ pub fn generate(group: &Group, schema_dir: &Path, out_dir: &Path) -> Result<(), 
     }
     if !group.fragment.is_empty() {
         let table = fragment::table(schema_dir, group.fragment)?;
-        std::fs::write(out_dir.join("fragment.rs"), fragment::emit(&table)).map_err(|e| e.to_string())?;
+        let dsig = fragment::table(schema_dir, &["xmldsig-core-schema.xsd"])?;
+        std::fs::write(out_dir.join("fragment.rs"), fragment::emit(&table, &dsig)).map_err(|e| e.to_string())?;
         modrs.push_str("pub mod fragment;\n");
     }
     std::fs::write(out_dir.join("mod.rs"), modrs).map_err(|e| e.to_string())?;

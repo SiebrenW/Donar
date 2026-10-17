@@ -32,10 +32,19 @@ pub struct VehicleTls {
     pub trust: PathBuf,
 }
 
+/// A contract the partner's test PKI makes for the vehicle: the chain (contract certificate, then its
+/// sub-CAs; PEM) and the key.
+pub struct VehicleContract {
+    pub chain: PathBuf,
+    pub key: PathBuf,
+    pub key_password: Option<String>,
+}
+
 /// A started partner. `vehicle_tls` is the vehicle side of its test PKI, when it runs TLS.
 pub struct Partner {
     pub process: Process,
     pub vehicle_tls: Option<VehicleTls>,
+    pub contract: Option<VehicleContract>,
 }
 
 /// The log line that says the partner listens.
@@ -54,16 +63,17 @@ fn run_helper(sb: &Sandbox, spec: Spawn) -> io::Result<()> {
 /// `DIN_SPEC_70121`) with EIM, plain TCP, or TLS 1.3 with
 /// mutual authentication using the library's own test PKI (secp256r1, the ISO 15118-2
 /// profile), which is created for the run.
-pub fn iso15118_python(sb: &Sandbox, node: &Node, tls: bool, protocols: &str) -> io::Result<Partner> {
+pub fn iso15118_python(sb: &Sandbox, node: &Node, tls: bool, protocols: &str, auth_modes: &str) -> io::Result<Partner> {
     let mut spawn = Spawn::new(venv().join("bin/python"))
         .args(["-m", "iso15118.secc.main"])
         .env("NETWORK_INTERFACE", sandbox::INTERFACE)
         .env("PROTOCOLS", protocols)
-        .env("AUTH_MODES", "EIM")
+        .env("AUTH_MODES", auth_modes)
         .env("LOG_LEVEL", "DEBUG")
         .current_dir(sb.artifacts())
         .label("secc");
     let mut vehicle_tls = None;
+    let mut contract = None;
     if tls {
         // The library reads its PKI from the `iso15118_2` directory whatever the version.
         let pki = sb.artifacts().join("pki");
@@ -71,6 +81,15 @@ pub fn iso15118_python(sb: &Sandbox, node: &Node, tls: bool, protocols: &str) ->
         run_helper(sb, Spawn::new("bash").args(["create_certs.sh", "-v", "iso-2", "-p", "pass123"]).current_dir(&pki).label("pki"))?;
         let certs = pki.join("iso15118_2");
         spawn = spawn.env("SECC_ENFORCE_TLS", "true").env("ENABLE_TLS_1_3", "true").env("PKI_PATH", format!("{}/", pki.display()));
+        // The test PKI also has a contract for the vehicle: the leaf and its two sub-CAs.
+        let (certs_dir, keys_dir) = (certs.join("certs"), certs.join("private_keys"));
+        let mut chain = Vec::new();
+        for name in ["contractLeafCert.pem", "moSubCA2Cert.pem", "moSubCA1Cert.pem"] {
+            chain.extend(std::fs::read(certs_dir.join(name))?);
+        }
+        let chain_path = certs_dir.join("contractChain.pem");
+        std::fs::write(&chain_path, chain)?;
+        contract = Some(VehicleContract { chain: chain_path, key: keys_dir.join("contractLeaf.key"), key_password: Some("pass123".into()) });
         vehicle_tls = Some(VehicleTls {
             chain: certs.join("certs/oemCertChain.pem"),
             key: certs.join("private_keys/oemLeaf.key"),
@@ -85,7 +104,7 @@ pub fn iso15118_python(sb: &Sandbox, node: &Node, tls: bool, protocols: &str) ->
     if !process.wait_for_log(READY, Duration::from_secs(40))? {
         return Err(io::Error::other(format!("the partner did not start in time:\n{}", process.log())));
     }
-    Ok(Partner { process, vehicle_tls })
+    Ok(Partner { process, vehicle_tls, contract })
 }
 
 /// Path of a binary built by cargo: next to the running executable, or one level up when the

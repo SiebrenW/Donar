@@ -260,7 +260,8 @@ pub fn ocsp_response(cert: &X509, issuer: &X509, signer_key: &PKey<Private>, fla
 /// [`profile_pki`] and an OCSP response for the leaf, signed by its issuing CA (V2G20-1008 allows
 /// that) with the given flaw.
 pub fn profile_pki_with_ocsp(curve: Curve, peer: Peer, flaw: Flaw, ocsp: OcspFlaw) -> (Pki, Identity, Vec<u8>) {
-    assert!(matches!(curve, Curve::P521 | Curve::Ed448), "Annex B has P-521 and Ed448");
+    // Annex B of ISO 15118-20 has P-521 and Ed448, ISO 15118-2 secp256r1 (its contract chains).
+    assert!(matches!(curve, Curve::P521 | Curve::Ed448 | Curve::P256));
     let (root_key, sub1_key, sub2_key, leaf_key) = (key(curve), key(curve), key(curve), key(curve));
     let (cso, id) = match peer {
         Peer::Secc => ("Test CSO", SECC_ID),

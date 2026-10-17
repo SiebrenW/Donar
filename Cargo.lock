@@ -266,6 +266,7 @@ dependencies = [
  "evcc-core",
  "exi",
  "homeplug",
+ "iso15118-2",
  "iso15118-20",
  "libc",
  "openssl",

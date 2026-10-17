@@ -15,6 +15,8 @@ pub struct PemContract {
     chain: Vec<Vec<u8>>,
     key: PKey<Private>,
     suite: Suite,
+    /// The eMAID: the common name of the contract certificate's subject (Annex B.9 / ISO 15118-2 Annex E).
+    emaid: String,
 }
 
 #[derive(Debug)]
@@ -62,7 +64,15 @@ impl PemContract {
             return Err(Error::KeyMismatch);
         }
         let suite = Suite::of_key(&key).ok_or(Error::UnsupportedKey)?;
-        Ok(PemContract { chain, key, suite })
+        let emaid = leaf
+            .subject_name()
+            .entries_by_nid(openssl::nid::Nid::COMMONNAME)
+            .next()
+            .and_then(|e| e.data().to_string().ok())
+            .unwrap_or_default()
+            // In a message the eMAID has no separators (ISO 15118-2 `eMAIDType`, 14 or 15 characters).
+            .replace('-', "");
+        Ok(PemContract { chain, key, suite, emaid })
     }
 }
 
@@ -84,6 +94,7 @@ impl Contract for PemContract {
         match self.suite {
             Suite::EcdsaP521 => ECDSA_SHA512,
             Suite::Ed448 => ED448,
+            Suite::EcdsaP256 => iso15118_2::signature::ECDSA_SHA256,
         }
     }
 
@@ -91,7 +102,12 @@ impl Contract for PemContract {
         match self.suite {
             Suite::EcdsaP521 => DIGEST_SHA512,
             Suite::Ed448 => DIGEST_SHAKE256,
+            Suite::EcdsaP256 => iso15118_2::signature::DIGEST_SHA256,
         }
+    }
+
+    fn emaid(&self) -> &str {
+        &self.emaid
     }
 
     fn digest(&self, data: &[u8], out: &mut [u8]) -> Option<usize> {

@@ -65,6 +65,10 @@ pub const MAX_SIGNATURE_LEN: usize = 144;
 pub trait Contract {
     /// The contract certificate, DER.
     fn certificate(&self) -> &[u8];
+    /// The eMAID of the contract (ISO 15118-2 `PaymentDetailsReq`), if the contract has one.
+    fn emaid(&self) -> &str {
+        ""
+    }
     /// The sub-CA certificates, DER, the issuer of the contract certificate first; `None` past
     /// the last (at most [`MAX_SUB_CERTIFICATES`] are sent).
     fn sub_certificate(&self, index: usize) -> Option<&[u8]>;

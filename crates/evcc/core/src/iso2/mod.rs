@@ -343,6 +343,11 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     fn send(&mut self, body: BodyElementChoice<'_>, msg: MsgKind, next: State, tx: &mut [u8]) -> Step {
         let message = V2gMessage { header: self.header(), body: Body { body_element: Some(body) } };
         let framed = frame(tx, PayloadType::SAP, |out| message.encode(out));
+        self.sent(framed, msg, next)
+    }
+
+    /// A request is framed in `tx`: record it, arm the response timer, move to `next`.
+    fn sent(&mut self, framed: Result<usize, ()>, msg: MsgKind, next: State) -> Step {
         let Ok(len) = framed else { return self.end(EndReason::TxBufferTooSmall) };
         self.log.record(&Record::MsgTx { msg });
         let ms = if msg == MsgKind::CurrentDemandReq {

@@ -65,8 +65,10 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
     let mut secc_args: Vec<String> = Vec::new();
     // Plug & Charge: a contract chain and key for the vehicle, and its root for the charger.
     let mut pnc_trust = None;
-    if scenario.evcc.pnc {
-        let curve = scenario.pki().curve().filter(|c| *c != pki::Curve::P256).unwrap_or(pki::Curve::P521);
+    if scenario.evcc.pnc && scenario.secc.kind == Kind::EvseSim {
+        // ISO 15118-2 contracts are secp256r1; the -20 ones P-521 or Ed448.
+        let iso2 = scenario.evcc.settings.get("protocol").and_then(toml::Value::as_str) == Some("iso15118-2");
+        let curve = if iso2 { pki::Curve::P256 } else { scenario.pki().curve().filter(|c| *c != pki::Curve::P256).unwrap_or(pki::Curve::P521) };
         let (root, identity) = crate::profile_pki::profile_pki(curve, evcc_linux::certificates::Peer::Contract, crate::profile_pki::Flaw::None);
         let put = |name: &str, bytes: &[u8]| sb.write_artifact(&format!("pki/{name}"), bytes).map(|p| p.display().to_string());
         evcc_settings.pnc = Some(evcc_sim::Contract { chain: put("contract-chain.pem", &identity.chain)?, key: put("contract-key.pem", &identity.key)?, key_password: None });
@@ -77,8 +79,13 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
     let mut secc_process = match scenario.secc.kind {
         Kind::Iso15118Python => {
             let protocols = scenario.secc.protocols.as_deref().unwrap_or("ISO_15118_20_DC");
-            let partner = partners::iso15118_python(&sb, &secc, scenario.secc.tls, protocols)?;
+            let auth_modes = scenario.secc.auth_modes.as_deref().unwrap_or("EIM");
+            let partner = partners::iso15118_python(&sb, &secc, scenario.secc.tls, protocols, auth_modes)?;
             partner_tls = partner.vehicle_tls;
+            // The vehicle's contract, when it is to use one: the partner's own.
+            if let (true, Some(c)) = (scenario.evcc.pnc, partner.contract) {
+                evcc_settings.pnc = Some(evcc_sim::Contract { chain: c.chain.display().to_string(), key: c.key.display().to_string(), key_password: c.key_password });
+            }
             partner.process
         }
         Kind::EvseSim => {

@@ -1,0 +1,23 @@
+name = "interop-iso15118-python-iso2-pnc"
+description = "ISO 15118-2 Plug & Charge against the Python iso15118 SECC over TLS 1.2: the vehicle pays with the contract of the library's test PKI (PaymentDetailsReq, then an AuthorizationReq signed over its EXI fragment), which the library checks against its eMSP root."
+timeout_s = 90
+
+[secc]
+kind = "iso15118-python"
+tls = true
+protocols = "ISO_15118_2"
+auth_modes = "PNC"
+
+[evcc]
+kind = "evcc-sim"
+tls = true
+pnc = true
+[evcc.settings]
+protocol = "iso15118-2"
+connector = "extended"
+stop_after = 3
+[evcc.settings.tls]
+versions = "1.2"
+
+[expect]
+evcc_log = ["tls: TLSv1.2", "session: Ended(Completed)"]

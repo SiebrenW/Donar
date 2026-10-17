@@ -124,6 +124,6 @@ fn a_signature_of_the_other_suite_is_refused() {
 
 #[test]
 fn other_keys_are_refused() {
-    let p256 = PKey::from_ec_key(EcKey::generate(&EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap()).unwrap()).unwrap();
-    assert!(matches!(xmlsig::sign(&p256, &[("#id1", &[0u8])]), Err(Error::UnsupportedKey)));
+    let p384 = PKey::from_ec_key(EcKey::generate(&EcGroup::from_curve_name(Nid::SECP384R1).unwrap()).unwrap()).unwrap();
+    assert!(matches!(xmlsig::sign(&p384, &[("#id1", &[0u8])]), Err(Error::UnsupportedKey)));
 }

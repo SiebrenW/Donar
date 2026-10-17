@@ -17,6 +17,7 @@ pub(super) fn expects(state: State) -> &'static str {
         State::AwaitSessionSetupReq => "SessionSetupReq",
         State::AwaitServiceDiscoveryReq => "ServiceDiscoveryReq",
         State::AwaitServicePaymentSelectionReq => "PaymentServiceSelectionReq",
+        State::AwaitPaymentDetailsReq => "PaymentDetailsReq",
         State::AwaitContractAuthenticationReq => "AuthorizationReq",
         State::AwaitChargeParameterDiscoveryReq => "ChargeParameterDiscoveryReq",
         State::AwaitCableCheckReq => "CableCheckReq",
@@ -206,7 +207,8 @@ impl Evse {
                 self.iso2_output(body, false)
             }
             (State::AwaitServicePaymentSelectionReq, B::PaymentServiceSelectionReq(req)) if session_ok => {
-                let payment_ok = req.selected_payment_option == t::PaymentOption::ExternalPayment;
+                let contract = req.selected_payment_option == t::PaymentOption::Contract && self.config.iso2.offer_contract_payment;
+                let payment_ok = req.selected_payment_option == t::PaymentOption::ExternalPayment || contract;
                 let service_ok = !req.selected_service_list.selected_service.is_empty() && req.selected_service_list.selected_service.iter().all(|s| s.service_id == 1);
                 let c = if !payment_ok {
                     t::ResponseCode::FailedPaymentSelectionInvalid
@@ -216,15 +218,50 @@ impl Evse {
                     code(self.config.selection_code)
                 };
                 if is_ok(c) {
-                    self.state = State::AwaitContractAuthenticationReq;
+                    self.state = if contract { State::AwaitPaymentDetailsReq } else { State::AwaitContractAuthenticationReq };
+                    self.iso2_contract = None;
                 }
                 self.iso2_note_reply("PaymentServiceSelectionRes", c, !is_ok(c));
                 self.iso2_output(B::PaymentServiceSelectionRes(PaymentServiceSelectionRes { response_code: c }), !is_ok(c))
             }
-            (State::AwaitContractAuthenticationReq, B::AuthorizationReq(_)) if session_ok => {
+            (State::AwaitPaymentDetailsReq, B::PaymentDetailsReq(req)) if session_ok => {
+                // The contract chain, against the trust anchors; what the vehicle then signs with.
+                let mut ders: Vec<Vec<u8>> = vec![req.contract_signature_cert_chain.certificate.to_vec()];
+                if let Some(subs) = &req.contract_signature_cert_chain.sub_certificates {
+                    ders.extend(subs.certificate.iter().map(|c| c.to_vec()));
+                }
+                let verdict = match crate::pnc::check_contract_chain(&self.config.pnc, &ders) {
+                    Ok(found) => Ok(found),
+                    Err(crate::pnc::ChainFault::Expired) => Err(t::ResponseCode::FailedCertificateExpired),
+                    Err(_) => Err(t::ResponseCode::FailedCertChainError),
+                };
+                self.note(format!("PaymentDetailsReq: eMAID {}, contract chain of {} certificate(s): {}", req.e_maid, ders.len(), match &verdict { Ok(_) => "accepted".to_string(), Err(c) => c.xml_name().to_string() }));
+                let (c, stamp) = match verdict {
+                    Ok(found) => {
+                        self.iso2_contract = Some(found);
+                        self.state = State::AwaitContractAuthenticationReq;
+                        (t::ResponseCode::Ok, (super::now_micros() / 1_000_000) as i64)
+                    }
+                    Err(c) => (c, 0),
+                };
+                self.iso2_note_reply("PaymentDetailsRes", c, !is_ok(c));
+                self.iso2_output(B::PaymentDetailsRes(PaymentDetailsRes { response_code: c, gen_challenge: self.challenge, evse_time_stamp: stamp }), !is_ok(c))
+            }
+            (State::AwaitContractAuthenticationReq, B::AuthorizationReq(auth)) if session_ok => {
                 self.authorization_reqs_seen += 1;
                 let ongoing = self.config.authorization_never_finishes || self.authorization_reqs_seen <= self.config.authorization_ongoing_responses;
-                let c = if ongoing { t::ResponseCode::Ok } else { code(self.config.authorization_code) };
+                let mut c = if ongoing { t::ResponseCode::Ok } else { code(self.config.authorization_code) };
+                // A contract: the challenge and the signature (the first time the answer is final).
+                let checked = match (&self.iso2_contract, ongoing) {
+                    (Some((leaf, expires_soon)), false) => Some((crate::pnc::verify_iso2(self.challenge, leaf, message.header.signature.as_ref(), auth), *expires_soon)),
+                    _ => None,
+                };
+                if let Some((verdict, expires_soon)) = checked {
+                    self.note(format!("contract authorization: {}", verdict.xml_name()));
+                    if is_ok(c) {
+                        c = if verdict == t::ResponseCode::Ok && expires_soon { t::ResponseCode::OkCertificateExpiresSoon } else { verdict };
+                    }
+                }
                 let processing = if ongoing { t::EvseProcessing::Ongoing } else { t::EvseProcessing::Finished };
                 if !ongoing && is_ok(c) {
                     self.state = State::AwaitChargeParameterDiscoveryReq;
