@@ -26,11 +26,11 @@ fn dc(schema_id: u8, priority: u8) -> AppProtocol<'static> {
 fn check_req(name: &str, entries: &[AppProtocol<'_>]) {
     let want = vector(name);
     let req = SupportedAppProtocolReq { app_protocol: entries };
-    let mut out = [0u8; 512];
+    let mut out = [0u8; 1024];
     let n = req.encode(&mut out).unwrap();
     assert_eq!(&out[..n], &want[..], "{name}: encode differs from EXIficient");
 
-    let mut mem = [0u8; 4096];
+    let mut mem = [0u8; 8192];
     let arena = Arena::new(&mut mem);
     assert_eq!(decode(&want, &arena).unwrap(), Message::SupportedAppProtocolReq(req), "{name}: decode");
 }
@@ -74,7 +74,7 @@ fn truncated_input_never_panics() {
     for name in ["app_protocol_req", "app_protocol_req_2", "app_protocol_req_20", "app_protocol_res_ok", "app_protocol_res_failed"] {
         let full = vector(name);
         for cut in 0..full.len() {
-            let mut mem = [0u8; 4096];
+            let mut mem = [0u8; 8192];
             let arena = Arena::new(&mut mem);
             assert!(decode(&full[..cut], &arena).is_err(), "{name} cut at {cut} decoded");
         }
@@ -92,7 +92,7 @@ fn small_arena_is_an_error_not_a_panic() {
 #[test]
 fn arena_is_reusable_after_reset() {
     let full = vector("app_protocol_req_20");
-    let mut mem = [0u8; 2048];
+    let mut mem = [0u8; 8192];
     let mut arena = Arena::new(&mut mem);
     for _ in 0..3 {
         assert!(matches!(decode(&full, &arena), Ok(Message::SupportedAppProtocolReq(_))));

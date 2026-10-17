@@ -363,7 +363,7 @@ pub fn encode_fragment<'v>(
     element: u32,
     content: impl FnOnce(&mut Enc<'_, 'v>) -> Result<(), EncodeError>,
 ) -> Result<usize, EncodeError> {
-    let mut table = Table::new();
+    let mut table = Table::without_values();
     let mut e = Enc::new(out, &mut table)?;
     e.root(element, fragment::CODE_BITS)?;
     content(&mut e)?;
@@ -376,7 +376,7 @@ impl<'a> SignedInfo<'a> {
     /// encoded with the xmldsig schema as entry point instead of the schema of the standard (V2G20-1449),
     /// so the start event is chosen among the declarations of that schema alone.
     pub fn encode_fragment(&self, out: &mut [u8]) -> Result<usize, EncodeError> {
-        let mut table = Table::new();
+        let mut table = Table::without_values();
         let mut e = Enc::new(out, &mut table)?;
         e.root(fragment::XMLDSIG_SIGNED_INFO, fragment::XMLDSIG_CODE_BITS)?;
         self.encode_content(&mut e)?;

@@ -31,7 +31,8 @@ pub struct Group {
     /// `(namespace, element)` of the document root when the messages are parts of one element
     /// (`V2G_Message`) instead of each being a root.
     pub document: Option<(&'static str, &'static str)>,
-    /// False when the EXI stream has `valuePartitionCapacity` 0 (DIN SPEC 70121).
+    /// False when the EXI stream has `valuePartitionCapacity` 0: DIN SPEC 70121, ISO 15118-2 and, as
+    /// the Python library's codec (which sets it for every protocol) shows, ISO 15118-20.
     pub value_table: bool,
 }
 
@@ -47,11 +48,11 @@ pub const ISO20: Group = Group {
     modules: &[(NS_COMMON_TYPES, "common_types"), (NS_COMMON, "common"), (NS_DC, "dc"), (xsd::XMLDSIG, "xmldsig")],
     fragment: &["V2G_CI_CommonMessages.xsd", "V2G_CI_CommonTypes.xsd", "xmldsig-core-schema.xsd"],
     document: None,
-    value_table: true,
+    value_table: false,
 };
 
 pub const APP_PROTOCOL: Group =
-    Group { name: "app-protocol", dir: "iso15118-20", files: &["V2G_CI_AppProtocol.xsd"], modules: &[(NS_APP_PROTOCOL, "app_protocol")], fragment: &[], document: None, value_table: true };
+    Group { name: "app-protocol", dir: "iso15118-20", files: &["V2G_CI_AppProtocol.xsd"], modules: &[(NS_APP_PROTOCOL, "app_protocol")], fragment: &[], document: None, value_table: false };
 
 pub const NS_DIN_TYPES: &str = "urn:din:70121:2012:MsgDataTypes";
 pub const NS_DIN_BODY: &str = "urn:din:70121:2012:MsgBody";

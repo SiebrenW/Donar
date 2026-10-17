@@ -1,0 +1,20 @@
+name = "interop-iso15118-python-pnc"
+description = "ISO 15118-20 Plug & Charge against the Python iso15118 SECC (0.31.2) over TLS 1.3: the vehicle authorizes with the contract of the library's test PKI (secp256r1) and the library verifies the signature over the PnC_AReqAuthorizationMode fragment and the challenge."
+timeout_s = 90
+
+[secc]
+kind = "iso15118-python"
+tls = true
+protocols = "ISO_15118_20_DC"
+auth_modes = "PNC"
+
+[evcc]
+kind = "evcc-sim"
+tls = true
+pnc = true
+[evcc.settings]
+connector = "extended"
+stop_after = 3
+
+[expect]
+evcc_log = ["tls: TLSv1.3", "session: Ended(Completed)"]
