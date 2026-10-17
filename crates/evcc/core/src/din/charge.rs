@@ -165,7 +165,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
 
     pub(super) fn send_current_demand_req(&mut self, tx: &mut [u8]) -> Step {
-        let mut limits = self.ev.dc_limits();
+        let mut limits = self.ev.dc_loop_limits();
         // V2G-DC-641: nothing above what the charge parameter discovery announced.
         if self.config.enforce_cpd_limits
             && let Some(announced) = self.ev_announced {

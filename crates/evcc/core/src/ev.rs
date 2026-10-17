@@ -203,6 +203,33 @@ pub trait Ev {
         let zero = Phases::three(RationalNumber { exponent: 0, value: 0 });
         AcPresentPower { active: zero, reactive: zero }
     }
+    // The limits above are the vehicle's *capabilities*, sent once in the charge parameter
+    // discovery. The ones below are what it can take *right now*, read before every charge loop
+    // request (`DC_ChargeLoopReq`, `AC_ChargeLoopReq`, `CurrentDemandReq`, `ChargingStatusReq`):
+    // they follow temperature, state of charge, battery derating. By default they are the
+    // capabilities. With `Config::enforce_cpd_limits` the session still keeps them inside the
+    // announced envelope (maximums no higher, minimums no lower).
+
+    /// DC limits for the next charge loop request.
+    fn dc_loop_limits(&self) -> DcLimits {
+        self.dc_limits()
+    }
+    /// Discharge limits (BPT) for the next charge loop request.
+    fn dc_discharge_loop_limits(&self) -> DischargeLimits {
+        self.dc_discharge_limits()
+    }
+    /// ISO 15118-20 AC power limits for the next charge loop request.
+    fn ac20_loop_limits(&self) -> AcPowerLimits {
+        self.ac20_limits()
+    }
+    /// ISO 15118-20 AC discharge limits for the next charge loop request.
+    fn ac20_discharge_loop_limits(&self) -> AcDischargePowerLimits {
+        self.ac20_discharge_limits()
+    }
+    /// ISO 15118-2 AC limits for the next charging status exchange.
+    fn ac_loop_limits(&self) -> AcLimits {
+        self.ac_limits()
+    }
     /// The voltage of the vehicle's battery system (read when the cable check is done and
     /// during pre-charge).
     fn battery_voltage(&self) -> RationalNumber;

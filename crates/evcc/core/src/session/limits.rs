@@ -79,7 +79,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     /// The vehicle's AC power limits for a charge loop request: the host's, and within what was
     /// announced in the charge parameter discovery (V2G20-2198, 2199).
     pub(super) fn loop_ac_limits(&self) -> AcPowerLimits {
-        let now = self.ev.ac20_limits();
+        let now = self.ev.ac20_loop_limits();
         match (self.config.enforce_cpd_limits, self.ev_announced_ac) {
             (true, Some(then)) => AcPowerLimits {
                 maximum_charge_power: phases_with(now.maximum_charge_power, then.maximum_charge_power, smaller),
@@ -90,7 +90,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
 
     pub(super) fn loop_ac_discharge_limits(&self) -> AcDischargePowerLimits {
-        let now = self.ev.ac20_discharge_limits();
+        let now = self.ev.ac20_discharge_loop_limits();
         match (self.config.enforce_cpd_limits, self.ev_announced_ac_discharge) {
             (true, Some(then)) => AcDischargePowerLimits {
                 maximum_discharge_power: phases_with(now.maximum_discharge_power, then.maximum_discharge_power, smaller),
@@ -103,7 +103,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     /// The vehicle's limits for a charge loop request: the host's, and within what was announced
     /// in the charge parameter discovery when [`super::Config::enforce_cpd_limits`] is on.
     pub(super) fn loop_limits(&self) -> DcLimits {
-        let now = self.ev.dc_limits();
+        let now = self.ev.dc_loop_limits();
         match (self.config.enforce_cpd_limits, self.ev_announced) {
             (true, Some(then)) => DcLimits {
                 maximum_charge_power: smaller(now.maximum_charge_power, then.maximum_charge_power),
@@ -121,7 +121,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     /// The vehicle's discharge limits for a BPT charge loop request: the host's, and within what
     /// was announced in the charge parameter discovery (V2G20-2198, 2199 hold for them too).
     pub(super) fn loop_discharge_limits(&self) -> crate::ev::DischargeLimits {
-        let now = self.ev.dc_discharge_limits();
+        let now = self.ev.dc_discharge_loop_limits();
         match (self.config.enforce_cpd_limits, self.ev_announced_discharge) {
             (true, Some(then)) => crate::ev::DischargeLimits {
                 maximum_discharge_power: smaller(now.maximum_discharge_power, then.maximum_discharge_power),

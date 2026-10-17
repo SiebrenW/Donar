@@ -26,6 +26,11 @@ thread_local! {
 
 const BATTERY_V: i16 = 400;
 
+thread_local! {
+    /// The maximum charge current the vehicle can take right now (amperes); 0: as announced.
+    static LOOP_CURRENT: Cell<i16> = const { Cell::new(0) };
+}
+
 fn rn(exponent: i8, value: i16) -> RationalNumber {
     RationalNumber { exponent, value }
 }
@@ -55,6 +60,10 @@ impl Ev for TestEv {
             minimum_voltage: rn(0, 200),
             target_soc: Some(80),
         }
+    }
+    fn dc_loop_limits(&self) -> DcLimits {
+        let now = LOOP_CURRENT.with(Cell::get);
+        DcLimits { maximum_charge_current: if now > 0 { rn(0, now) } else { self.dc_limits().maximum_charge_current }, ..self.dc_limits() }
     }
     fn battery_voltage(&self) -> RationalNumber {
         rn(0, BATTERY_V)
@@ -518,6 +527,25 @@ fn the_charge_loop_cycles_and_stops_on_request() {
     assert_eq!(step.notice, Some(Notice::StopEnergyTransfer { within_s: None }));
     assert_eq!(s.state(), State::AwaitCurrentStopped);
     finish_shutdown(&mut s);
+}
+
+/// The discovery announces what the vehicle can ever take; the loop carries what it can take now,
+/// within the announced envelope.
+#[test]
+fn the_charge_loop_carries_the_present_limits_not_the_announced_ones() {
+    let mut rig = Rig::new();
+    let mut s = up_to_charge_loop(&mut rig, Capture::default());
+    for (now, sent) in [(80, 80), (250, 200), (0, 200)] {
+        LOOP_CURRENT.with(|c| c.set(now));
+        deliver(&mut s, &loop_res(None));
+        let step = s.handle(Event::TimerExpired(Timer::Poll));
+        sent_dc(&s, &step, |m| {
+            let dc::Message::DcChargeLoopReq(r) = m else { panic!("{m:?}") };
+            let dc::ClReqControlModeChoice::DynamicDc(mode) = r.cl_req_control_mode else { panic!() };
+            assert_eq!(mode.ev_maximum_charge_current, rn(0, sent), "limit {now}");
+        });
+    }
+    LOOP_CURRENT.with(|c| c.set(0));
 }
 
 #[test]

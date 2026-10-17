@@ -190,7 +190,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
 
     pub(super) fn send_current_demand_req(&mut self, tx: &mut [u8]) -> Step {
-        let mut limits = self.ev.dc_limits();
+        let mut limits = self.ev.dc_loop_limits();
         if self.config.enforce_cpd_limits
             && let Some(a) = self.ev_announced {
                 limits.maximum_charge_power = lower(limits.maximum_charge_power, a.maximum_charge_power);
@@ -262,7 +262,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         // charger's and its own maximum current on every phase, at the nominal voltage (so
         // that the current is the sum over the phases, and voltage times current the power).
         let phases = if self.config.mode == crate::iso2::Mode::AcThreePhase { 3.0 } else { 1.0 };
-        let current = RationalNumber::from_f64(max_current.to_f64().min(self.ev.ac_limits().maximum_current.to_f64()) * phases);
+        let current = RationalNumber::from_f64(max_current.to_f64().min(self.ev.ac_loop_limits().maximum_current.to_f64()) * phases);
         let status = ChargeLoopStatus {
             present_current: current,
             present_voltage: self.evse.map_or(zero, |e| e.max_voltage),
