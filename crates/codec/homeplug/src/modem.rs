@@ -8,7 +8,7 @@
 //!
 //! Verified against a QCA7005 (firmware `MAC-QCA7005-3.3.0.31-00-20231004-CS`) on a Heliox
 //! EVAChargeSE board: the version request and its answer (the test below uses the frame as it
-//! came off the wire) and `CM_SET_KEY`, which the modem answered with result 0.
+//! came off the wire) and `CM_SET_KEY`, which the modem answered with result 1 and then used (its network id was the one computed here).
 
 use crate::{ETHERTYPE, Mac, MIN_FRAME};
 
@@ -37,6 +37,9 @@ pub fn network_id(nmk: &[u8; 16]) -> [u8; 7] {
     nid[6] >>= 4;
     nid
 }
+
+/// `Result` of CM_SET_KEY.CNF for a key that was taken.
+pub const SET_KEY_DONE: u8 = 1;
 
 pub const SET_KEY_REQ: u16 = 0x6008;
 pub const SET_KEY_CNF: u16 = 0x6009;
@@ -85,7 +88,9 @@ pub fn set_key_req(src: Mac, nid: [u8; 7], nmk: [u8; 16], out: &mut [u8]) -> Opt
     frame(LOCAL_DEVICE, src, 0x01, SET_KEY_REQ, &p, out)
 }
 
-/// The `Result` of CM_SET_KEY.CNF: 0 is success.
+/// The `Result` of CM_SET_KEY.CNF. A QCA7005 answers 1 when it has taken the key (and its network
+/// then has the network ID that [`network_id`] gives for it), and 0 for a request it refuses (an
+/// unknown key type).
 pub fn parse_set_key_cnf(frame: &[u8]) -> Option<u8> {
     let body = body(frame, SET_KEY_CNF)?;
     body.first().copied()
@@ -178,13 +183,13 @@ mod tests {
 
     #[test]
     fn the_key_confirmation_gives_its_result() {
-        // As the QCA7005 answered: version 1, the fragmentation information, the result 0, the
+        // As the QCA7005 answered: version 1, the fragmentation information, the result 1, the
         // nonces and the protocol id 4.
-        let mut frame = hex("0001 8705 f505 0001 8705 f506 88e1 01 0960 0000 00 01e9f524 92000000 04");
+        let mut frame = hex("0001 8705 f505 0001 8705 f506 88e1 01 0960 0000 01 e9f52492 00000000 04");
         frame.resize(60, 0);
+        assert_eq!(parse_set_key_cnf(&frame), Some(SET_KEY_DONE));
+        frame[19] = 0;
         assert_eq!(parse_set_key_cnf(&frame), Some(0));
-        frame[19] = 1;
-        assert_eq!(parse_set_key_cnf(&frame), Some(1));
         assert_eq!(parse_set_key_cnf(&frame[..10]), None);
     }
 

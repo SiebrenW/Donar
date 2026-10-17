@@ -63,7 +63,7 @@ fn the_driver_reads_the_version_and_sets_the_key() {
     let (ev, charger) = (sb.node("ev").unwrap(), sb.node("modem").unwrap());
     let (ev, charger) = sb.connect(&ev, &charger).unwrap();
     let (ready, up) = std::sync::mpsc::channel();
-    let modem = std::thread::spawn(move || charger.run_in(|| fake_modem(2, 0, ready)).unwrap());
+    let modem = std::thread::spawn(move || charger.run_in(|| fake_modem(2, homeplug::modem::SET_KEY_DONE, ready)).unwrap());
     up.recv().unwrap();
     let seen = ev
         .run_in(|| {
@@ -89,7 +89,7 @@ fn a_refused_key_is_an_error() {
     let (ev, charger) = (sb.node("ev").unwrap(), sb.node("modem").unwrap());
     let (ev, charger) = sb.connect(&ev, &charger).unwrap();
     let (ready, up) = std::sync::mpsc::channel();
-    let modem = std::thread::spawn(move || charger.run_in(|| fake_modem(1, 1, ready)).unwrap());
+    let modem = std::thread::spawn(move || charger.run_in(|| fake_modem(1, 0, ready)).unwrap());
     up.recv().unwrap();
     let error = ev
         .run_in(|| {

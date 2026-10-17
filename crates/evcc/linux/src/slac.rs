@@ -324,7 +324,7 @@ impl Modem for QcaModem {
         let n = homeplug::modem::set_key_req(self.socket.mac(), nid, nmk, &mut out).ok_or_else(|| io::Error::from(ErrorKind::InvalidInput))?;
         self.socket.send(&out[..n])?;
         let result = self.wait_for(homeplug::modem::parse_set_key_cnf)?;
-        if result != 0 {
+        if result != homeplug::modem::SET_KEY_DONE {
             return Err(io::Error::other(format!("the modem refused the key (result {result})")));
         }
         self.keyed_at = Some(Instant::now());
