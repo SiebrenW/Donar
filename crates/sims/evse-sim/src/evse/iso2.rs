@@ -281,6 +281,7 @@ impl Evse {
                     return Output { send: self.iso2_failing(&request, c), close: true };
                 }
                 self.iso2_ac = ac;
+                self.iso2_phases = if req.requested_energy_transfer_mode == t::EnergyTransferMode::AcThreePhaseCore { 3.0 } else { 1.0 };
                 self.iso2_ev_power = match &req.ev_charge_parameter {
                     EvChargeParameterChoice::Dc(p) => p.ev_maximum_power_limit.map(|p| p.to_f64()),
                     _ => None,
@@ -414,6 +415,13 @@ impl Evse {
             (State::ChargeLoop, B::ChargingStatusReq(_)) if session_ok && self.iso2_ac => {
                 self.loops_seen += 1;
                 let shutdown = self.config.iso2.shutdown_after_loops.is_some_and(|n| self.loops_seen >= n);
+                // For a test platform the AC power is shown like a DC one: the nominal voltage and
+                // the current summed over the phases.
+                if let Some(live) = &self.live {
+                    let current = f64::from(self.config.iso2.ac_max_current_a) * self.iso2_phases;
+                    let voltage = f64::from(self.config.iso2.ac_nominal_voltage_v);
+                    live.charge_loop(voltage, current, voltage * current, None);
+                }
                 let status = self.iso2_ac_status(if shutdown { t::EvseNotification::StopCharging } else { t::EvseNotification::None });
                 let id = self.config.iso2.evse_id.clone();
                 let body = B::ChargingStatusRes(ChargingStatusRes {

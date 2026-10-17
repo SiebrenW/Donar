@@ -6,104 +6,166 @@
 <title>evcc-rs scenarios</title>
 <style>
   :root {
-    --bg: #f6f4ef; --panel: #fffdf8; --text: #2b3440; --muted: #6b7480; --line: #ddd8cc;
-    --accent: #3b7f86; --accent-text: #ffffff; --hover: #ece9e0; --set: #f4e8c4;
-    --ok: #3f7d4e; --bad: #b0483e; --warn: #b07a2a; --log-bg: #262d36; --log-text: #d8dde3;
-    --input: #ffffff; color-scheme: light;
+    --bg: #eff1ee; --panel: #ffffff; --text: #1f2933; --muted: #66727f; --line: #dde2e8; --line-strong: #c5ccd5;
+    --accent: #2457c5; --accent-hover: #1c47a3; --accent-text: #ffffff; --accent-soft: #e4ebfa; --hover: #eef1f4; --set: #fff1c9;
+    --ok: #23844a; --bad: #c0392b; --warn: #b7791f; --charge: #23844a; --discharge: #d9730d;
+    --log-bg: #1b222b; --log-text: #d8dde3; --input: #ffffff; --shadow: none;
+    --radius: 8px; color-scheme: light;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme=light]) {
-      --bg: #171b22; --panel: #1e242d; --text: #d5dae1; --muted: #8d97a4; --line: #2f3946;
-      --accent: #5fb0b7; --accent-text: #10252a; --hover: #263040; --set: #493f21;
-      --ok: #7fc08f; --bad: #e0897f; --warn: #e3b567; --log-bg: #11151b; --log-text: #cdd3da;
-      --input: #171c24; color-scheme: dark;
+      --bg: #14181d; --panel: #1c222a; --text: #dde2e8; --muted: #8f9ba8; --line: #2c3541; --line-strong: #3b4756;
+      --accent: #7ea6f5; --accent-hover: #9bbbf8; --accent-text: #0b1830; --accent-soft: #1d2a45; --hover: #252d38; --set: #4a3f1c;
+      --ok: #6fcf8e; --bad: #ec8a7f; --warn: #e8b660; --charge: #6fcf8e; --discharge: #f0a050;
+      --log-bg: #0f1318; --log-text: #cdd3da; --input: #151a20; --shadow: none; color-scheme: dark;
     }
   }
   :root[data-theme=dark] {
-    --bg: #171b22; --panel: #1e242d; --text: #d5dae1; --muted: #8d97a4; --line: #2f3946;
-    --accent: #5fb0b7; --accent-text: #10252a; --hover: #263040; --set: #493f21;
-    --ok: #7fc08f; --bad: #e0897f; --warn: #e3b567; --log-bg: #11151b; --log-text: #cdd3da;
-    --input: #171c24; color-scheme: dark;
+    --bg: #14181d; --panel: #1c222a; --text: #dde2e8; --muted: #8f9ba8; --line: #2c3541; --line-strong: #3b4756;
+    --accent: #7ea6f5; --accent-hover: #9bbbf8; --accent-text: #0b1830; --accent-soft: #1d2a45; --hover: #252d38; --set: #4a3f1c;
+    --ok: #6fcf8e; --bad: #ec8a7f; --warn: #e8b660; --charge: #6fcf8e; --discharge: #f0a050;
+    --log-bg: #0f1318; --log-text: #cdd3da; --input: #151a20; --shadow: none; color-scheme: dark;
   }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
-  body { margin: 0; font: 14px system-ui, sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: grid; grid-template-rows: auto 1fr; }
-  header { display: flex; gap: 1rem; align-items: center; padding: .45rem 1rem; border-bottom: 1px solid var(--line); background: var(--panel); }
-  header h1 { font-size: 1rem; margin: 0; font-weight: 600; }
-  header .tabs { display: flex; gap: .25rem; flex: 1; }
-  header .tabs button { background: none; color: var(--text); border: 1px solid transparent; }
-  header .tabs button.current { background: var(--accent); color: var(--accent-text); }
-  header .theme { background: none; color: var(--muted); border-color: var(--line); }
+  body { margin: 0; font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: grid; grid-template-rows: auto 1fr; }
+  header { display: flex; gap: 1.2rem; align-items: center; padding: .5rem 1.2rem; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 1.05rem; margin: 0; font-weight: 700; display: flex; align-items: center; gap: .45rem; letter-spacing: .01em; }
+  header h1 svg { width: 1.3rem; height: 1.3rem; color: var(--accent); }
+  header .tabs { display: flex; gap: .2rem; flex: 1; align-self: stretch; }
+  header .tabs button { background: none; color: var(--muted); border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: .3rem .9rem; font-weight: 500; }
+  header .tabs button:hover { color: var(--text); background: none; }
+  header .tabs button.current { color: var(--accent); border-bottom-color: var(--accent); background: none; }
+  header .theme { background: none; color: var(--muted); border-color: var(--line); padding: .25rem .7rem; }
   .split { display: grid; grid-template-columns: 16rem 1fr; min-height: 0; }
-  nav { border-right: 1px solid var(--line); overflow: auto; padding: .5rem; background: var(--panel); }
-  nav h1 { font-size: 1rem; margin: .2rem 0 .6rem; }
-  nav a { display: block; padding: .25rem .4rem; border-radius: 4px; color: inherit; text-decoration: none; cursor: pointer; }
+  nav { border-right: 1px solid var(--line); overflow: auto; padding: .7rem; background: var(--panel); }
+  nav h1 { font-size: .85rem; font-weight: 600; color: var(--muted); margin: .2rem .5rem .6rem; }
+  nav a { display: block; padding: .3rem .5rem; border-radius: 6px; color: inherit; text-decoration: none; cursor: pointer; }
   nav a:hover { background: var(--hover); }
-  nav a.current { background: var(--accent); color: var(--accent-text); }
-  main, #sim-view { min-height: 0; overflow: auto; padding: 1rem; display: grid; gap: 1rem; align-content: start; }
-  h2 { font-size: 1.1rem; margin: 0; }
+  nav a.current { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  main, #sim-view { min-height: 0; overflow: auto; padding: 1.1rem 1.3rem 2rem; display: grid; gap: 1rem; align-content: start; }
+  h2 { font-size: 1.2rem; margin: 0; }
   p.desc { margin: .2rem 0 0; color: var(--muted); }
   .row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: end; }
   label { display: grid; gap: .15rem; font-size: .85rem; }
   label.inline { display: flex; gap: .4rem; align-items: center; }
   .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-  .three { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; align-items: start; }
-  @media (max-width: 1100px) { .columns, .three { grid-template-columns: 1fr; } }
-  fieldset, .panel { border: 1px solid var(--line); border-radius: 6px; padding: .5rem .7rem; background: var(--panel); margin: 0; min-width: 0; }
-  fieldset fieldset { margin: .4rem 0; }
-  legend, .panel h3 { font-weight: 600; font-size: .95rem; margin: 0 0 .3rem; }
+  .three { display: grid; grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); gap: 1rem; align-items: start; }
+  @media (max-width: 1100px) { .columns { grid-template-columns: 1fr; } }
+  fieldset, .panel { border: 1px solid var(--line); border-radius: var(--radius); padding: .7rem .9rem; background: var(--panel); margin: 0; min-width: 0; box-shadow: var(--shadow); }
+  fieldset fieldset { margin: .4rem 0; box-shadow: none; }
+  legend, .panel h3 { font-weight: 600; font-size: .95rem; margin: 0 0 .4rem; }
+  .panel h3 small { font-weight: 400; color: var(--muted); margin-left: .4rem; font-size: .78rem; }
   .field { display: grid; grid-template-columns: 13rem 1fr auto; gap: .4rem; align-items: center; padding: .12rem 0; }
   .field .name { font-family: ui-monospace, monospace; font-size: .8rem; overflow-wrap: anywhere; }
   .field .doc { grid-column: 2 / 4; color: var(--muted); font-size: .75rem; margin-top: -.1rem; }
-  input[type=text], input[type=number], select, textarea { width: 100%; padding: .2rem .3rem; border: 1px solid var(--line); border-radius: 4px; font: inherit; background: var(--input); color: var(--text); }
+  input[type=text], input[type=number], select, textarea { width: 100%; padding: .3rem .5rem; border: 1px solid var(--line-strong); border-radius: 6px; font: inherit; background: var(--input); color: var(--text); }
+  input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  input[type=checkbox] { accent-color: var(--accent); }
   textarea { font-family: ui-monospace, monospace; font-size: .8rem; }
   .set input, .set select, .set textarea, input.set { background: var(--set); }
-  button { padding: .35rem .9rem; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-text); border-radius: 4px; cursor: pointer; font: inherit; }
+  button { padding: .4rem 1rem; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-text); border-radius: 6px; cursor: pointer; font: inherit; font-weight: 500; }
+  button:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
   button:disabled { opacity: .45; cursor: default; }
   button.reset { padding: 0 .4rem; background: none; color: var(--accent); border-color: transparent; }
-  button.quiet { background: none; color: var(--text); border-color: var(--line); }
+  button.quiet { background: none; color: var(--text); border-color: var(--line-strong); }
+  button.quiet:hover:not(:disabled) { background: var(--hover); border-color: var(--line-strong); }
+  button.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+  button.big { padding: .5rem 1.3rem; font-size: 1rem; font-weight: 600; border-radius: 8px; white-space: nowrap; }
   #verdict { font-weight: 600; white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: .8rem; }
   .pass { color: var(--ok); } .fail, .error { color: var(--bad); }
   .logs { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
   .log h3 { margin: 0 0 .2rem; font-size: .85rem; font-family: ui-monospace, monospace; }
-  .log pre { margin: 0; height: 22rem; overflow: auto; background: var(--log-bg); color: var(--log-text); padding: .5rem; border-radius: 6px; font-size: .75rem; white-space: pre-wrap; }
-  details pre { background: var(--hover); padding: .5rem; overflow: auto; font-size: .75rem; border-radius: 4px; }
-  /* simulation */
-  .stepper { display: flex; flex-wrap: wrap; gap: .3rem; }
-  .stepper span { padding: .2rem .55rem; border: 1px solid var(--line); border-radius: 999px; font-size: .8rem; color: var(--muted); background: var(--panel); }
-  .stepper span.done { color: var(--text); border-color: var(--accent); }
-  .stepper span.current { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
-  .stepper span.held { box-shadow: 0 0 0 2px var(--warn); }
+  .log pre { margin: 0; height: 22rem; overflow: auto; background: var(--log-bg); color: var(--log-text); padding: .6rem; border-radius: 8px; font-size: .75rem; white-space: pre-wrap; }
+  details > summary { cursor: pointer; color: var(--muted); font-weight: 500; padding: .15rem 0; user-select: none; }
+  details > summary:hover { color: var(--text); }
+  details[open] > summary { margin-bottom: .5rem; }
+  details pre { background: var(--hover); padding: .5rem; overflow: auto; font-size: .75rem; border-radius: 6px; }
+  /* simulation: control bar */
+  .bar { display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: center; padding: .6rem .8rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+  .bar .spacer { flex: 1; }
+  .seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 8px; overflow: hidden; }
+  .seg button { background: none; color: var(--text); border: 0; border-right: 1px solid var(--line-strong); border-radius: 0; padding: .4rem .7rem; font-weight: 500; white-space: nowrap; }
+  .seg button:last-child { border-right: 0; }
+  .seg button:hover:not(:disabled) { background: var(--hover); }
+  .seg button.on { background: var(--accent); color: var(--accent-text); }
+  .seg button:disabled { opacity: .6; }
+  .seg button.on:disabled { opacity: .85; }
+  .pill { display: inline-flex; align-items: center; gap: .4rem; padding: .2rem .7rem; border-radius: 999px; background: var(--hover); color: var(--muted); font-size: .82rem; font-weight: 500; }
+  .pill::before { content: ""; width: .5rem; height: .5rem; border-radius: 50%; background: var(--line-strong); }
+  .pill.live { color: var(--ok); } .pill.live::before { background: var(--ok); }
+  .pill.busy { color: var(--warn); } .pill.busy::before { background: var(--warn); }
+  .presets { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+  .presets .label { color: var(--muted); font-size: .8rem; margin-right: .2rem; }
+  .chip { padding: .25rem .8rem; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--panel); color: var(--text); font-size: .82rem; font-weight: 500; }
+  .chip:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  /* live readouts */
+  .tiles { display: grid; grid-template-columns: 1.6fr 1fr 1fr 1fr 1.2fr; border-top: 2px solid var(--text); border-bottom: 1px solid var(--line-strong); }
+  @media (max-width: 900px) { .tiles { grid-template-columns: 1fr 1fr; } }
+  .tile { padding: .7rem 1rem .8rem; display: grid; gap: .05rem; align-content: start; border-left: 1px solid var(--line); }
+  .tile:first-child { border-left: 0; padding-left: .2rem; }
+  .tile .k { color: var(--muted); font-size: .8rem; }
+  .tile .v { font: 600 2rem/1.1 ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .tile .v small { font: 500 .85rem system-ui, sans-serif; color: var(--muted); margin-left: .25rem; letter-spacing: 0; }
+  .tile .sub { color: var(--muted); font-size: .8rem; min-height: 1.2em; }
+  .tile.hero .v { font-size: 2.6rem; }
+  .tile.charging .v, .tile.charging .sub { color: var(--charge); }
+  .tile.discharging .v, .tile.discharging .sub { color: var(--discharge); }
+  .tile.phase .v { font: 600 1.15rem/1.3 system-ui, sans-serif; letter-spacing: 0; }
+  .flow { height: .35rem; margin-top: .4rem; background: var(--hover); position: relative; border-radius: 2px; }
+  .flow::after { content: ""; position: absolute; top: -.2rem; bottom: -.2rem; left: 50%; width: 1px; background: var(--line-strong); }
+  .flow > i { position: absolute; top: 0; bottom: 0; left: 50%; width: 0; background: var(--charge); transition: left .3s, width .3s; }
+  .tile.discharging .flow > i { background: var(--discharge); }
+  .meter { height: .35rem; border-radius: 2px; background: var(--hover); overflow: hidden; margin-top: .4rem; }
+  .meter > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .4s; }
+  /* stepper */
+  .stepper { display: flex; flex-wrap: wrap; gap: .35rem; }
+  .stepper button { padding: .25rem .7rem; border: 1px solid var(--line-strong); border-radius: 999px; font-size: .8rem; color: var(--muted); background: var(--panel); font-weight: 500; }
+  .stepper button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  .stepper button:disabled { opacity: 1; cursor: default; }
+  .stepper button.done { color: var(--text); border-color: var(--accent); }
+  .stepper button.current { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .stepper button.held { box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 45%, transparent); }
+  /* value tables */
   table.values { width: 100%; border-collapse: collapse; font-size: .85rem; }
-  table.values th { text-align: left; font-weight: 500; color: var(--muted); font-size: .75rem; padding: 0 .3rem .2rem 0; }
-  table.values td { padding: .12rem .3rem .12rem 0; vertical-align: middle; }
-  table.values td.name { font-family: ui-monospace, monospace; font-size: .78rem; overflow-wrap: anywhere; }
+  table.values th { text-align: left; font-weight: 500; color: var(--muted); font-size: .75rem; padding: 0 .3rem .25rem 0; }
+  table.values td { padding: .15rem .3rem .15rem 0; vertical-align: middle; }
+  table.values td.name { font-size: .84rem; }
+  table.values td.name .u { color: var(--muted); font-size: .75rem; margin-left: .25rem; }
+  table.values td.name .hint { cursor: help; }
+  table.values tr.group td { padding-top: .7rem; color: var(--text); font-size: .82rem; font-weight: 600; border-bottom: 1px solid var(--line); }
   table.values td.used input { color: var(--muted); font-variant-numeric: tabular-nums; }
   table.values td.used input:not(:disabled) { color: var(--text); }
   table.values td.used input.pending { outline: 1px solid var(--warn); }
-  table.values input[type=number] { width: 7rem; }
-  .chips { display: flex; gap: .5rem; flex-wrap: wrap; font-size: .8rem; color: var(--muted); }
+  table.values input[type=number] { width: 7rem; padding: .15rem .4rem; }
+  table.values td.name { width: 52%; }
+  table.values.hide-used .used { display: none; }
+  .chips { display: flex; gap: .5rem 1rem; flex-wrap: wrap; font-size: .8rem; color: var(--muted); }
   .chips b { color: var(--text); font-weight: 600; }
   .note { color: var(--muted); font-size: .8rem; margin: .3rem 0 0; }
   .row.tight { gap: .5rem; margin: .35rem 0; align-items: center; }
   .faults { display: grid; gap: .8rem; }
-  .legend { display: flex; flex-wrap: wrap; gap: .2rem .9rem; margin-top: .4rem; font-size: .78rem; }
-  .legend b { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 3.5rem; display: inline-block; }
-  .swatch { width: .7rem; height: .7rem; border-radius: 2px; display: inline-block; }
+  .legend { display: flex; flex-wrap: wrap; gap: .3rem .4rem; margin-top: .6rem; font-size: .78rem; }
+  .legend label { display: inline-flex; gap: .35rem; align-items: center; padding: .15rem .6rem .15rem .45rem; border: 1px solid var(--line-strong); border-radius: 999px; cursor: pointer; color: var(--muted); }
+  .legend label.on { color: var(--text); background: var(--hover); }
+  .legend label input { display: none; }
+  .legend b { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 3rem; display: inline-block; }
+  .swatch { width: .7rem; height: .7rem; border-radius: 50%; display: inline-block; opacity: .35; }
+  .legend label.on .swatch { opacity: 1; }
   .timeline { display: grid; grid-template-columns: 3fr 2fr; gap: .6rem; margin-top: .4rem; }
-  .tl-scroll { max-height: 18rem; overflow: auto; border: 1px solid var(--line); border-radius: 4px; }
+  .tl-scroll { max-height: 18rem; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
   .tl-scroll thead th { position: sticky; top: 0; background: var(--panel); }
   .tl-scroll tbody tr { cursor: pointer; }
   .tl-scroll tbody tr:hover { background: var(--hover); }
   .tl-scroll tr.muted td { color: var(--muted); }
   .tl-scroll tr.bad td { color: var(--bad); }
   .tl-scroll td { white-space: nowrap; font-size: .78rem; padding: .08rem .4rem; }
-  #timeline-detail { margin: 0; max-height: 18rem; overflow: auto; background: var(--hover); padding: .5rem; border-radius: 4px; font-size: .72rem; }
+  #timeline-detail { margin: 0; max-height: 18rem; overflow: auto; background: var(--hover); padding: .5rem; border-radius: 6px; font-size: .72rem; }
 </style>
 </head>
 <body>
 <header>
-  <h1>evcc-rs</h1>
+  <h1><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 2v5M15 2v5M6 7h12v4a6 6 0 0 1-12 0V7zM12 17v5"/></svg>evcc-rs</h1>
   <div class="tabs"><button id="tab-scenarios" class="current" type="button">Scenarios</button><button id="tab-sim" type="button">Simulation</button></div>
   <button id="theme" class="theme" type="button" title="colour theme">auto</button>
 </header>
@@ -404,13 +466,33 @@ const simCmd = (target, cmd) => simPost("/api/sim/cmd", { target, cmd });
 
 const fmt = v => (v == null ? "–" : Number.isInteger(v) ? String(v) : (Math.round(v * 100) / 100).toString());
 
-// A table of limits: the value for the next session (editable) next to the one in use.
+// Names of settings are the keys of the settings files; the page shows words and units.
+const UNITS = [["_percent_per_min", "%/min"], ["_wh", "Wh"], ["_ms", "ms"], ["_w", "W"], ["_a", "A"], ["_v", "V"], ["_s", "s"], ["_soc", "%"]];
+function pretty(name) {
+  let base = name, unit = "";
+  for (const [suffix, u] of UNITS) {
+    if (name.endsWith(suffix)) { base = name.slice(0, -suffix.length) + (suffix === "_soc" ? " SoC" : ""); unit = u; break; }
+  }
+  const words = base.replace(/_/g, " ").replace(/\bsoc\b/i, "SoC");
+  return { label: words.charAt(0).toUpperCase() + words.slice(1), unit };
+}
+
+// A table of limits: the value for the next session (editable) next to the one in use, which
+// only shows while a session runs. Discharge limits belong to the bidirectional service.
 function limitsTable(title, root, owner, state, defaults, usedKey) {
   const props = strip(root, strip(root, owner).properties.limits).properties;
-  const table = $("table", { className: "values" });
-  table.append($("tr", {}, $("th", { textContent: "limit" }), $("th", { textContent: "next session" }), $("th", { textContent: "in use" })));
+  const table = $("table", { className: "values limits hide-used" });
+  table.append($("tr", {}, $("th", { textContent: "" }), $("th", { textContent: "next session" }), $("th", { className: "used", textContent: "in use" })));
   const base = getPath(defaults, ["limits"]) ?? {};
-  for (const name of Object.keys(props)) {
+  const groups = new Set();
+  const names = Object.keys(props).sort((a, b) => a.includes("discharge") - b.includes("discharge"));
+  for (const name of names) {
+    const bpt = name.includes("discharge");
+    const group = bpt ? "Discharging (bidirectional)" : "Charging";
+    if (!groups.has(group)) {
+      groups.add(group);
+      table.append($("tr", { className: "group" + (bpt ? " bpt-only" : "") }, $("td", { colSpan: 3, textContent: group })));
+    }
     const input = $("input", { type: "number", step: "any", placeholder: base[name] == null ? "unset" : String(base[name]) });
     const cur = getPath(state, ["limits", name]);
     input.value = cur ?? (base[name] ?? "");
@@ -425,13 +507,18 @@ function limitsTable(title, root, owner, state, defaults, usedKey) {
     used.onchange = () => {
       if (used.value !== "") simCmd(usedKey, { cmd: "limits", key: name, value: Number(used.value) });
     };
-    table.append($("tr", {}, $("td", { className: "name", textContent: name }), $("td", {}, input), $("td", { className: "used" }, used)));
+    const { label, unit } = pretty(name);
+    const doc = strip(root, props[name]).description || props[name].description || "";
+    table.append($("tr", { className: bpt ? "bpt-only" : "" },
+      $("td", { className: "name" }, $("span", { className: doc ? "hint" : "", title: doc, textContent: label }), $("span", { className: "u", textContent: unit })),
+      $("td", {}, input), $("td", { className: "used" }, used)));
   }
   return $("div", { className: "panel" }, $("h3", { textContent: title }), table);
 }
 
 // "In use" shows the limits of the session in progress; amber when the next session differs.
 function updateUsed() {
+  for (const t of document.querySelectorAll("table.limits")) t.classList.toggle("hide-used", !sim.view.running);
   for (const [key, side, root, state, defaults] of [["ev", sim.view.ev, schemas.evcc.schema, sim.evcc, schemas.evcc.defaults], ["evse", sim.view.evse, schemas.secc.schema, sim.secc, schemas.secc.defaults.session]]) {
     const used = side?.limits;
     for (const el of document.querySelectorAll(`[id^="used-${key}-"]`)) {
@@ -458,9 +545,9 @@ function measureRow(target, key, label, unit) {
 
 function measureTable(title, rows) {
   const table = $("table", { className: "values" });
-  table.append($("tr", {}, $("th", { textContent: "measurement" }), $("th", { textContent: "value" }), $("th", { textContent: "auto" }), $("th", { textContent: "sent" })));
+  table.append($("tr", {}, $("th", { textContent: "" }), $("th", { textContent: "value" }), $("th", { textContent: "auto" }), $("th", { textContent: "sent" })));
   for (const r of rows) table.append(r);
-  return $("div", { className: "panel" }, $("h3", { textContent: title }), table);
+  return $("div", {}, $("b", { textContent: title }), table);
 }
 
 // ---- graph: every signal in one plot -------------------------------------
@@ -473,6 +560,7 @@ const SIGNALS = [
   { id: "ev.soc", label: "vehicle SoC", unit: "%", on: true, get: v => v.ev?.measurements.soc.effective },
   { id: "ev.voltage", label: "vehicle battery voltage", unit: "V", get: v => v.ev?.measurements.voltage.effective },
   { id: "evse.current", label: "charger present current", unit: "A", on: true, get: v => v.evse?.measurements.current.effective },
+  { id: "evse.kw", label: "power (+ charging, − discharging)", unit: "kW", on: true, get: v => v.evse ? v.evse.measurements.voltage.effective * v.evse.measurements.current.effective / 1000 : undefined },
   { id: "evse.voltage", label: "charger present voltage", unit: "V", on: true, get: v => v.evse?.measurements.voltage.effective },
   { id: "evse.power", label: "charger maximum power", unit: "W", get: v => v.evse?.measurements.max_power.effective },
   { id: "ev.l.current", label: "vehicle max current", unit: "A", get: v => v.ev?.limits.max_charge_current_a },
@@ -584,12 +672,13 @@ function buildGraph() {
   const legend = $("div", { className: "legend" });
   for (const s of SIGNALS) {
     const box = $("input", { type: "checkbox", checked: s.on });
-    box.onchange = () => { s.on = box.checked; drawGraph(); };
-    legend.append($("label", { className: "inline" }, box, $("span", { className: "swatch", style: `background:${seriesColor(s)}` }), $("span", { textContent: s.label }), $("b", { id: `legend-${s.id}`, textContent: "–" })));
+    const chip = $("label", { className: s.on ? "on" : "" }, box, $("span", { className: "swatch", style: `background:${seriesColor(s)}` }), $("span", { textContent: s.label }), $("b", { id: `legend-${s.id}`, textContent: "–" }));
+    box.onchange = () => { s.on = box.checked; chip.classList.toggle("on", s.on); drawGraph(); };
+    legend.append(chip);
   }
   return $("div", { className: "panel" },
     $("div", { className: "row" }, $("h3", { textContent: "Signals", style: "margin:0" }), $("label", { className: "inline" }, "window", windowSelect), $("label", { className: "inline" }, pause, "pause"), clear,
-      $("span", { className: "note", textContent: "each signal against its own range; hover for values" })),
+      $("span", { className: "note", textContent: "each signal is drawn against its own range; click a name to show or hide it, hover the plot for values" })),
     canvas, legend);
 }
 
@@ -739,126 +828,207 @@ function updateFaults() {
   }
 }
 
+// The protocols the vehicle can offer; the charger speaks all of them.
+const PROTOCOLS = [
+  { id: "iso20", label: "ISO 15118-20", set: { protocol: "iso15118-20", bpt: false } },
+  { id: "iso20bpt", label: "ISO 15118-20 V2G", set: { protocol: "iso15118-20", bpt: true } },
+  { id: "iso2", label: "ISO 15118-2", set: { protocol: "iso15118-2", connector: "dual2" } },
+  { id: "din", label: "DIN SPEC 70121", set: { protocol: "din70121", connector: "extended" } },
+];
+const currentProtocol = () => (sim.evcc.protocol ?? "iso15118-20") === "iso15118-20" ? (sim.evcc.bpt ? "iso20bpt" : "iso20") : (sim.evcc.protocol === "iso15118-2" ? "iso2" : "din");
+
+// What a button can set up with one click. Each starts from the page's defaults.
+const BASE_EVCC = { time_scale: 60, stop_at_target_soc: true, stop_after: 0, charge_loop_interval_ms: 500, log: "debug" };
+const PRESETS = [
+  { name: "Fast DC charge", title: "ISO 15118-20, from 20 % to 80 %", evcc: { start_soc: 20, limits: { target_soc: 80 } } },
+  { name: "Give back, then charge", title: "bidirectional: from 80 % down to 50 %, then back up to 80 %", evcc: { bpt: true, start_soc: 80, limits: { target_soc: 80, discharge_to_soc: 50 } } },
+  { name: "AC, three phases", title: "ISO 15118-2 with an AC charger", evcc: { protocol: "iso15118-2", connector: "dual2", start_soc: 30, iso2: { mode: "ac3" } } },
+  { name: "DIN SPEC 70121", title: "the older DC protocol", evcc: { protocol: "din70121", connector: "extended", start_soc: 20 } },
+];
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// One button: open the simulation when it is closed, start a session, and let it run (or, for
+// stepping, hold it before its first message).
+async function startSession(step) {
+  if (sim.starting) return;
+  sim.starting = true;
+  applyView();
+  try {
+    if (!sim.view.open) {
+      const c = sim.conn;
+      if (await simPost("/api/sim/open", { tls: c.tls, slac: c.slac, pki: c.pki }) === undefined) return;
+      const deadline = Date.now() + 120000;
+      while (!(sim.view.open && sim.view.evse) && Date.now() < deadline && !sim.view.error) await sleep(150);
+      if (!sim.view.open) return;
+    }
+    if (await simPost("/api/sim/session", { evcc: sim.evcc, secc: sim.secc }) === undefined) return;
+    if (!step) {
+      // The vehicle takes the command once its session exists; ask until it says it runs freely.
+      const deadline = Date.now() + 10000;
+      while (!sim.view.ev?.free_run && Date.now() < deadline) {
+        if (sim.view.ev && sim.view.running) await simCmd("ev", { cmd: "run" });
+        await sleep(250);
+      }
+    }
+  } finally {
+    sim.starting = false;
+    applyView();
+  }
+}
+
 function buildSim() {
   const view = document.getElementById("sim-view");
-  const tls = $("input", { type: "checkbox", id: "sim-tls" });
-  const slac = $("input", { type: "checkbox", id: "sim-slac" });
-  const pki = $("select", { id: "sim-pki" });
-  for (const p of ["p521", "ed448", "p256"]) pki.append($("option", { value: p, textContent: p }));
-  // The protocol the vehicle offers. DIN SPEC 70121 has no schedule exchange, and a CCS vehicle
-  // (the extended inlet) is what a DIN charger offers by default.
-  const protocol = $("select", { id: "sim-protocol" });
-  for (const [v, name] of [["iso15118-20", "ISO 15118-20"], ["iso15118-2", "ISO 15118-2"], ["din70121", "DIN SPEC 70121"]]) protocol.append($("option", { value: v, textContent: name }));
-  protocol.value = sim.evcc.protocol ?? "iso15118-20";
-  protocol.onchange = () => {
-    setPath(sim.evcc, ["protocol"], protocol.value);
-    // The inlet a charger of that protocol offers: CCS for DIN, the combined inlet for -2.
-    if (protocol.value === "din70121") setPath(sim.evcc, ["connector"], "extended");
-    if (protocol.value === "iso15118-2") setPath(sim.evcc, ["connector"], "dual2");
-    applyProtocol();
-    const old = document.getElementById("more-vehicle");
-    if (old) old.replaceWith(moreVehicle());
+  sim.conn ??= { tls: false, slac: false, pki: "p521" };
+  const checkbox = (id, key, text, title) => {
+    const box = $("input", { type: "checkbox", id, checked: sim.conn[key] });
+    box.onchange = () => { sim.conn[key] = box.checked; };
+    return $("label", { className: "inline", title }, box, text);
   };
-  const open = $("button", { id: "sim-open", textContent: "Open simulation" });
-  open.onclick = () => simPost("/api/sim/open", { tls: tls.checked, slac: slac.checked, pki: pki.value });
-  const close = $("button", { id: "sim-close", className: "quiet", textContent: "Close simulation" });
+  const pki = $("select", { id: "sim-pki", title: "the certificates TLS uses" });
+  for (const p of ["p521", "ed448", "p256"]) pki.append($("option", { value: p, textContent: p }));
+  pki.value = sim.conn.pki;
+  pki.onchange = () => { sim.conn.pki = pki.value; };
+
+  const protocol = $("div", { className: "seg", id: "sim-protocol", role: "group", "aria-label": "protocol" });
+  for (const p of PROTOCOLS) {
+    const b = $("button", { type: "button", textContent: p.label, id: `proto-${p.id}` });
+    b.onclick = () => {
+      for (const [k, v] of Object.entries(p.set)) setPath(sim.evcc, [k], v);
+      // The other protocols' options go back to what they were.
+      if (p.set.bpt === undefined) delete sim.evcc.bpt;
+      if (p.set.protocol !== "iso15118-2") delete sim.evcc.iso2;
+      if (p.id === "iso20" || p.id === "iso20bpt") delete sim.evcc.connector;
+      buildSim();
+    };
+    protocol.append(b);
+  }
+
+  const primary = $("button", { id: "primary", className: "big", type: "button" });
+  primary.onclick = () => (sim.view.running ? simCmd("ev", { cmd: "advance", to: "ended" }) : startSession(false));
+  const stepStart = $("button", { id: "step-start", className: "quiet", type: "button", textContent: "Start and step through", title: "start a session that holds before its first message; then click a phase to run up to it" });
+  stepStart.onclick = () => startSession(true);
+  const close = $("button", { id: "sim-close", className: "quiet", type: "button", textContent: "End simulation", title: "stop the simulated vehicle and charger" });
   close.onclick = () => simPost("/api/sim/close");
 
+  const presets = $("div", { className: "presets" }, $("span", { className: "label", textContent: "Start from" }));
+  for (const p of PRESETS) {
+    const b = $("button", { type: "button", className: "chip", textContent: p.name, title: p.title });
+    b.onclick = () => { sim.evcc = structuredClone({ ...BASE_EVCC, ...p.evcc }); buildSim(); };
+    presets.append(b);
+  }
+
+  // What the car and the charger do, at a glance, as numbers; the flow bar shows the direction.
+  const tile = (id, cls, key, value, sub) => $("div", { className: `tile ${cls}`, id: `tile-${id}` }, $("span", { className: "k", textContent: key }), $("span", { className: "v", id: `v-${id}` }), $("span", { className: "sub", id: `s-${id}` }), ...(sub ?? []));
+  const tiles = $("div", { className: "tiles" },
+    tile("power", "hero", "Power", 0, [$("div", { className: "flow" }, $("i", { id: "flow-bar" }))]),
+    tile("soc", "", "Battery", 0, [$("div", { className: "meter" }, $("i", { id: "soc-bar" }))]),
+    tile("voltage", "", "Voltage"), tile("current", "", "Current"), tile("phase", "phase", "Now"));
+
+  // The phases are buttons: click one to run up to it and hold before it, shift-click to run into it.
   const stepper = $("div", { className: "stepper", id: "stepper" });
-  for (const [id, name] of PHASES) stepper.append($("span", { id: `phase-${id}`, textContent: name }));
-  const target = $("select", { id: "advance-to" });
-  for (const [id, name] of PHASES.slice(1)) target.append($("option", { value: id, textContent: id === "ended" ? "Ended (run to the end)" : name }));
-  const advance = $("button", { id: "advance", textContent: "Step to ▶", title: "run up to the start of the phase and hold before its first message" });
-  advance.onclick = () => simCmd("ev", { cmd: "advance", to: target.value });
-  const stay = $("button", { id: "stay", textContent: "Run in ▶", title: "run into the phase and stay in it: its messages, repeated ones too, keep flowing until you move on" });
-  stay.onclick = () => simCmd("ev", { cmd: "advance", to: target.value, stay: true });
-  const next = $("button", { id: "next-session", textContent: "New session" });
-  next.onclick = () => simPost("/api/sim/session", { evcc: sim.evcc, secc: sim.secc });
-  const stop = $("button", { id: "stop", className: "quiet", textContent: "Stop charging" });
-  stop.onclick = () => simCmd("ev", { cmd: "stop" });
+  for (const [id, name] of PHASES) {
+    if (id === "connecting") continue;
+    const b = $("button", { type: "button", id: `phase-${id}`, textContent: name, title: "run up to this phase and hold before it (shift: run into it and stay)" });
+    b.onclick = e => simCmd("ev", { cmd: "advance", to: id, stay: e.shiftKey });
+    stepper.append(b);
+  }
   const real = $("input", { type: "checkbox", id: "real-timers" });
   real.onchange = () => simCmd("ev", { cmd: "real_timers", on: real.checked });
+  const sessionPanel = $("div", { className: "panel" },
+    $("div", { className: "row tight" }, $("h3", { textContent: "Session", style: "margin:0" }), $("span", { id: "sim-held", className: "note" }),
+      $("span", { style: "flex:1" }), $("label", { className: "inline", title: "off: the time spent held does not count against the protocol timeouts" }, real, "real timers while held")),
+    stepper);
 
-  const evTable = limitsTable("Vehicle: charge parameters", schemas.evcc.schema, schemas.evcc.schema, sim.evcc, schemas.evcc.defaults, "ev");
+  const evTable = limitsTable("Vehicle", schemas.evcc.schema, schemas.evcc.schema, sim.evcc, schemas.evcc.defaults, "ev");
   const seccRoot = schemas.secc.schema;
   const seccSchema = seccRoot.properties.session;
-  const evseTable = limitsTable("Charger: charge parameters", seccRoot, seccSchema, sim.secc, schemas.secc.defaults.session, "evse");
+  const evseTable = limitsTable("Charger", seccRoot, seccSchema, sim.secc, schemas.secc.defaults.session, "evse");
   // Start state of charge sits with the vehicle's numbers.
   const start = $("input", { type: "number", min: 0, max: 100, value: sim.evcc.start_soc ?? schemas.evcc.defaults.start_soc });
   start.oninput = () => setPath(sim.evcc, ["start_soc"], start.value === "" ? undefined : Number(start.value));
-  evTable.append($("label", { className: "inline" }, "start SoC (%) ", start));
-
-  const middle = $("div", { style: "display:grid;gap:1rem" },
-    measureTable("Vehicle measurements", [measureRow("ev", "voltage", "battery voltage (V)"), measureRow("ev", "soc", "state of charge (%)")]),
-    measureTable("Charger measurements", [measureRow("evse", "voltage", "present voltage (V)"), measureRow("evse", "current", "present current (A)"), measureRow("evse", "max_power", "maximum power (W)")]),
-    $("div", { className: "panel" }, $("h3", { textContent: "Session" }), $("div", { className: "chips", id: "chips" })));
+  evTable.append($("label", { className: "inline", style: "margin-top:.6rem" }, "Battery at the start (%)", start));
 
   const more = (title, root, schema, state, defaults, omit, id) =>
     $("details", { id }, $("summary", { textContent: title }), form(root, schema, state, defaults, [], () => {}, omit));
-  const moreVehicle = () => more("More vehicle settings", schemas.evcc.schema, schemas.evcc.schema, sim.evcc, schemas.evcc.defaults, simOmitEv, "more-vehicle");
+  const manual = $("details", {}, $("summary", { textContent: "Set measurements by hand" }),
+    $("div", { className: "columns" },
+      measureTable("Vehicle", [measureRow("ev", "voltage", "Battery voltage (V)"), measureRow("ev", "soc", "State of charge (%)")]),
+      measureTable("Charger", [measureRow("evse", "voltage", "Present voltage (V)"), measureRow("evse", "current", "Present current (A)"), measureRow("evse", "max_power", "Maximum power (W)")])));
 
   view.replaceChildren(
-    $("div", { className: "row" },
-      $("label", { className: "inline" }, tls, "TLS"), $("label", { className: "inline" }, slac, "SLAC"),
-      $("label", {}, "PKI", pki), $("label", {}, "Protocol", protocol), open, close, $("span", { id: "sim-status", className: "note" })),
-    $("div", { className: "panel" }, stepper,
-      $("div", { className: "row", style: "margin-top:.6rem" },
-        $("label", {}, "Go to", target), advance, stay, stop, next,
-        $("label", { className: "inline", title: "off: the time spent held does not count against the protocol timeouts" }, real, "real timers while held"),
-        $("span", { id: "sim-held", className: "note" }))),
+    $("div", { className: "bar" },
+      protocol,
+      $("div", { className: "row tight", style: "margin:0" }, checkbox("sim-tls", "tls", "TLS", "encrypt the connection"), checkbox("sim-slac", "slac", "SLAC", "match the vehicle to the charger over the powerline first"), $("label", { className: "inline" }, "Certificates", pki)),
+      $("span", { className: "spacer" }),
+      $("span", { id: "sim-status", className: "pill" }), primary, stepStart, close),
+    presets,
     $("div", { id: "sim-msg", className: "error" }),
-    $("div", { className: "three" }, evTable, middle, evseTable),
+    tiles,
+    sessionPanel,
+    $("div", { className: "three" }, evTable, evseTable),
     buildGraph(),
     $("div", { className: "columns" }, buildTimeline(), buildFaults()),
-    $("div", { className: "columns" },
-      moreVehicle(),
-      more("More charger settings", seccRoot, seccSchema, sim.secc, schemas.secc.defaults.session, simOmitSecc, "more-charger")),
-    $("div", { className: "logs", id: "sim-logs" }));
+    $("div", { className: "panel" },
+      more("More vehicle settings", schemas.evcc.schema, schemas.evcc.schema, sim.evcc, schemas.evcc.defaults, simOmitEv, "more-vehicle"),
+      more("More charger settings", seccRoot, seccSchema, sim.secc, schemas.secc.defaults.session, simOmitSecc, "more-charger"),
+      manual,
+      $("details", {}, $("summary", { textContent: "Raw logs" }), (sim.logs ??= $("div", { className: "logs", id: "sim-logs" })))));
+  timeline.dirty = true;
   updateUsed();
-  applyProtocol();
   applyView();
-  setInterval(sampleSignals, 200);
-  setInterval(() => { drawGraph(); drawTimeline(); }, 250);
+  if (!sim.timers) {
+    sim.timers = true;
+    setInterval(sampleSignals, 200);
+    setInterval(() => { drawGraph(); drawTimeline(); }, 250);
+  }
 }
 
-// DIN SPEC 70121 and ISO 15118-2 have no schedule exchange: its phase is not shown and not offered.
+// Controls that belong to one protocol are hidden for the others; DIN SPEC 70121 and ISO 15118-2
+// have no schedule exchange.
 function applyProtocol() {
-  const protocol = sim.evcc.protocol ?? "iso15118-20";
-  const noSchedule = protocol !== "iso15118-20";
-  document.getElementById("phase-schedule_exchange").hidden = noSchedule;
-  const option = [...document.getElementById("advance-to").options].find(o => o.value === "schedule_exchange");
-  if (option) option.hidden = option.disabled = noSchedule;
-  document.querySelectorAll(".iso-only").forEach(e => e.hidden = protocol !== "iso15118-20");
-  document.querySelectorAll(".din-only").forEach(e => e.hidden = protocol !== "din70121");
-  document.querySelectorAll(".iso2-only").forEach(e => e.hidden = protocol !== "iso15118-2");
-  document.getElementById("sim-protocol").disabled = !!(sim.view.open || sim.view.opening);
+  const id = currentProtocol();
+  const bpt = id === "iso20bpt";
+  document.getElementById("phase-schedule_exchange").hidden = id === "iso2" || id === "din";
+  document.querySelectorAll(".iso-only").forEach(e => e.hidden = !(id === "iso20" || bpt));
+  document.querySelectorAll(".din-only").forEach(e => e.hidden = id !== "din");
+  document.querySelectorAll(".iso2-only").forEach(e => e.hidden = id !== "iso2");
+  document.querySelectorAll(".bpt-only").forEach(e => e.hidden = !bpt);
+  for (const p of PROTOCOLS) {
+    const b = document.getElementById(`proto-${p.id}`);
+    b.classList.toggle("on", p.id === id);
+    b.setAttribute("aria-pressed", p.id === id);
+  }
 }
 
 function applyView() {
   const v = sim.view, ev = v.ev, evse = v.evse;
   const $id = id => document.getElementById(id);
+  applyProtocol();
   const phase = ev?.phase ?? "connecting";
   const cur = phaseIndex(phase);
+  const live = v.running && !!ev;
   for (const [id] of PHASES) {
     const el = $id(`phase-${id}`);
+    if (!el) continue;
     const i = phaseIndex(id);
     el.className = !v.running && !ev ? "" : i < cur ? "done" : i === cur ? "current" + (ev?.held ? " held" : "") : "";
+    el.disabled = !live;
   }
-  $id("sim-status").textContent = v.opening ? "opening…" : v.open ? (v.running ? `session ${v.session} running` : v.session ? `session ${v.session} ended (exit ${v.exit_code ?? "?"})` : "open, no session yet") : "closed";
-  $id("sim-open").disabled = v.open || v.opening;
-  $id("sim-close").disabled = !v.open;
-  for (const id of ["sim-tls", "sim-slac", "sim-pki", "sim-protocol"]) $id(id).disabled = v.open || v.opening;
-  $id("next-session").disabled = !v.open || v.running;
-  const live = v.running && !!ev;
-  $id("advance").disabled = !live;
-  $id("stay").disabled = !live;
-  $id("stop").disabled = !live;
-  $id("advance-to").disabled = !live;
-  $id("sim-held").textContent = !ev ? "" : ev.held ? `held before ${phaseName(ev.phase)}` : !v.running ? "" : ev.stay && ev.phase === ev.target ? `staying in ${phaseName(ev.phase)}` : `running, ${ev.stay ? "into" : "up to"} ${phaseName(ev.target)}`;
-  if (ev && document.activeElement !== $id("advance-to") && (ev.held || ev.stay)) {
-    // The natural next step: one phase on.
-    $id("advance-to").value = PHASES[Math.min(cur + 1, PHASES.length - 1)][0];
-  }
+  const status = $id("sim-status");
+  const busy = v.opening || sim.starting;
+  status.textContent = v.opening ? "opening the simulation…" : v.open ? (v.running ? `session ${v.session} running` : v.session ? `session ${v.session} ended (exit ${v.exit_code ?? "?"})` : "ready") : "not started";
+  status.className = "pill " + (busy ? "busy" : v.running ? "live" : "");
+  const primary = $id("primary");
+  primary.textContent = busy ? "Starting…" : v.running ? "Stop charging" : "Start session";
+  primary.className = "big" + (v.running ? " danger" : "");
+  primary.disabled = busy;
+  $id("step-start").hidden = !!v.running;
+  $id("step-start").disabled = busy;
+  $id("sim-close").disabled = !v.open || v.opening;
+  for (const id of ["sim-tls", "sim-slac", "sim-pki"]) $id(id).disabled = v.open || v.opening;
+  for (const b of $id("sim-protocol").children) b.disabled = !!v.running;
+  $id("sim-held").textContent = !ev ? "" : ev.held ? `held before ${phaseName(ev.phase)}: click a phase to go on` : !v.running ? "" : ev.free_run ? "" : ev.stay && ev.phase === ev.target ? `staying in ${phaseName(ev.phase)}` : `running ${ev.stay ? "into" : "up to"} ${phaseName(ev.target)}`;
   if (document.activeElement !== $id("real-timers")) $id("real-timers").checked = !!ev?.real_timers;
   for (const [target, side] of [["ev", ev], ["evse", evse]]) {
     for (const [key, m] of Object.entries(side?.measurements ?? {})) {
@@ -869,18 +1039,30 @@ function applyView() {
       ui.sent.textContent = fmt(m.effective);
     }
   }
-  const chips = [];
-  const add = (k, val) => chips.push($("span", {}, k + " ", $("b", { textContent: val })));
-  if (ev) {
-    add("vehicle", ev.state ?? "–"); add("loops", ev.loops); add("battery model", fmt(ev.model_soc) + " %");
-    add("charger reports", `${fmt(ev.evse_reports.voltage)} V, ${fmt(ev.evse_reports.current)} A`);
-    if (ev.result) add("result", ev.result);
-  }
-  if (evse) {
-    add("charger", evse.state);
-    add("vehicle reports", `${fmt(evse.ev_reports.voltage)} V, ≤ ${fmt(evse.ev_reports.max_current)} A, ≤ ${fmt(evse.ev_reports.max_power)} W`);
-  }
-  $id("chips").replaceChildren(...chips);
+  // The readouts.
+  const volts = evse?.measurements.voltage.effective ?? 0, amps = evse?.measurements.current.effective ?? 0;
+  const kw = volts * amps / 1000;
+  const mode = kw > 0.05 ? "charging" : kw < -0.05 ? "discharging" : "";
+  const put = (id, html) => { $id(id).replaceChildren(...html); };
+  const unit = (value, u) => [String(value), $("small", { textContent: u })];
+  put("v-power", unit(Math.abs(kw).toFixed(1), "kW"));
+  $id("s-power").textContent = mode === "charging" ? "into the battery" : mode === "discharging" ? "out of the battery" : live ? "no energy flowing" : "";
+  $id("tile-power").className = `tile hero ${mode}`;
+  const span = Math.max(1, (kw < 0 ? evse?.limits?.max_discharge_power_w ?? 11000 : evse?.limits?.max_charge_power_w ?? 150000) / 1000);
+  const share = Math.max(-1, Math.min(1, kw / span)) * 50;
+  $id("flow-bar").style.left = `${50 + Math.min(0, share)}%`;
+  $id("flow-bar").style.width = `${Math.abs(share)}%`;
+  const soc = ev?.measurements.soc.effective;
+  put("v-soc", soc == null ? ["–"] : unit(soc.toFixed(1), "%"));
+  $id("soc-bar").style.width = `${Math.max(0, Math.min(100, soc ?? 0))}%`;
+  const target = ev?.limits?.target_soc;
+  $id("s-soc").textContent = soc == null ? "" : ev.limits.discharge_to_soc != null && ev.model_soc > ev.limits.discharge_to_soc ? `giving back down to ${ev.limits.discharge_to_soc} %` : target != null ? `target ${target} %` : "";
+  put("v-voltage", unit(fmt(volts), "V"));
+  $id("s-voltage").textContent = ev ? `battery ${fmt(ev.measurements.voltage.effective)} V` : "";
+  put("v-current", unit(fmt(amps), "A"));
+  $id("s-current").textContent = evse ? `charger asked for up to ${fmt(evse.ev_reports.max_current)} A` : "";
+  $id("v-phase").textContent = ev ? phaseName(phase) : v.open ? "Ready" : "Not started";
+  $id("s-phase").textContent = ev?.result ?? (ev?.state ?? "");
   updateFaults();
   if (v.error) $id("sim-msg").textContent = v.error;
   updateUsed();

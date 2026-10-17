@@ -82,6 +82,8 @@ struct Inner {
     /// Whether to go on in `target` (its messages, repeated ones included, keep flowing) or to
     /// hold before it.
     stay: bool,
+    /// Run the whole session without holds, and charge until the vehicle itself is done.
+    free_run: bool,
     real_timers: bool,
     stop_asked: bool,
     closed: bool,
@@ -136,6 +138,7 @@ impl EvLive {
                 held: false,
                 target: Phase::Setup,
                 stay: false,
+                free_run: false,
                 real_timers: false,
                 stop_asked: false,
                 closed: false,
@@ -211,8 +214,11 @@ impl EvLive {
         if g.limits.discharge_to_soc.is_some_and(|floor| g.model_soc <= f64::from(floor)) {
             g.discharge_done = true;
         }
+        // The shown state of charge follows the model, also where the protocol never asks for it.
+        let modelled = g.model_soc;
+        g.soc.resolve(modelled);
         let reached = g.stop_at_target_soc && !g.discharging() && g.model_soc >= f64::from(g.limits.target_soc);
-        let stop = reached || g.target >= Phase::Stop;
+        let stop = reached || (g.target >= Phase::Stop && !g.free_run);
         if stop && !g.stop_asked {
             g.stop_asked = true;
             return true;
@@ -263,6 +269,7 @@ impl Endpoint for EvLive {
             "held": g.held,
             "target": g.target,
             "stay": g.stay,
+            "free_run": g.free_run,
             "state": g.state.map(|s| format!("{s:?}")),
             "real_timers": g.real_timers,
             "limits": g.limits,
@@ -288,10 +295,18 @@ impl Endpoint for EvLive {
                 }
                 g.target = to;
                 g.stay = cmd.get("stay").and_then(Value::as_bool).unwrap_or(false);
+                g.free_run = false;
+            }
+            // No holds from now on; the charge goes on until the vehicle is done or is told to stop.
+            Some("run") => {
+                g.target = Phase::Ended;
+                g.stay = false;
+                g.free_run = true;
             }
             Some("stop") => {
                 g.target = Phase::Stop;
                 g.stay = false;
+                g.free_run = false;
             }
             // The vehicle's limits, from the next message on (the charge loop carries them).
             Some("limits") => {
@@ -363,6 +378,15 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(400));
         assert!(live.charge_loop(&status(400.0, 100.0)));
         assert!(!live.charge_loop(&status(400.0, 100.0)));
+    }
+
+    #[test]
+    fn a_free_run_charges_until_the_target_and_a_stop_command_ends_it() {
+        let live = EvLive::new(Limits { target_soc: 90, ..Limits::default() }, 20, 1, true);
+        live.command(json!({ "cmd": "run" })).unwrap();
+        assert!(!live.charge_loop(&status(400.0, 100.0)), "the target phase does not stop a free run");
+        live.command(json!({ "cmd": "advance", "to": "ended" })).unwrap();
+        assert!(live.charge_loop(&status(400.0, 100.0)), "advancing to the end stops the charge");
     }
 
     #[test]

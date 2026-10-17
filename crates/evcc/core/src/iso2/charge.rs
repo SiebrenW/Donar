@@ -242,8 +242,13 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         self.note_status(&EvseStatusChoice::Ac(res.ac_evse_status));
         let zero = RationalNumber { exponent: 0, value: 0 };
         let max_current = res.evse_max_current.map(rational).or(self.evse.map(|e| e.max_current)).unwrap_or(zero);
+        // The status carries no measurements: the vehicle assumes it gets the lower of the
+        // charger's and its own maximum current on every phase, at the nominal voltage (so
+        // that the current is the sum over the phases, and voltage times current the power).
+        let phases = if self.config.mode == crate::iso2::Mode::AcThreePhase { 3.0 } else { 1.0 };
+        let current = RationalNumber::from_f64(max_current.to_f64().min(self.ev.ac_limits().maximum_current.to_f64()) * phases);
         let status = ChargeLoopStatus {
-            present_current: zero,
+            present_current: current,
             present_voltage: self.evse.map_or(zero, |e| e.max_voltage),
             power_limit_achieved: false,
             current_limit_achieved: false,
