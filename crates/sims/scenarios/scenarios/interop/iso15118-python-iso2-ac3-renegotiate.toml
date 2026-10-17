@@ -1,0 +1,21 @@
+name = "interop-iso15118-python-iso2-ac3-renegotiate"
+description = "The simulated vehicle against the SECC of the Python iso15118 library (0.31.2), ISO 15118-2 AC three phase: after two rounds the vehicle renegotiates (PowerDeliveryReq Renegotiate, a new charge parameter discovery, PowerDeliveryReq Start) and charges on."
+timeout_s = 60
+
+[secc]
+kind = "iso15118-python"
+protocols = "ISO_15118_2"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+protocol = "iso15118-2"
+connector = "dual2"
+renegotiate_schedule_after = 2
+stop_after = 5
+[evcc.settings.iso2]
+mode = "ac3"
+
+[expect]
+evcc_log = ["session: Ended(Completed)"]
+secc_log = ["PowerDeliveryReq received"]

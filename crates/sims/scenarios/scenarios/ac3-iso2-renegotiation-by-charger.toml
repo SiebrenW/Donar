@@ -1,0 +1,22 @@
+name = "ac3-iso2-renegotiation-by-charger"
+description = "ISO 15118-2 AC three phase: the charger asks for a renegotiation (the notification ReNegotiation in ChargingStatusRes) after two rounds; the vehicle answers with PowerDeliveryReq Renegotiate and a new charge parameter discovery, then starts the power again; it stops after six rounds."
+timeout_s = 40
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session.iso2]
+renegotiate_after_loops = 2
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+protocol = "iso15118-2"
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+stop_after = 6
+[evcc.settings.iso2]
+mode = "ac3"
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)"]
+secc_log = ["renegotiation", "session: Stopped"]

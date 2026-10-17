@@ -23,10 +23,30 @@ pub(super) fn expects(state: State) -> &'static str {
         State::AwaitCableCheckReq => "CableCheckReq",
         State::AwaitPreChargeReq => "PreChargeReq or PowerDeliveryReq",
         State::AwaitPowerDeliveryReq => "PowerDeliveryReq",
-        State::ChargeLoop => "CurrentDemandReq, ChargingStatusReq or PowerDeliveryReq",
+        State::ChargeLoop => "CurrentDemandReq, ChargingStatusReq, MeteringReceiptReq or PowerDeliveryReq",
         State::AwaitWeldingReq => "WeldingDetectionReq or SessionStopReq",
         State::AwaitSessionStopReq => "SessionStopReq",
         _ => "nothing",
+    }
+}
+
+impl Evse {
+    /// Whether the charger asks for a renegotiation with this loop answer (once).
+    fn iso2_renegotiation_due(&mut self) -> bool {
+        let due = !self.iso2_renegotiation_asked && self.config.iso2.renegotiate_after_loops.is_some_and(|n| self.loops_seen >= n);
+        self.iso2_renegotiation_asked |= due;
+        due
+    }
+
+    /// The meter reading of this loop answer when it asks for a receipt (a contract session).
+    fn iso2_receipt_due(&mut self) -> Option<u64> {
+        let every = self.config.iso2.receipt_every_loops?;
+        if self.iso2_contract.is_none() || every == 0 || self.loops_seen % every != 0 {
+            return None;
+        }
+        let reading = u64::from(self.loops_seen) * 100;
+        self.iso2_receipt_reading = Some(reading);
+        Some(reading)
     }
 }
 
@@ -175,8 +195,19 @@ impl Evse {
                 if self.config.silent_on_setup {
                     return Output::default();
                 }
-                let c = code(self.config.setup_code);
-                self.note(format!("SessionSetupReq from EVCC {:02x?}", req.evccid));
+                let mut c = code(self.config.setup_code);
+                let asked = message.header.session_id;
+                if asked.len() == 8 && asked.iter().any(|b| *b != 0) && is_ok(c) {
+                    if asked == self.session_id && !self.config.forget_paused_sessions {
+                        // A paused session joins again.
+                        c = t::ResponseCode::OkOldSessionJoined;
+                    } else {
+                        // An id we do not know: a new session, with an id of its own.
+                        c = t::ResponseCode::OkNewSessionEstablished;
+                        self.session_id = self.config.session_id.map(|b| !b);
+                    }
+                }
+                self.note(format!("SessionSetupReq from EVCC {:02x?}, session {:02x?}", req.evccid, asked));
                 if is_ok(c) {
                     self.state = State::AwaitServiceDiscoveryReq;
                 }
@@ -189,6 +220,7 @@ impl Evse {
                 let options = [t::PaymentOption::ExternalPayment, t::PaymentOption::Contract];
                 let options = &options[..if self.config.iso2.offer_contract_payment { 2 } else { 1 }];
                 let modes: Vec<t::EnergyTransferMode> = self.config.iso2.modes.iter().map(|m| mode(*m)).collect();
+                let services: Vec<t::Service<'_>> = self.config.iso2.value_added_services.iter().map(|&service_id| t::Service { service_id, service_name: None, service_category: t::ServiceCategory::Internet, service_scope: None, free_service: true }).collect();
                 let body = B::ServiceDiscoveryRes(ServiceDiscoveryRes {
                     response_code: t::ResponseCode::Ok,
                     payment_option_list: t::PaymentOptionList { payment_option: options },
@@ -200,16 +232,26 @@ impl Evse {
                         free_service: false,
                         supported_energy_transfer_mode: t::SupportedEnergyTransferMode { energy_transfer_mode: &modes },
                     },
-                    service_list: None,
+                    service_list: (!services.is_empty()).then_some(t::ServiceList { service: &services }),
                 });
                 self.state = State::AwaitServicePaymentSelectionReq;
                 self.iso2_note_reply("ServiceDiscoveryRes", t::ResponseCode::Ok, false);
                 self.iso2_output(body, false)
             }
+            (State::AwaitServicePaymentSelectionReq, B::ServiceDetailReq(req)) if session_ok => {
+                let known = self.config.iso2.value_added_services.contains(&req.service_id);
+                let c = if known { t::ResponseCode::Ok } else { t::ResponseCode::FailedServiceIdInvalid };
+                let http = [t::Parameter { name: "Port", value: t::ValueChoice::Int(80) }];
+                let https = [t::Parameter { name: "Port", value: t::ValueChoice::Int(443) }];
+                let sets = [t::ParameterSet { parameter_set_id: 1, parameter: &http }, t::ParameterSet { parameter_set_id: 2, parameter: &https }];
+                self.iso2_note_reply("ServiceDetailRes", c, false);
+                let body = B::ServiceDetailRes(ServiceDetailRes { response_code: c, service_id: req.service_id, service_parameter_list: known.then_some(t::ServiceParameterList { parameter_set: &sets }) });
+                self.iso2_output(body, false)
+            }
             (State::AwaitServicePaymentSelectionReq, B::PaymentServiceSelectionReq(req)) if session_ok => {
                 let contract = req.selected_payment_option == t::PaymentOption::Contract && self.config.iso2.offer_contract_payment;
                 let payment_ok = req.selected_payment_option == t::PaymentOption::ExternalPayment || contract;
-                let service_ok = !req.selected_service_list.selected_service.is_empty() && req.selected_service_list.selected_service.iter().all(|s| s.service_id == 1);
+                let service_ok = !req.selected_service_list.selected_service.is_empty() && req.selected_service_list.selected_service.iter().all(|s| s.service_id == 1 || self.config.iso2.value_added_services.contains(&s.service_id));
                 let c = if !payment_ok {
                     t::ResponseCode::FailedPaymentSelectionInvalid
                 } else if !service_ok {
@@ -321,7 +363,8 @@ impl Evse {
                     evse_charge_parameter: parameter,
                 });
                 if !ongoing && is_ok(c) {
-                    self.state = if ac { State::AwaitPowerDeliveryReq } else { State::AwaitCableCheckReq };
+                    // After a renegotiation the cable is checked already: power is asked for again.
+                    self.state = if ac || self.iso2_renegotiating { State::AwaitPowerDeliveryReq } else { State::AwaitCableCheckReq };
                 }
                 self.iso2_note_reply("ChargeParameterDiscoveryRes", c, !ongoing && !is_ok(c));
                 self.iso2_output(body, !ongoing && !is_ok(c))
@@ -368,6 +411,7 @@ impl Evse {
                 }
                 if is_ok(c) {
                     self.state = State::ChargeLoop;
+                    self.iso2_renegotiating = false;
                 }
                 self.iso2_note_reply("PowerDeliveryRes", c, !is_ok(c));
                 self.iso2_output(B::PowerDeliveryRes(PowerDeliveryRes { response_code: c, evse_status: self.iso2_status() }), !is_ok(c))
@@ -391,7 +435,13 @@ impl Evse {
                 };
                 let limit = |achieved: f64, limit: f64| current > 0.0 && achieved >= limit * 0.999;
                 let shutdown = self.config.iso2.shutdown_after_loops.is_some_and(|n| self.loops_seen >= n);
-                let status = self.iso2_dc_status(if shutdown { t::DcEvseStatusCode::EvseShutdown } else { t::DcEvseStatusCode::EvseReady }, Some(t::IsolationLevel::Valid));
+                let mut status = self.iso2_dc_status(if shutdown { t::DcEvseStatusCode::EvseShutdown } else { t::DcEvseStatusCode::EvseReady }, Some(t::IsolationLevel::Valid));
+                if self.iso2_renegotiation_due() {
+                    status.evse_notification = t::EvseNotification::ReNegotiation;
+                    status.notification_max_delay = 5;
+                }
+                let receipt = self.iso2_receipt_due();
+                let meter = receipt.map(|reading| t::MeterInfo { meter_id: "EVSE-METER-1", meter_reading: Some(reading), sig_meter_reading: None, meter_status: None, t_meter: None });
                 let id = self.config.iso2.evse_id.clone();
                 let body = B::CurrentDemandRes(CurrentDemandRes {
                     response_code: c,
@@ -406,8 +456,8 @@ impl Evse {
                     evse_maximum_power_limit: Some(pv(max_power, UnitSymbol::W)),
                     evseid: &id,
                     sa_schedule_tuple_id: 1,
-                    meter_info: None,
-                    receipt_required: None,
+                    meter_info: meter,
+                    receipt_required: receipt.map(|_| true),
                 });
                 self.iso2_note_reply("CurrentDemandRes", c, !is_ok(c));
                 self.iso2_output(body, !is_ok(c))
@@ -422,19 +472,46 @@ impl Evse {
                     let voltage = f64::from(self.config.iso2.ac_nominal_voltage_v);
                     live.charge_loop(voltage, current, voltage * current, None);
                 }
-                let status = self.iso2_ac_status(if shutdown { t::EvseNotification::StopCharging } else { t::EvseNotification::None });
+                let notification = if shutdown {
+                    t::EvseNotification::StopCharging
+                } else if self.iso2_renegotiation_due() {
+                    t::EvseNotification::ReNegotiation
+                } else {
+                    t::EvseNotification::None
+                };
+                let status = self.iso2_ac_status(notification);
+                let receipt = self.iso2_receipt_due();
+                let meter = receipt.map(|reading| t::MeterInfo { meter_id: "EVSE-METER-1", meter_reading: Some(reading), sig_meter_reading: None, meter_status: None, t_meter: None });
                 let id = self.config.iso2.evse_id.clone();
                 let body = B::ChargingStatusRes(ChargingStatusRes {
                     response_code: t::ResponseCode::Ok,
                     evseid: &id,
                     sa_schedule_tuple_id: 1,
                     evse_max_current: Some(pv(f64::from(self.config.iso2.ac_max_current_a), UnitSymbol::A)),
-                    meter_info: None,
-                    receipt_required: Some(false),
+                    meter_info: meter,
+                    receipt_required: Some(receipt.is_some()),
                     ac_evse_status: status,
                 });
                 self.iso2_note_reply("ChargingStatusRes", t::ResponseCode::Ok, false);
                 self.iso2_output(body, false)
+            }
+            (State::ChargeLoop, B::PowerDeliveryReq(req)) if session_ok && req.charge_progress == t::ChargeProgress::Renegotiate => {
+                // New charge parameters and a new schedule; the contactors stay closed.
+                self.state = State::AwaitChargeParameterDiscoveryReq;
+                self.iso2_renegotiating = true;
+                self.note("renegotiation: new charge parameters, the power stays connected".to_string());
+                self.schedule_reqs_seen = 0;
+                self.iso2_note_reply("PowerDeliveryRes", t::ResponseCode::Ok, false);
+                self.iso2_output(B::PowerDeliveryRes(PowerDeliveryRes { response_code: t::ResponseCode::Ok, evse_status: self.iso2_status() }), false)
+            }
+            (State::ChargeLoop, B::MeteringReceiptReq(req)) if session_ok => {
+                let verdict = match &self.iso2_contract {
+                    Some((leaf, _)) => crate::pnc::verify_iso2_receipt(leaf, message.header.signature.as_ref(), req, self.iso2_receipt_reading),
+                    None => t::ResponseCode::FailedMeteringSignatureNotValid,
+                };
+                self.note(format!("metering receipt: {}", verdict.xml_name()));
+                self.iso2_note_reply("MeteringReceiptRes", verdict, !is_ok(verdict));
+                self.iso2_output(B::MeteringReceiptRes(MeteringReceiptRes { response_code: verdict, evse_status: self.iso2_status() }), !is_ok(verdict))
             }
             (State::ChargeLoop, B::PowerDeliveryReq(req)) if session_ok && req.charge_progress == t::ChargeProgress::Stop => {
                 self.state = if self.iso2_ac { State::AwaitSessionStopReq } else { State::AwaitWeldingReq };

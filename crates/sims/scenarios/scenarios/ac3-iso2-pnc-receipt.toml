@@ -1,0 +1,25 @@
+name = "ac3-iso2-pnc-receipt"
+description = "ISO 15118-2 Plug & Charge, AC three phase: the charger sends the meter reading with every second loop answer and asks for a receipt; the vehicle copies the reading into a MeteringReceiptReq, signs it with the contract key (ECDSA, SHA-256, canonical EXI fragment) and the charger verifies the signature and the reading."
+timeout_s = 40
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session.iso2]
+offer_contract_payment = true
+receipt_every_loops = 2
+
+[evcc]
+kind = "evcc-sim"
+pnc = true
+[evcc.settings]
+protocol = "iso15118-2"
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+connector = "dual2"
+stop_after = 6
+[evcc.settings.iso2]
+mode = "ac3"
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)"]
+secc_log = ["metering receipt: OK", "session: Stopped"]

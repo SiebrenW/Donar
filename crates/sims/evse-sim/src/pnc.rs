@@ -75,6 +75,26 @@ pub fn verify(policy: &Pnc, challenge: [u8; 16], header: &MessageHeader<'_>, mod
     if expires_soon { ResponseCode::OkCertificateExpiresSoon } else { ResponseCode::Ok }
 }
 
+/// The checks of an ISO 15118-2 `MeteringReceiptReq`: the signature in the header over the element
+/// with the contract key, and the reading being the one the charger sent.
+pub fn verify_iso2_receipt(contract: &X509, signature: Option<&iso15118_2::signature::Signature<'_>>, request: &iso15118_2::body::MeteringReceiptReq<'_>, sent_reading: Option<u64>) -> iso15118_2::types::ResponseCode {
+    use iso15118_2::types::ResponseCode as C;
+    let (Some(signature), Ok(key), Some(id)) = (signature, contract.public_key(), request.id) else { return C::FailedMeteringSignatureNotValid };
+    let mut fragment = vec![0u8; 1 << 12];
+    let Ok(length) = iso15118_2::signature::encode_fragment(&mut fragment, iso15118_2::signature::fragment::METERING_RECEIPT_REQ, |e| request.encode_content(e)) else {
+        return C::FailedMeteringSignatureNotValid;
+    };
+    let uri = format!("#{id}");
+    if xmlsig::verify(&key, signature, &[(uri.as_str(), &fragment[..length])]).is_err() {
+        return C::FailedMeteringSignatureNotValid;
+    }
+    // The vehicle's copy of the meter info has to be the charger's.
+    if request.meter_info.meter_reading != sent_reading {
+        return C::FailedMeteringSignatureNotValid;
+    }
+    C::Ok
+}
+
 /// The checks of an ISO 15118-2 `AuthorizationReq` for a contract: the challenge of this session
 /// (V2G2-... `FAILED_ChallengeInvalid`) and the signature in the header over the element, made with the
 /// key of the contract certificate seen in `PaymentDetailsReq`.

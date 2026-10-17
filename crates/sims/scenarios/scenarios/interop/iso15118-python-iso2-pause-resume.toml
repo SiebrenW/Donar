@@ -1,0 +1,21 @@
+name = "interop-iso15118-python-iso2-pause-resume"
+description = "The simulated vehicle against the SECC of the Python iso15118 library (0.31.2), ISO 15118-2 AC: the vehicle pauses the session (SessionStopReq Pause), connects again and resumes it with the old session id."
+timeout_s = 60
+
+[secc]
+kind = "iso15118-python"
+protocols = "ISO_15118_2"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+protocol = "iso15118-2"
+connector = "dual2"
+pause_after = 2
+resume_after_ms = 1000
+stop_after = 3
+[evcc.settings.iso2]
+mode = "ac3"
+
+[expect]
+evcc_log = ["paused; resuming", "session: Ended(Completed)"]

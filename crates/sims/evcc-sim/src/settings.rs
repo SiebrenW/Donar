@@ -34,7 +34,7 @@ pub enum Iso2Mode {
 }
 
 /// The knobs of the ISO 15118-2 side.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Iso2 {
     pub mode: Iso2Mode,
@@ -43,11 +43,13 @@ pub struct Iso2 {
     pub send_charging_profile: bool,
     pub welding_detection: bool,
     pub enforce_cpd_limits: bool,
+    /// Value-added services (ids from the charger's `ServiceList`) to ask about and select.
+    pub value_added: Vec<u16>,
 }
 
 impl Default for Iso2 {
     fn default() -> Self {
-        Self { mode: Iso2Mode::Dc, mac_address: [0x02, 0x00, 0x5E, 0x00, 0x53, 0x02], send_charging_profile: true, welding_detection: true, enforce_cpd_limits: true }
+        Self { mode: Iso2Mode::Dc, mac_address: [0x02, 0x00, 0x5E, 0x00, 0x53, 0x02], send_charging_profile: true, welding_detection: true, enforce_cpd_limits: true, value_added: Vec::new() }
     }
 }
 
@@ -385,6 +387,8 @@ impl Settings {
             send_charging_profile: self.iso2.send_charging_profile,
             enforce_cpd_limits: self.iso2.enforce_cpd_limits,
             prefer_contract: self.pnc.is_some(),
+            // The session config is `Copy` with static lists: the few ids live as long as the process.
+            value_added: Box::leak(self.iso2.value_added.clone().into_boxed_slice()),
             ..evcc_core::iso2::Config::ISO2_DC
         };
         if let Some(ms) = self.poll_interval_ms {

@@ -36,8 +36,17 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             return self.end(EndReason::NoCommonProtocol);
         }
         let mac = self.ev.evcc_mac();
-        self.session_id = [0; 8];
-        self.session_len = 1; // the session id is zero until the charger assigns one
+        match self.config.resume {
+            // A paused session is joined again with its id.
+            Some(resume) => {
+                self.session_id = resume.session_id;
+                self.session_len = 8;
+            }
+            None => {
+                self.session_id = [0; 8];
+                self.session_len = 1; // the session id is zero until the charger assigns one
+            }
+        }
         let body = BodyElementChoice::SessionSetupReq(SessionSetupReq { evccid: &mac });
         self.send(body, MsgKind::SessionSetupReq, State::AwaitSessionSetupRes, tx)
     }
@@ -97,15 +106,58 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             return self.end(EndReason::NoCompatibleService);
         }
         self.service_id = res.charge_service.service_id;
-        self.next(tx, |m, tx| {
-            let selected = [SelectedService { service_id: m.service_id, parameter_set_id: None }];
-            let payment = if m.contract { PaymentOption::Contract } else { PaymentOption::ExternalPayment };
-            let body = BodyElementChoice::PaymentServiceSelectionReq(PaymentServiceSelectionReq {
-                selected_payment_option: payment,
-                selected_service_list: SelectedServiceList { selected_service: &selected },
-            });
-            m.send(body, MsgKind::ServicePaymentSelectionReq, State::AwaitServicePaymentSelectionRes, tx)
-        })
+        // The value-added services the vehicle cares about, of those the charger offers.
+        self.detail_len = 0;
+        self.detail_next = 0;
+        self.chosen_len = 0;
+        if let Some(list) = res.service_list {
+            for service in list.service {
+                if self.config.value_added.contains(&service.service_id) && self.detail_len < super::MAX_VALUE_ADDED {
+                    self.detail_queue[self.detail_len] = service.service_id;
+                    self.detail_len += 1;
+                }
+            }
+        }
+        self.next(tx, |m, tx| m.ask_next_detail_or_select(tx))
+    }
+
+    /// `ServiceDetailReq` for the next value-added service in line, or, when there is none, the
+    /// payment and service selection.
+    fn ask_next_detail_or_select(&mut self, tx: &mut [u8]) -> Step {
+        if self.detail_next < self.detail_len {
+            return self.send_service_detail_req(tx);
+        }
+        let mut selected = [SelectedService { service_id: self.service_id, parameter_set_id: None }; super::MAX_VALUE_ADDED + 1];
+        selected[1..=self.chosen_len].copy_from_slice(&self.chosen[..self.chosen_len]);
+        let payment = if self.contract { PaymentOption::Contract } else { PaymentOption::ExternalPayment };
+        let body = BodyElementChoice::PaymentServiceSelectionReq(PaymentServiceSelectionReq {
+            selected_payment_option: payment,
+            selected_service_list: SelectedServiceList { selected_service: &selected[..=self.chosen_len] },
+        });
+        self.send(body, MsgKind::ServicePaymentSelectionReq, State::AwaitServicePaymentSelectionRes, tx)
+    }
+
+    pub(super) fn send_service_detail_req(&mut self, tx: &mut [u8]) -> Step {
+        let body = BodyElementChoice::ServiceDetailReq(ServiceDetailReq { service_id: self.detail_queue[self.detail_next] });
+        self.send(body, MsgKind::ServiceDetailReq, State::AwaitServiceDetailRes, tx)
+    }
+
+    /// What the charger says about a value-added service: the vehicle takes the first parameter
+    /// set (or none, for a service without parameters) and goes on to the next service.
+    pub(super) fn on_service_detail_res(&mut self, res: ServiceDetailRes<'_>, tx: &mut [u8]) -> Step {
+        if let Some(end) = self.received(MsgKind::ServiceDetailRes, res.response_code) {
+            return end;
+        }
+        let asked = self.detail_queue[self.detail_next];
+        if res.service_id != asked {
+            return self.end(EndReason::UnexpectedMessage);
+        }
+        let set = res.service_parameter_list.and_then(|l| l.parameter_set.first().map(|s| s.parameter_set_id));
+        self.log.record(&Record::Iso2ServiceDetail { service_id: asked, parameter_sets: res.service_parameter_list.map_or(0, |l| l.parameter_set.len()) });
+        self.chosen[self.chosen_len] = SelectedService { service_id: asked, parameter_set_id: set };
+        self.chosen_len += 1;
+        self.detail_next += 1;
+        self.next(tx, |m, tx| m.ask_next_detail_or_select(tx))
     }
 
     pub(super) fn on_payment_service_selection_res(&mut self, res: PaymentServiceSelectionRes, tx: &mut [u8]) -> Step {
@@ -264,7 +316,10 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
         self.schedule = Some(schedule);
         let step = self.phase_done(Step::default());
-        let mut next = if self.stop_requested && !self.power_on {
+        let mut next = if self.renegotiating {
+            // New schedule: the power goes on again under it.
+            self.send_power_delivery(true, tx)
+        } else if self.stop_requested && !self.power_on {
             self.stop_requested = false;
             self.send_session_stop(tx)
         } else if self.ac {
@@ -282,6 +337,39 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         next
     }
 }
+
+/// A signed `MeteringReceiptReq`: the meter info the charger sent, and in the header the signature
+/// over the element with the contract key.
+pub(super) fn frame_signed_receipt(contract: &dyn crate::ev::Contract, session_id: &[u8], tuple: u8, meter: MeterInfo<'_>, tx: &mut [u8]) -> Result<usize, ()> {
+    let (out, scratch) = tx.split_at_mut(tx.len() / 2);
+    let request = MeteringReceiptReq { id: Some(RECEIPT_ID), session_id, sa_schedule_tuple_id: Some(tuple), meter_info: meter };
+    let length = encode_fragment(scratch, iso15118_2::signature::fragment::METERING_RECEIPT_REQ, |e| request.encode_content(e)).map_err(|_| ())?;
+    let mut digest = [0u8; MAX_DIGEST_LEN];
+    let digest_len = contract.digest(&scratch[..length], &mut digest).ok_or(())?;
+    let references = [Reference {
+        id: None,
+        uri: Some(RECEIPT_URI),
+        transform_algorithm: Some(CANONICAL_EXI),
+        digest_algorithm: contract.digest_algorithm(),
+        digest_value: &digest[..digest_len],
+    }];
+    let info = SignedInfo { id: None, canonicalization_algorithm: CANONICAL_EXI, signature_algorithm: contract.signature_algorithm(), reference: &references };
+    let length = iso15118_2::signature::signed_info_fragment(&info, scratch).map_err(|_| ())?;
+    let mut value = [0u8; MAX_SIGNATURE_LEN];
+    let value_len = contract.sign(&scratch[..length], &mut value).ok_or(())?;
+    let message = V2gMessage {
+        header: MessageHeader {
+            session_id,
+            notification: None,
+            signature: Some(Signature { id: None, signed_info: info, signature_value: SignatureValue { id: None, value: &value[..value_len] } }),
+        },
+        body: Body { body_element: Some(BodyElementChoice::MeteringReceiptReq(request)) },
+    };
+    frame(out, PayloadType::SAP, |o| message.encode(o))
+}
+
+const RECEIPT_ID: &str = "ID2";
+const RECEIPT_URI: &str = "#ID2";
 
 /// The `Id` of the signed `AuthorizationReq` and the URI that references it.
 const AUTHORIZATION_ID: &str = "ID1";

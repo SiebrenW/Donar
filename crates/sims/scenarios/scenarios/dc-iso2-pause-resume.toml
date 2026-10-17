@@ -1,0 +1,24 @@
+name = "dc-iso2-pause-resume"
+description = "ISO 15118-2 DC: the vehicle pauses the session after two rounds (the orderly stop, SessionStopReq Pause) and connects again half a second later with the old session id; the charger answers OK_OldSessionJoined and the session runs again to its end (three rounds)."
+timeout_s = 40
+
+[secc]
+kind = "evse-sim"
+[secc.settings]
+sessions = 2
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+protocol = "iso15118-2"
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+connector = "dual2"
+stop_after = 3
+pause_after = 2
+resume_after_ms = 500
+
+[expect]
+secc_exit = 0
+evcc_log = ["paused; resuming", "session: Ended(Completed)"]
+secc_log = ["session: Paused", "OK_OldSessionJoined", "session: Stopped"]

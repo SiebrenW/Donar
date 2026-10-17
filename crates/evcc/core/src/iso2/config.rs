@@ -43,7 +43,17 @@ pub struct Config {
     pub enforce_cpd_limits: bool,
     /// `MaxEntriesSAScheduleTuple` of the charge parameter discovery.
     pub max_schedule_tuples: u16,
+    /// Value-added services (the ids of the `ServiceList` of `ServiceDiscoveryRes`) the vehicle
+    /// asks about with `ServiceDetailReq` and, when the charger offers parameters for them,
+    /// selects together with the charge service (at most [`MAX_VALUE_ADDED`]).
+    pub value_added: &'static [u16],
+    /// Resume this paused session (`SessionSetupReq` with its id; the charger answers
+    /// `OK_OldSessionJoined`) instead of starting a new one.
+    pub resume: Option<crate::session::Resume>,
 }
+
+/// The most value-added services a session asks about.
+pub const MAX_VALUE_ADDED: usize = 4;
 
 impl Config {
     /// ISO 15118-2 DC, version 2.0, schema id 1.
@@ -74,6 +84,8 @@ impl Config {
         send_charging_profile: true,
         enforce_cpd_limits: true,
         max_schedule_tuples: 3,
+        value_added: &[],
+        resume: None,
     };
 
     /// ISO 15118-2 AC with the given number of phases.

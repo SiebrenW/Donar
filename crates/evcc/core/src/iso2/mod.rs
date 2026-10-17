@@ -32,7 +32,7 @@ mod config;
 mod convert;
 mod setup;
 
-pub use config::{Config, Mode};
+pub use config::{Config, Mode, MAX_VALUE_ADDED};
 
 /// The most `PMaxScheduleEntry`s kept of the schedule the charger offered (and profile entries sent).
 const MAX_ENTRIES: usize = 24;
@@ -96,6 +96,21 @@ struct Machine<E, L> {
     schedule: Option<Schedule>,
     /// The voltage the vehicle measured at its inlet in the last pre-charge exchange.
     last_inlet: RationalNumber,
+    /// A renegotiation of the schedule is under way: stop, `PowerDeliveryReq(Renegotiate)`, the
+    /// charge parameter discovery again, then `PowerDeliveryReq(Start)`.
+    renegotiating: bool,
+    /// The vehicle (host) or the charger (a notification) wants a renegotiation: acted on at the
+    /// next loop answer.
+    renegotiate_requested: bool,
+    /// The session is to be paused: the stop ends with `SessionStopReq(Pause)`.
+    pausing: bool,
+    /// Value-added services the vehicle asks about (ids), how many are left, and the ones it
+    /// selects (with their parameter set).
+    detail_queue: [u16; MAX_VALUE_ADDED],
+    detail_next: usize,
+    detail_len: usize,
+    chosen: [SelectedService; MAX_VALUE_ADDED],
+    chosen_len: usize,
 }
 
 impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
@@ -126,6 +141,14 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 evse: None,
                 schedule: None,
                 last_inlet: RationalNumber { exponent: 0, value: 0 },
+                renegotiating: false,
+                renegotiate_requested: false,
+                pausing: false,
+                detail_queue: [0; MAX_VALUE_ADDED],
+                detail_next: 0,
+                detail_len: 0,
+                chosen: [SelectedService { service_id: 0, parameter_set_id: None }; MAX_VALUE_ADDED],
+                chosen_len: 0,
             },
         }
     }
@@ -194,11 +217,18 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 if m.state != State::AwaitCurrentStopped {
                     return Step::default();
                 }
-                let step = m.send_power_delivery(false, tx);
+                let progress = if m.renegotiating { ChargeProgress::Renegotiate } else { ChargeProgress::Stop };
+                let step = m.send_power_delivery_as(progress, tx);
                 m.sequence_done(step)
             }
-            // The older standard has neither a pause nor renegotiation.
-            Event::PauseRequested | Event::RenegotiateSchedule | Event::RenegotiateServices => Step::default(),
+            // A pause is a stop that ends with `SessionStopReq(Pause)`.
+            Event::PauseRequested => {
+                m.pausing = true;
+                m.on_stop_requested()
+            }
+            Event::RenegotiateSchedule => m.on_renegotiate_requested(),
+            // The older standard has no service renegotiation.
+            Event::RenegotiateServices => Step::default(),
             Event::Received(n) => {
                 *rx_len = (*rx_len + n).min(rx.len());
                 let mut step = Step::default();
@@ -262,6 +292,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             State::AwaitSupportedAppProtocolRes
                 | State::AwaitSessionSetupRes
                 | State::AwaitServiceDiscoveryRes
+                | State::AwaitServiceDetailRes
                 | State::AwaitServicePaymentSelectionRes
                 | State::AwaitPaymentDetailsRes
                 | State::AwaitContractAuthenticationRes
@@ -421,6 +452,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         match self.state {
             State::AwaitContractAuthenticationRes => self.send_authorization_req(tx),
             State::AwaitChargeParameterDiscoveryRes => self.send_charge_parameter_discovery_req(tx),
+            State::AwaitServiceDetailRes => self.send_service_detail_req(tx),
             State::AwaitCableCheckRes => self.send_cable_check_req(tx),
             State::AwaitPreChargeRes => self.send_precharge_req(tx),
             State::AwaitCurrentDemandRes => self.send_current_demand_req(tx),
@@ -483,6 +515,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         match (self.state, body) {
             (State::AwaitSessionSetupRes, B::SessionSetupRes(res)) => self.on_session_setup_res(message.header.session_id, res, tx),
             (State::AwaitServiceDiscoveryRes, B::ServiceDiscoveryRes(res)) => self.on_service_discovery_res(res, tx),
+            (State::AwaitServiceDetailRes, B::ServiceDetailRes(res)) => self.on_service_detail_res(res, tx),
             (State::AwaitServicePaymentSelectionRes, B::PaymentServiceSelectionRes(res)) => self.on_payment_service_selection_res(res, tx),
             (State::AwaitPaymentDetailsRes, B::PaymentDetailsRes(res)) => self.on_payment_details_res(res, tx),
             (State::AwaitContractAuthenticationRes, B::AuthorizationRes(res)) => self.on_authorization_res(res, tx),
@@ -490,9 +523,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             (State::AwaitCableCheckRes, B::CableCheckRes(res)) => self.on_cable_check_res(res, tx),
             (State::AwaitPreChargeRes, B::PreChargeRes(res)) => self.on_precharge_res(res, tx),
             (State::AwaitPowerDeliveryRes, B::PowerDeliveryRes(res)) => self.on_power_delivery_start_res(res, tx),
-            (State::AwaitCurrentDemandRes, B::CurrentDemandRes(res)) => self.on_current_demand_res(res),
+            (State::AwaitCurrentDemandRes, B::CurrentDemandRes(res)) => self.on_current_demand_res(res, tx),
             (State::AwaitPowerDeliveryStopRes, B::PowerDeliveryRes(res)) => self.on_power_delivery_stop_res(res, tx),
-            (State::AwaitChargingStatusRes, B::ChargingStatusRes(res)) => self.on_charging_status_res(res),
+            (State::AwaitChargingStatusRes, B::ChargingStatusRes(res)) => self.on_charging_status_res(res, tx),
             (State::AwaitMeteringReceiptRes, B::MeteringReceiptRes(res)) => self.on_metering_receipt_res(res, tx),
             (State::AwaitWeldingDetectionRes, B::WeldingDetectionRes(res)) => self.on_welding_detection_res(res, tx),
             (State::AwaitSessionStopRes, B::SessionStopRes(res)) => self.on_session_stop_res(res),

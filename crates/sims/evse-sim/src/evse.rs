@@ -114,13 +114,18 @@ pub struct Evse {
     iso2_ac: bool,
     /// Phases of the AC mode of the session (1 or 3).
     iso2_phases: f64,
+    /// A renegotiation is under way: the charge parameter discovery is answered, then power again.
+    iso2_renegotiating: bool,
+    iso2_renegotiation_asked: bool,
+    /// The last loop answer asked for a receipt (the reading it carried).
+    iso2_receipt_reading: Option<u64>,
     /// ISO 15118-2: the contract certificate of a Plug & Charge session, and whether it expires soon.
     iso2_contract: Option<(openssl::x509::X509, bool)>,
 }
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, protocol: Protocol::Iso20, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge(), last_stamp: std::cell::Cell::new(0), ev_announced: None, bpt: false, din_ev_announced: None, iso2_ev_power: None, iso2_ac: false, iso2_phases: 1.0, iso2_contract: None }
+        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, protocol: Protocol::Iso20, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge(), last_stamp: std::cell::Cell::new(0), ev_announced: None, bpt: false, din_ev_announced: None, iso2_ev_power: None, iso2_ac: false, iso2_phases: 1.0, iso2_renegotiating: false, iso2_renegotiation_asked: false, iso2_receipt_reading: None, iso2_contract: None }
     }
 
     /// Reports the charge loop measurements to a test platform and takes its edits.

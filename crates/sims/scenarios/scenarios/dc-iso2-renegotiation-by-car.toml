@@ -1,0 +1,21 @@
+name = "dc-iso2-renegotiation-by-car"
+description = "ISO 15118-2 DC: the vehicle asks for new charge parameters after two rounds of the current demand loop (PowerDeliveryReq Renegotiate, charge parameter discovery again, PowerDeliveryReq Start; no new cable check), then the charge goes on and the vehicle stops after five rounds."
+timeout_s = 40
+
+[secc]
+kind = "evse-sim"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+protocol = "iso15118-2"
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+connector = "dual2"
+renegotiate_schedule_after = 2
+stop_after = 5
+
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)"]
+secc_log = ["renegotiation", "session: Stopped"]

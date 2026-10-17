@@ -118,6 +118,8 @@ pub enum Record<'a> {
     DinNoEnergyService { wanted: din70121::types::EvRequestedEnergyTransfer, offered: din70121::types::EvseSupportedEnergyTransfer },
     /// A response code of an ISO 15118-2 charger.
     Iso2Response { msg: MsgKind, code: iso15118_2::types::ResponseCode },
+    /// A value-added service the charger described, with how many parameter sets it has.
+    Iso2ServiceDetail { service_id: u16, parameter_sets: usize },
     /// The charger does not offer the energy transfer mode the vehicle wants (ISO 15118-2).
     Iso2NoEnergyMode { wanted: iso15118_2::types::EnergyTransferMode, offered: &'a [iso15118_2::types::EnergyTransferMode] },
     /// The charger offers no payment option the vehicle can use (ISO 15118-2).
@@ -135,6 +137,7 @@ impl Record<'_> {
             | Record::SessionSetUp { .. }
             | Record::SessionResumed { .. }
             | Record::AuthorizationSelected { .. }
+            | Record::Iso2ServiceDetail { .. }
             | Record::ServiceSelected { .. } => Level::Info,
             Record::Response { code, .. } if !crate::session::is_ok(*code) => Level::Info,
             Record::DinResponse { code, .. } if !crate::din::is_ok(*code) => Level::Info,

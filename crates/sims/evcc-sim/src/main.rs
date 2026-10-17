@@ -189,7 +189,7 @@ fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session:
     let config = match settings.protocol {
         Protocol::Iso20 => SessionConfig::Iso20(evcc_core::session::Config { resume, ..settings.session() }),
         Protocol::Din => SessionConfig::Din(settings.din_session(), settings.din.mac_address),
-        Protocol::Iso2 => SessionConfig::Iso2(settings.iso2_session(), settings.iso2.mac_address),
+        Protocol::Iso2 => SessionConfig::Iso2(evcc_core::iso2::Config { resume, ..settings.iso2_session() }, settings.iso2.mac_address),
     };
     let log = evcc_sim::LiveLog {
         inner: StderrLog { level: settings.log.into() },

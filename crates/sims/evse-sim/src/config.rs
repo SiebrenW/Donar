@@ -329,6 +329,15 @@ pub struct Iso2 {
     /// AC: `EVSENominalVoltage` (V) and `EVSEMaxCurrent` (A).
     pub ac_nominal_voltage_v: u32,
     pub ac_max_current_a: u32,
+    /// After this many loop answers the charger asks for new charge parameters (the notification
+    /// `ReNegotiation`), once.
+    pub renegotiate_after_loops: Option<u32>,
+    /// A contract session: every this many loop answers carry a meter reading and ask for a signed
+    /// `MeteringReceiptReq`.
+    pub receipt_every_loops: Option<u32>,
+    /// Value-added services (ids) listed in `ServiceDiscoveryRes`; `ServiceDetailReq` for one gets
+    /// two parameter sets (port 80 and 443).
+    pub value_added_services: Vec<u16>,
 }
 
 impl Default for Iso2 {
@@ -341,6 +350,9 @@ impl Default for Iso2 {
             shutdown_after_loops: None,
             ac_nominal_voltage_v: 230,
             ac_max_current_a: 32,
+            renegotiate_after_loops: None,
+            receipt_every_loops: None,
+            value_added_services: Vec::new(),
         }
     }
 }

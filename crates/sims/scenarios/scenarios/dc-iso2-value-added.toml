@@ -1,0 +1,22 @@
+name = "dc-iso2-value-added"
+description = "ISO 15118-2: the charger lists a value-added service; the vehicle asks about it (ServiceDetailReq), takes its first parameter set and selects it together with the charging service."
+timeout_s = 40
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session.iso2]
+value_added_services = [3]
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+protocol = "iso15118-2"
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+connector = "dual2"
+[evcc.settings.iso2]
+value_added = [3]
+[expect]
+secc_exit = 0
+evcc_log = ["Iso2ServiceDetail", "session: Ended(Completed)"]
+secc_log = ["ServiceDetailRes", "session: Stopped"]

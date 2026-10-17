@@ -107,6 +107,13 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     /// `ChargeProgress` Start or Stop, with the schedule tuple the vehicle follows and a charging
     /// profile within it.
     pub(super) fn send_power_delivery(&mut self, start: bool, tx: &mut [u8]) -> Step {
+        self.send_power_delivery_as(if start { ChargeProgress::Start } else { ChargeProgress::Stop }, tx)
+    }
+
+    /// `PowerDeliveryReq` with `progress`: Start (with the profile), Stop, or Renegotiate (the
+    /// vehicle wants new charge parameters and a new schedule).
+    pub(super) fn send_power_delivery_as(&mut self, progress: ChargeProgress, tx: &mut [u8]) -> Step {
+        let start = progress == ChargeProgress::Start;
         let mut entries = [ProfileEntry { charging_profile_entry_start: 0, charging_profile_entry_max_power: physical(RationalNumber { exponent: 0, value: 0 }, UnitSymbol::W), charging_profile_entry_max_number_of_phases_in_use: None }; super::MAX_ENTRIES];
         let mut profile_len = None;
         let mut tuple = 1;
@@ -129,14 +136,15 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 profile_len = Some(schedule.len);
             }
         }
-        let status = if start { self.status() } else { DcEvStatus { ev_ready: false, ..self.status() } };
+        let stopping = progress == ChargeProgress::Stop;
+        let status = if stopping { DcEvStatus { ev_ready: false, ..self.status() } } else { self.status() };
         let parameter = (!self.ac).then_some(EvPowerDeliveryParameterChoice::Dc(DcEvPowerDeliveryParameter {
             dc_ev_status: status,
             bulk_charging_complete: None,
-            charging_complete: !start,
+            charging_complete: stopping,
         }));
         let body = BodyElementChoice::PowerDeliveryReq(PowerDeliveryReq {
-            charge_progress: if start { ChargeProgress::Start } else { ChargeProgress::Stop },
+            charge_progress: progress,
             sa_schedule_tuple_id: tuple,
             charging_profile: profile_len.map(|len| ChargingProfile { profile_entry: &entries[..len] }),
             ev_power_delivery_parameter: parameter,
@@ -145,6 +153,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             self.power_on = true;
         }
         let next = if start { State::AwaitPowerDeliveryRes } else { State::AwaitPowerDeliveryStopRes };
+        // `Start` after a renegotiation is not a new start of the session.
         self.send(body, MsgKind::PowerDeliveryReq, next, tx)
     }
 
@@ -154,6 +163,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
         self.note_status(&res.evse_status);
         self.ready = true;
+        self.renegotiating = false;
         let mut step = if self.ac { self.send_charging_status_req(tx) } else { self.send_current_demand_req(tx) };
         if step.end.is_none() {
             step.timers = step.timers.with(TimerCmd::Cancel(Timer::ReadyToCharge));
@@ -173,6 +183,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         };
         if stop || notification == EvseNotification::StopCharging {
             self.evse_stops = true;
+        }
+        if notification == EvseNotification::ReNegotiation {
+            self.renegotiate_requested = true;
         }
     }
 
@@ -209,7 +222,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         self.send(body, MsgKind::CurrentDemandReq, State::AwaitCurrentDemandRes, tx)
     }
 
-    pub(super) fn on_current_demand_res(&mut self, res: CurrentDemandRes<'_>) -> Step {
+    pub(super) fn on_current_demand_res(&mut self, res: CurrentDemandRes<'_>, tx: &mut [u8]) -> Step {
         if let Some(end) = self.received(MsgKind::CurrentDemandRes, res.response_code) {
             return end;
         }
@@ -226,6 +239,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             maximum_charge_current: res.evse_maximum_current_limit.map(rational).or(announced.map(|a| a.max_current)).unwrap_or(zero),
             maximum_voltage: res.evse_maximum_voltage_limit.map(rational).or(announced.map(|a| a.max_voltage)).unwrap_or(zero),
         };
+        if res.receipt_required == Some(true) && let Some(meter) = res.meter_info {
+            return self.answer_with_receipt(meter, res.sa_schedule_tuple_id, status, tx);
+        }
         self.after_loop_answer(status)
     }
 
@@ -235,7 +251,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         self.send(body, MsgKind::ChargingStatusReq, State::AwaitChargingStatusRes, tx)
     }
 
-    pub(super) fn on_charging_status_res(&mut self, res: ChargingStatusRes<'_>) -> Step {
+    pub(super) fn on_charging_status_res(&mut self, res: ChargingStatusRes<'_>, tx: &mut [u8]) -> Step {
         if let Some(end) = self.received(MsgKind::ChargingStatusRes, res.response_code) {
             return end;
         }
@@ -257,21 +273,78 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             maximum_charge_current: max_current,
             maximum_voltage: self.evse.map_or(zero, |e| e.max_voltage),
         };
+        if res.receipt_required == Some(true) && let Some(meter) = res.meter_info {
+            return self.answer_with_receipt(meter, res.sa_schedule_tuple_id, status, tx);
+        }
         self.after_loop_answer(status)
     }
 
     /// A loop answer is in: stop if the vehicle or the charger wants to, else wait for the next round.
     fn after_loop_answer(&mut self, status: ChargeLoopStatus) -> Step {
-        if self.stop_requested || self.evse_stops {
-            self.stop_requested = false;
-            return self.begin_stop();
+        if let Some(step) = self.loop_exit() {
+            return step;
         }
+        let mut step = self.next_round();
+        step.notice = Some(Notice::ChargeLoop(status));
+        step
+    }
+
+    /// The pause before the next request of the loop.
+    fn next_round(&mut self) -> Step {
         self.poll_pending = true;
         Step {
-            notice: Some(Notice::ChargeLoop(status)),
             timers: Timers::one(TimerCmd::Cancel(Timer::Response)).with(TimerCmd::Arm { timer: Timer::Poll, ms: self.config.charge_loop_interval_ms }),
             ..Step::default()
         }
+    }
+
+    /// The loop ends here when the vehicle or the charger wants to stop, or a renegotiation is due.
+    fn loop_exit(&mut self) -> Option<Step> {
+        if self.stop_requested || self.evse_stops {
+            self.stop_requested = false;
+            return Some(self.begin_stop());
+        }
+        if self.renegotiate_requested {
+            return Some(self.begin_renegotiation());
+        }
+        None
+    }
+
+    /// The host (or `Event::RenegotiateSchedule`) wants new charge parameters: at once between two
+    /// requests of the loop, else at the next answer.
+    pub(super) fn on_renegotiate_requested(&mut self) -> Step {
+        if !self.power_on || self.renegotiating {
+            return Step::default();
+        }
+        self.renegotiate_requested = true;
+        if matches!(self.state, State::AwaitCurrentDemandRes | State::AwaitChargingStatusRes) && self.poll_pending {
+            return self.begin_renegotiation();
+        }
+        Step::default()
+    }
+
+    /// A renegotiation is a stop of the energy transfer with `ChargeProgress` Renegotiate, and a
+    /// new charge parameter discovery; the contactors stay closed.
+    fn begin_renegotiation(&mut self) -> Step {
+        self.renegotiate_requested = false;
+        self.renegotiating = true;
+        self.begin_stop()
+    }
+
+    /// The charger wants a signed receipt of the meter reading it sent (a contract session): the
+    /// reading is copied, signed with the contract key, and sent before the loop goes on.
+    fn answer_with_receipt(&mut self, meter: MeterInfo<'_>, tuple: u8, status: ChargeLoopStatus, tx: &mut [u8]) -> Step {
+        if let Some(step) = self.loop_exit() {
+            return step;
+        }
+        let framed = match self.ev.contract().filter(|_| self.contract) {
+            Some(contract) => super::setup::frame_signed_receipt(contract, &self.session_id[..self.session_len], tuple, meter, tx),
+            // Without a contract there is nothing to sign with: the receipt is not sent.
+            None => return self.after_loop_answer(status),
+        };
+        let mut step = self.sent(framed, MsgKind::MeteringReceiptReq, State::AwaitMeteringReceiptRes);
+        step.notice = Some(Notice::ChargeLoop(status));
+        step
     }
 
     pub(super) fn begin_stop(&mut self) -> Step {
@@ -287,6 +360,11 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     pub(super) fn on_power_delivery_stop_res(&mut self, res: PowerDeliveryRes, tx: &mut [u8]) -> Step {
         if let Some(end) = self.received(MsgKind::PowerDeliveryRes, res.response_code) {
             return end;
+        }
+        if self.renegotiating {
+            // The contactors stay closed: new parameters, then the power again.
+            self.phase_timed = false;
+            return self.send_charge_parameter_discovery_req(tx);
         }
         if self.ac {
             // No contactors to open or control pilot to change for the vehicle in AC.
@@ -325,7 +403,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
 
     pub(super) fn send_session_stop(&mut self, tx: &mut [u8]) -> Step {
-        let body = BodyElementChoice::SessionStopReq(SessionStopReq { charging_session: ChargingSession::Terminate });
+        let session = if self.pausing { ChargingSession::Pause } else { ChargingSession::Terminate };
+        let body = BodyElementChoice::SessionStopReq(SessionStopReq { charging_session: session });
         self.send(body, MsgKind::SessionStopReq, State::AwaitSessionStopRes, tx)
     }
 
@@ -333,14 +412,28 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         if let Some(end) = self.received(MsgKind::SessionStopRes, res.response_code) {
             return end;
         }
+        if self.pausing {
+            // The id and the service of the session are what resuming it needs.
+            let resume = crate::session::Resume {
+                session_id: self.session_id,
+                selected: iso15118_20::common::SelectedService { service_id: self.service_id, parameter_set_id: 0 },
+                renegotiation_supported: None,
+            };
+            return self.end(EndReason::Paused(resume));
+        }
         self.end(EndReason::Completed)
     }
 
-    /// The metering receipt of an AC session (signed by a contract vehicle) is not sent yet.
+    /// The charger took the receipt: the loop goes on (or ends, if it was to).
     pub(super) fn on_metering_receipt_res(&mut self, res: MeteringReceiptRes, _tx: &mut [u8]) -> Step {
         if let Some(end) = self.received(MsgKind::MeteringReceiptRes, res.response_code) {
             return end;
         }
-        Step::default()
+        if let Some(step) = self.loop_exit() {
+            return step;
+        }
+        // Back in the loop: the next round repeats its request.
+        self.goto(if self.ac { State::AwaitChargingStatusRes } else { State::AwaitCurrentDemandRes });
+        self.next_round()
     }
 }
