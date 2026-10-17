@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<V2G_Message xmlns="urn:iso:15118:2:2013:MsgDef" xmlns:h="urn:iso:15118:2:2013:MsgHeader" xmlns:b="urn:iso:15118:2:2013:MsgBody" xmlns:t="urn:iso:15118:2:2013:MsgDataTypes" xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+  <Header>
+    <h:SessionID>A1B2C3D4E5F60718</h:SessionID>
+  </Header>
+  <Body>
+<b:PowerDeliveryReq><b:ChargeProgress>Start</b:ChargeProgress><b:SAScheduleTupleID>1</b:SAScheduleTupleID><b:ChargingProfile><t:ProfileEntry><t:ChargingProfileEntryStart>0</t:ChargingProfileEntryStart><t:ChargingProfileEntryMaxPower><t:Multiplier>3</t:Multiplier><t:Unit>W</t:Unit><t:Value>100</t:Value></t:ChargingProfileEntryMaxPower><t:ChargingProfileEntryMaxNumberOfPhasesInUse>3</t:ChargingProfileEntryMaxNumberOfPhasesInUse></t:ProfileEntry><t:ProfileEntry><t:ChargingProfileEntryStart>1800</t:ChargingProfileEntryStart><t:ChargingProfileEntryMaxPower><t:Multiplier>3</t:Multiplier><t:Unit>W</t:Unit><t:Value>50</t:Value></t:ChargingProfileEntryMaxPower></t:ProfileEntry></b:ChargingProfile><t:DC_EVPowerDeliveryParameter><t:DC_EVStatus><t:EVReady>true</t:EVReady><t:EVErrorCode>NO_ERROR</t:EVErrorCode><t:EVRESSSOC>20</t:EVRESSSOC></t:DC_EVStatus><t:BulkChargingComplete>false</t:BulkChargingComplete><t:ChargingComplete>false</t:ChargingComplete></t:DC_EVPowerDeliveryParameter></b:PowerDeliveryReq>
+  </Body>
+</V2G_Message>

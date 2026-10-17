@@ -1,0 +1,11 @@
+[package]
+name = "iso15118-2"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "ISO 15118-2 message types and their schema-informed EXI codec"
+
+[dependencies]
+exi = { path = "../exi" }
+# The message signature is the same xmldsig element in both standards.
+iso15118-20 = { path = "../iso15118-20" }

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<V2G_Message xmlns="urn:iso:15118:2:2013:MsgDef" xmlns:h="urn:iso:15118:2:2013:MsgHeader" xmlns:b="urn:iso:15118:2:2013:MsgBody" xmlns:t="urn:iso:15118:2:2013:MsgDataTypes" xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+  <Header>
+    <h:SessionID>A1B2C3D4E5F60718</h:SessionID>
+  </Header>
+  <Body>
+<b:ChargeParameterDiscoveryReq><b:RequestedEnergyTransferMode>AC_three_phase_core</b:RequestedEnergyTransferMode><t:AC_EVChargeParameter><t:DepartureTime>7200</t:DepartureTime><t:EAmount><t:Multiplier>3</t:Multiplier><t:Unit>Wh</t:Unit><t:Value>20</t:Value></t:EAmount><t:EVMaxVoltage><t:Multiplier>0</t:Multiplier><t:Unit>V</t:Unit><t:Value>400</t:Value></t:EVMaxVoltage><t:EVMaxCurrent><t:Multiplier>0</t:Multiplier><t:Unit>A</t:Unit><t:Value>32</t:Value></t:EVMaxCurrent><t:EVMinCurrent><t:Multiplier>0</t:Multiplier><t:Unit>A</t:Unit><t:Value>6</t:Value></t:EVMinCurrent></t:AC_EVChargeParameter></b:ChargeParameterDiscoveryReq>
+  </Body>
+</V2G_Message>

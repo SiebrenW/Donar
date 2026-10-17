@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<V2G_Message xmlns="urn:iso:15118:2:2013:MsgDef" xmlns:h="urn:iso:15118:2:2013:MsgHeader" xmlns:b="urn:iso:15118:2:2013:MsgBody" xmlns:t="urn:iso:15118:2:2013:MsgDataTypes" xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+  <Header>
+    <h:SessionID>A1B2C3D4E5F60718</h:SessionID>
+  </Header>
+  <Body>
+<b:CertificateUpdateReq b:Id="CU1"><b:ContractSignatureCertChain t:Id="CC1"><t:Certificate>MIIBdzCCAR2gAwIBAgIUAAAAAAAAAAAAAAAAAAAAAAAwCgYIKoZIzj0EAwIwDTELMAkGA1UEAwwCQ0E=</t:Certificate></b:ContractSignatureCertChain><b:eMAID>DEABCC12345678</b:eMAID><b:ListOfRootCertificateIDs><t:RootCertificateID><ds:X509IssuerName>CN=Root</ds:X509IssuerName><ds:X509SerialNumber>1</ds:X509SerialNumber></t:RootCertificateID></b:ListOfRootCertificateIDs></b:CertificateUpdateReq>
+  </Body>
+</V2G_Message>

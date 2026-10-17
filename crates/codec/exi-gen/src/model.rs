@@ -271,9 +271,6 @@ impl<'w> Model<'w> {
 
     fn collect_slots(&self, def: &ComplexDef, owner_ns: &str, out: &mut Vec<Slot>) -> Result<(), String> {
         let schema = self.world.schema(owner_ns)?;
-        if def.simple_content {
-            return Err("simpleContent is not supported".into());
-        }
         if let Some(base) = &def.base {
             let bdef = self.world.complex(base).ok_or_else(|| format!("unknown base type {}", base.local))?;
             self.collect_slots(bdef, &base.ns, out)?;
@@ -320,6 +317,12 @@ impl<'w> Model<'w> {
         for (qn, a) in &attrs {
             let alt = self.alt_for(qn.clone(), &a.ty, false).map_err(ctx)?;
             slots.push(Slot { min: u32::from(a.required), max: 1, kind: SlotKind::Attr, alts: vec![alt], head: None });
+        }
+        // The text of a simple content type comes after the attributes: the `CH` production is a
+        // mandatory slot coded like an attribute, named `Value`.
+        if let Some(base) = &def.simple_base {
+            let alt = self.alt_for(QName::new(&q.ns, "Value"), base, false).map_err(ctx)?;
+            slots.push(Slot { min: 1, max: 1, kind: SlotKind::Attr, alts: vec![alt], head: None });
         }
         self.collect_slots(&def, &q.ns, &mut slots).map_err(ctx)?;
         // `collect_slots` walked the base chain too; attributes are handled above only.

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<V2G_Message xmlns="urn:iso:15118:2:2013:MsgDef" xmlns:h="urn:iso:15118:2:2013:MsgHeader" xmlns:b="urn:iso:15118:2:2013:MsgBody" xmlns:t="urn:iso:15118:2:2013:MsgDataTypes" xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+  <Header>
+    <h:SessionID>A1B2C3D4E5F60718</h:SessionID>
+  </Header>
+  <Body>
+<b:MeteringReceiptReq b:Id="MR1"><b:SessionID>A1B2C3D4E5F60718</b:SessionID><b:SAScheduleTupleID>1</b:SAScheduleTupleID><b:MeterInfo><t:MeterID>M1</t:MeterID><t:MeterReading>12345</t:MeterReading><t:SigMeterReading>AAECAwQFBgc=</t:SigMeterReading><t:MeterStatus>0</t:MeterStatus><t:TMeter>1700000000</t:TMeter></b:MeterInfo></b:MeteringReceiptReq>
+  </Body>
+</V2G_Message>

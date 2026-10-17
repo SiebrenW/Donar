@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<V2G_Message xmlns="urn:iso:15118:2:2013:MsgDef" xmlns:h="urn:iso:15118:2:2013:MsgHeader" xmlns:b="urn:iso:15118:2:2013:MsgBody" xmlns:t="urn:iso:15118:2:2013:MsgDataTypes" xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+  <Header>
+    <h:SessionID>A1B2C3D4E5F60718</h:SessionID>
+  </Header>
+  <Body>
+<b:ServiceDiscoveryRes><b:ResponseCode>OK</b:ResponseCode><b:PaymentOptionList><t:PaymentOption>ExternalPayment</t:PaymentOption><t:PaymentOption>Contract</t:PaymentOption></b:PaymentOptionList><b:ChargeService><t:ServiceID>1</t:ServiceID><t:ServiceCategory>EVCharging</t:ServiceCategory><t:FreeService>false</t:FreeService><t:SupportedEnergyTransferMode><t:EnergyTransferMode>DC_extended</t:EnergyTransferMode><t:EnergyTransferMode>AC_three_phase_core</t:EnergyTransferMode></t:SupportedEnergyTransferMode></b:ChargeService></b:ServiceDiscoveryRes>
+  </Body>
+</V2G_Message>

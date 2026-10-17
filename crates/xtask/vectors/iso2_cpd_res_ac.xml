@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<V2G_Message xmlns="urn:iso:15118:2:2013:MsgDef" xmlns:h="urn:iso:15118:2:2013:MsgHeader" xmlns:b="urn:iso:15118:2:2013:MsgBody" xmlns:t="urn:iso:15118:2:2013:MsgDataTypes" xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+  <Header>
+    <h:SessionID>A1B2C3D4E5F60718</h:SessionID>
+  </Header>
+  <Body>
+<b:ChargeParameterDiscoveryRes><b:ResponseCode>OK</b:ResponseCode><b:EVSEProcessing>Finished</b:EVSEProcessing><t:SAScheduleList><t:SAScheduleTuple><t:SAScheduleTupleID>1</t:SAScheduleTupleID><t:PMaxSchedule><t:PMaxScheduleEntry><t:RelativeTimeInterval><t:start>0</t:start><t:duration>86400</t:duration></t:RelativeTimeInterval><t:PMax><t:Multiplier>3</t:Multiplier><t:Unit>W</t:Unit><t:Value>22</t:Value></t:PMax></t:PMaxScheduleEntry></t:PMaxSchedule></t:SAScheduleTuple></t:SAScheduleList><t:AC_EVSEChargeParameter><t:AC_EVSEStatus><t:NotificationMaxDelay>0</t:NotificationMaxDelay><t:EVSENotification>None</t:EVSENotification><t:RCD>false</t:RCD></t:AC_EVSEStatus><t:EVSENominalVoltage><t:Multiplier>0</t:Multiplier><t:Unit>V</t:Unit><t:Value>230</t:Value></t:EVSENominalVoltage><t:EVSEMaxCurrent><t:Multiplier>0</t:Multiplier><t:Unit>A</t:Unit><t:Value>32</t:Value></t:EVSEMaxCurrent></t:AC_EVSEChargeParameter></b:ChargeParameterDiscoveryRes>
+  </Body>
+</V2G_Message>

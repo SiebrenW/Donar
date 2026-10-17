@@ -68,7 +68,22 @@ pub const DIN70121: Group = Group {
     value_table: false,
 };
 
-pub const GROUPS: &[&Group] = &[&ISO20, &APP_PROTOCOL, &DIN70121];
+pub const NS_ISO2_TYPES: &str = "urn:iso:15118:2:2013:MsgDataTypes";
+pub const NS_ISO2_BODY: &str = "urn:iso:15118:2:2013:MsgBody";
+pub const NS_ISO2_DEF: &str = "urn:iso:15118:2:2013:MsgDef";
+pub const NS_ISO2_HEADER: &str = "urn:iso:15118:2:2013:MsgHeader";
+
+pub const ISO2: Group = Group {
+    name: "iso15118-2",
+    dir: "iso15118-2",
+    files: &["V2G_CI_MsgDataTypes.xsd", "V2G_CI_MsgBody.xsd", "V2G_CI_MsgDef.xsd", "V2G_CI_MsgHeader.xsd", "xmldsig-core-schema.xsd"],
+    modules: &[(NS_ISO2_TYPES, "types"), (NS_ISO2_BODY, "body"), (NS_ISO2_DEF, "def"), (NS_ISO2_HEADER, "header"), (xsd::XMLDSIG, "xmldsig")],
+    fragment: &[],
+    document: Some((NS_ISO2_DEF, "V2G_Message")),
+    value_table: true,
+};
+
+pub const GROUPS: &[&Group] = &[&ISO20, &APP_PROTOCOL, &DIN70121, &ISO2];
 
 pub fn group(name: &str) -> Result<&'static Group, String> {
     GROUPS.iter().copied().find(|g| g.name == name).ok_or_else(|| format!("unknown group {name}"))

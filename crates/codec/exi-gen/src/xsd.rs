@@ -67,6 +67,8 @@ pub struct ComplexDef {
     pub particles: Vec<Particle>,
     /// `simpleContent`: text with attributes (only xmldsig uses it).
     pub simple_content: bool,
+    /// The type of the text of a `simpleContent` extension.
+    pub simple_base: Option<QName>,
 }
 
 #[derive(Debug, Clone)]
@@ -186,6 +188,7 @@ fn parse_schema(file: &str, text: &str) -> Result<Schema, String> {
     // xmldsig is needed for its element names (they take part in the document grammar's event
     // codes); of its types only those in `XMLDSIG_MODELLED` are modelled.
     let foreign = target_ns == XMLDSIG;
+    INLINE.with(|v| v.borrow_mut().clear());
     for node in children(root) {
         match tag(node) {
             "import" => schema.imports.push(node.attribute("namespace").unwrap_or("").to_string()),
@@ -226,6 +229,7 @@ fn parse_schema(file: &str, text: &str) -> Result<Schema, String> {
             other => return Err(format!("unsupported top-level <{other}>")),
         }
     }
+    schema.simple.extend(INLINE.with(|v| std::mem::take(&mut *v.borrow_mut())));
     Ok(schema)
 }
 
@@ -243,7 +247,8 @@ fn parse_simple(node: roxmltree::Node, target_ns: &str) -> Result<SimpleDef, Str
                         "maxInclusive" => def.max_inclusive = Some(v.parse().map_err(|_| format!("bad {v}"))?),
                         "length" => def.length = Some(v.parse().map_err(|_| format!("bad {v}"))?),
                         "maxLength" => def.max_length = Some(v.parse().map_err(|_| format!("bad {v}"))?),
-                        "annotation" => {}
+                        // Facets that do not change the encoding.
+                        "annotation" | "minLength" | "pattern" | "whiteSpace" => {}
                         other => return Err(format!("unsupported facet <{other}>")),
                     }
                 }
@@ -276,7 +281,18 @@ fn parse_content(node: roxmltree::Node, target_ns: &str, def: &mut ComplexDef) -
                     }
                 }
             }
-            "simpleContent" => def.simple_content = true,
+            "simpleContent" => {
+                def.simple_content = true;
+                for e in children(c) {
+                    match tag(e) {
+                        "extension" => {
+                            def.simple_base = Some(qname(e, e.attribute("base").ok_or("extension without base")?, target_ns)?);
+                            parse_content(e, target_ns, def)?;
+                        }
+                        other => return Err(format!("unsupported simpleContent <{other}>")),
+                    }
+                }
+            }
             "sequence" => {
                 for p in children(c) {
                     def.particles.push(parse_particle(p, target_ns)?);
@@ -294,13 +310,30 @@ fn parse_content(node: roxmltree::Node, target_ns: &str, def: &mut ComplexDef) -
     Ok(())
 }
 
+thread_local! {
+    /// Simple types declared inside an element, named for the schema being parsed.
+    static INLINE: std::cell::RefCell<Vec<(String, SimpleDef)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 fn parse_elem(p: roxmltree::Node, target_ns: &str) -> Result<ElemParticle, String> {
     let (min, max) = (attr_u32(p, "minOccurs", 1)?, attr_u32(p, "maxOccurs", 1)?);
     if let Some(r) = p.attribute("ref") {
         return Ok(ElemParticle { name: qname(p, r, target_ns)?, ty: None, is_ref: true, min, max });
     }
     let name = p.attribute("name").ok_or("element without name or ref")?;
-    let ty = p.attribute("type").ok_or_else(|| format!("element {name} has no type (inline types unsupported)"))?;
+    if p.attribute("type").is_none() {
+        // A simple type in place becomes a named one, `<element>Inline<n>`.
+        let inline = children(p).find(|c| tag(*c) == "simpleType").ok_or_else(|| format!("element {name} has no type"))?;
+        let def = parse_simple(inline, target_ns)?;
+        let tname = INLINE.with(|v| {
+            let mut v = v.borrow_mut();
+            let tname = format!("{name}Inline{}", v.len());
+            v.push((tname.clone(), def));
+            tname
+        });
+        return Ok(ElemParticle { name: QName::new(target_ns, name), ty: Some(QName::new(target_ns, &tname)), is_ref: false, min, max });
+    }
+    let ty = p.attribute("type").unwrap();
     Ok(ElemParticle { name: QName::new(target_ns, name), ty: Some(qname(p, ty, target_ns)?), is_ref: false, min, max })
 }
 

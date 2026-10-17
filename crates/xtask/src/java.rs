@@ -70,6 +70,10 @@ fn java_schemas() -> Result<PathBuf, String> {
 </xs:schema>
 "#;
     std::fs::write(din.join("all.xsd"), all).map_err(|e| e.to_string())?;
+    let iso2 = to.join("iso15118-2");
+    copy_schemas(&root.join("data/schemas/iso15118-2"), &iso2)?;
+    let all2 = all.replace("urn:din:70121:2012:", "urn:iso:15118:2:2013:");
+    std::fs::write(iso2.join("all.xsd"), all2).map_err(|e| e.to_string())?;
     Ok(to)
 }
 

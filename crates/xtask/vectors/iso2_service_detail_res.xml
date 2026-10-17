@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<V2G_Message xmlns="urn:iso:15118:2:2013:MsgDef" xmlns:h="urn:iso:15118:2:2013:MsgHeader" xmlns:b="urn:iso:15118:2:2013:MsgBody" xmlns:t="urn:iso:15118:2:2013:MsgDataTypes" xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+  <Header>
+    <h:SessionID>A1B2C3D4E5F60718</h:SessionID>
+  </Header>
+  <Body>
+<b:ServiceDetailRes><b:ResponseCode>OK</b:ResponseCode><b:ServiceID>2</b:ServiceID><b:ServiceParameterList><t:ParameterSet><t:ParameterSetID>1</t:ParameterSetID><t:Parameter t:Name="Protocol"><t:stringValue>http</t:stringValue></t:Parameter><t:Parameter t:Name="Port"><t:shortValue>80</t:shortValue></t:Parameter></t:ParameterSet></b:ServiceParameterList></b:ServiceDetailRes>
+  </Body>
+</V2G_Message>
