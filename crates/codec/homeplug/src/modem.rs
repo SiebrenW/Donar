@@ -47,6 +47,10 @@ pub const SET_KEY_CNF: u16 = 0x6009;
 pub const VS_SW_VER_REQ: u16 = 0xA000;
 pub const VS_SW_VER_CNF: u16 = 0xA001;
 
+/// Vendor message: network information, request and confirmation.
+pub const VS_NW_INFO_REQ: u16 = 0xA038;
+pub const VS_NW_INFO_CNF: u16 = 0xA039;
+
 /// `KeyType` of CM_SET_KEY: the network membership key.
 const KEY_TYPE_NMK: u8 = 0x01;
 /// `PID` of CM_SET_KEY.REQ: the key is given by the host (the modem does not run the key exchange).
@@ -122,6 +126,73 @@ pub fn parse_sw_ver_cnf(frame: &[u8]) -> Option<SwVer<'_>> {
     let text = rest.get(..usize::from(length))?;
     let text = text.split(|b| *b == 0).next().unwrap_or(&[]);
     Some(SwVer { status, device, version: core::str::from_utf8(text).ok()? })
+}
+
+/// VS_NW_INFO.REQ: asks which networks the modem belongs to. Management message version 1 (with
+/// the fragmentation information), the OUI and nothing else.
+pub fn nw_info_req(src: Mac, out: &mut [u8]) -> Option<usize> {
+    frame(LOCAL_DEVICE, src, 0x01, VS_NW_INFO_REQ, &QCA_OUI, out)
+}
+
+/// The first network of a VS_NW_INFO.CNF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Network {
+    pub nid: [u8; 7],
+    /// The short network id the coordinator assigned.
+    pub snid: u8,
+    /// The terminal equipment identifier of this modem in the network.
+    pub tei: u8,
+    /// Role of this modem: 2 for the central coordinator (alone, or leading the network), 0 for a
+    /// station that has joined.
+    pub role: u8,
+    /// The address of the central coordinator.
+    pub cco: Mac,
+    pub cco_tei: u8,
+}
+
+/// What a modem reports about its networks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NwInfo {
+    /// The address the modem answered from: its own.
+    pub modem: Mac,
+    /// How many networks the modem belongs to.
+    pub networks: u8,
+    /// The first of them, if any.
+    pub first: Option<Network>,
+}
+
+impl NwInfo {
+    /// Whether the modem has joined the network `nid` that someone else coordinates: it is no longer
+    /// alone in the network it formed when it was given the key.
+    pub fn joined(&self, nid: [u8; 7]) -> bool {
+        self.first.is_some_and(|n| n.nid == nid && n.cco != self.modem)
+    }
+}
+
+/// VS_NW_INFO.CNF of a QCA7005, read as far as it was checked on one: five octets of header
+/// (status, length), the number of networks, then per network the network id, two octets that
+/// stayed zero, the short network id, the TEI, four zero octets, the role, the coordinator's
+/// address and TEI, and the stations (a modem alone in its network lists none). The network id,
+/// the coordinator and the TEI followed the key the modem was given (the lone coordinator is the
+/// modem itself); the layout of a network with other stations was not seen on hardware, which is
+/// why only the first network is read.
+pub fn parse_nw_info_cnf(frame: &[u8]) -> Option<NwInfo> {
+    let body = body_vendor(frame, VS_NW_INFO_CNF)?;
+    let networks = *body.get(5)?;
+    let first = if networks == 0 {
+        None
+    } else {
+        let n = body.get(6..6 + 23)?;
+        Some(Network {
+            nid: n[0..7].try_into().ok()?,
+            snid: n[9],
+            tei: n[10],
+            role: n[15],
+            cco: n[16..22].try_into().ok()?,
+            cco_tei: n[22],
+        })
+    };
+    Some(NwInfo { modem: frame.get(6..12)?.try_into().ok()?, networks, first })
 }
 
 /// The payload of a standard message of type `mmtype` (after the header).
@@ -207,6 +278,39 @@ mod tests {
         frame[19] = 0;
         assert_eq!(parse_set_key_cnf(&frame), Some(0));
         assert_eq!(parse_set_key_cnf(&frame[..10]), None);
+    }
+
+    #[test]
+    fn the_network_information_of_a_lone_modem_is_read() {
+        // Captured from the QCA7005: it holds the key of the Qualcomm reference (network id
+        // b0f2e695666b03) and is its own coordinator; and with another key.
+        let mut frame = hex("0001 8705 f505 0001 8705 f506 88e1 01 39a0 0000 00b052 0000 2200 00 01 b0f2e695666b03 0000 0e 01 00000000 02 000187 05f506 01");
+        frame.resize(60, 0);
+        let info = parse_nw_info_cnf(&frame).unwrap();
+        let nid = [0xB0, 0xF2, 0xE6, 0x95, 0x66, 0x6B, 0x03];
+        assert_eq!((info.networks, info.modem), (1, [0x00, 0x01, 0x87, 0x05, 0xF5, 0x06]));
+        let n = info.first.unwrap();
+        assert_eq!((n.nid, n.snid, n.tei, n.role, n.cco, n.cco_tei), (nid, 0x0E, 1, 2, info.modem, 1));
+        assert!(!info.joined(nid), "its own coordinator: alone");
+        // The same network led by another modem: joined; another network: not.
+        let mut other = info;
+        other.first.as_mut().unwrap().cco = [0x00, 0x01, 0x87, 0x05, 0xF5, 0x99];
+        assert!(other.joined(nid));
+        assert!(!other.joined([1; 7]));
+        // No network at all.
+        frame[19 + 3 + 5] = 0;
+        let none = parse_nw_info_cnf(&frame).unwrap();
+        assert_eq!((none.networks, none.first), (0, None));
+        assert_eq!(parse_nw_info_cnf(&frame[..20]), None);
+    }
+
+    #[test]
+    fn the_network_information_request_has_the_fragmentation_information() {
+        let mut out = [0u8; FRAME_MAX];
+        let n = nw_info_req([0x00, 0x01, 0x87, 0x05, 0xF5, 0x05], &mut out).unwrap();
+        // As plctool -m sent it: version 1, type 0xA038, FMI, OUI, zeros.
+        assert_eq!(&out[..22], &hex("00b052000001 000187 05f505 88e1 01 38a0 0000 00b052")[..]);
+        assert_eq!(n, MIN_FRAME);
     }
 
     fn hex(s: &str) -> std::vec::Vec<u8> {

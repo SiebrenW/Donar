@@ -22,6 +22,10 @@ use std::process::ExitCode;
 
 use evcc_linux::slac::{Modem, QcaModem};
 
+fn to_hex(b: &[u8]) -> String {
+    b.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 pub fn run() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(interface) = args.first() else {
@@ -42,6 +46,23 @@ pub fn run() -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
+    match modem.network_info() {
+        Ok(info) => match info.first {
+            Some(n) => println!(
+                "{interface}: {} network(s); first: id {}, short id {}, tei {}, role {}, coordinator {} (tei {}); {}",
+                info.networks,
+                to_hex(&n.nid),
+                n.snid,
+                n.tei,
+                n.role,
+                to_hex(&n.cco),
+                n.cco_tei,
+                if n.cco == info.modem { "alone: coordinates its own network" } else { "joined a network of another coordinator" }
+            ),
+            None => println!("{interface}: no network"),
+        },
+        Err(e) => eprintln!("{interface}: network information: {e}"),
+    }
     if let (Some("--set-key"), Some(hex)) = (args.get(1).map(String::as_str), args.get(2)) {
         let Some(nmk) = parse_key(hex) else {
             eprintln!("the key is 32 hexadecimal digits");
@@ -49,7 +70,7 @@ pub fn run() -> ExitCode {
         };
         let nid = homeplug::modem::network_id(&nmk);
         match modem.set_key(nid, nmk) {
-            Ok(()) => println!("{interface}: key accepted, network id {}", nid.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+            Ok(()) => println!("{interface}: key accepted, network id {}", to_hex(&nid)),
             Err(e) => {
                 eprintln!("{interface}: {e}");
                 return ExitCode::FAILURE;

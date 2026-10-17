@@ -260,14 +260,17 @@ pub fn run_with_pilot(
 /// CM_SET_KEY.REQ sent to the local device address, and reports its software version to a vendor
 /// message ([`homeplug::modem`]).
 ///
-/// The link check does not ask the modem: it reports the link as up a settle time after the key
-/// was set (the modem needs a moment to form the network with the charger's; the discovery that
-/// follows repeats its requests, so a link that is up a little later only costs a repeat).
+/// The link check asks the modem (VS_NW_INFO): the link is up when the modem has joined the
+/// network of the key it was given and someone else coordinates it. A modem that does not answer
+/// that message gets the fallback of a settle time after the key (the modem needs a moment to
+/// form the network with the charger's; the discovery that follows repeats its requests, so a
+/// link that is up a little later only costs a repeat).
 pub struct QcaModem {
     socket: PacketSocket,
     settle: Duration,
     reply_timeout: Duration,
-    keyed_at: Option<Instant>,
+    /// When the modem was given its key, and the network id of that key.
+    keyed: Option<(Instant, [u8; 7])>,
 }
 
 impl QcaModem {
@@ -279,7 +282,13 @@ impl QcaModem {
     }
 
     pub fn new(socket: PacketSocket) -> Self {
-        Self { socket, settle: Self::SETTLE, reply_timeout: Duration::from_millis(1000), keyed_at: None }
+        Self { socket, settle: Self::SETTLE, reply_timeout: Duration::from_millis(1000), keyed: None }
+    }
+
+    /// How long to wait for the modem's answer to a request.
+    pub fn with_reply_timeout(mut self, timeout: Duration) -> Self {
+        self.reply_timeout = timeout;
+        self
     }
 
     pub fn with_settle(mut self, settle: Duration) -> Self {
@@ -298,6 +307,14 @@ impl QcaModem {
             (0, version) => Ok(version),
             (status, _) => Err(io::Error::other(format!("the modem answered the version request with status {status}"))),
         }
+    }
+
+    /// The networks the modem belongs to.
+    pub fn network_info(&self) -> io::Result<homeplug::modem::NwInfo> {
+        let mut out = [0u8; homeplug::modem::FRAME_MAX];
+        let n = homeplug::modem::nw_info_req(self.socket.mac(), &mut out).ok_or_else(|| io::Error::from(ErrorKind::InvalidInput))?;
+        self.socket.send(&out[..n])?;
+        self.wait_for(homeplug::modem::parse_nw_info_cnf)
     }
 
     /// Frames until `parse` accepts one or the reply timeout passes.
@@ -327,11 +344,17 @@ impl Modem for QcaModem {
         if result != homeplug::modem::SET_KEY_DONE {
             return Err(io::Error::other(format!("the modem refused the key (result {result})")));
         }
-        self.keyed_at = Some(Instant::now());
+        self.keyed = Some((Instant::now(), nid));
         Ok(())
     }
 
     fn link_up(&mut self) -> io::Result<bool> {
-        Ok(self.keyed_at.is_some_and(|at| at.elapsed() >= self.settle))
+        let Some((at, nid)) = self.keyed else { return Ok(false) };
+        match self.network_info() {
+            Ok(info) => Ok(info.joined(nid)),
+            // A modem that does not know the message: the settle time has to do.
+            Err(e) if e.kind() == ErrorKind::TimedOut => Ok(at.elapsed() >= self.settle),
+            Err(e) => Err(e),
+        }
     }
 }
