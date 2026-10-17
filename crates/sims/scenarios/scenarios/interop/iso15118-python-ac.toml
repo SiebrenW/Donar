@@ -1,0 +1,15 @@
+name = "interop-iso15118-python-ac"
+description = "The simulated vehicle selects AC against the SECC of the Python iso15118 library (0.31.2): ISO 15118-20 AC, three phases, Dynamic control mode, EIM, plain TCP."
+timeout_s = 60
+
+[secc]
+kind = "iso15118-python"
+protocols = "ISO_15118_20_AC"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+ac = true
+
+[expect]
+evcc_log = ["session: Ended(Completed)"]

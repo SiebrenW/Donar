@@ -1,0 +1,19 @@
+name = "ac-bpt"
+description = "A bidirectional ISO 15118-20 AC session over plain TCP: the vehicle selects the service AC_BPT, and parameter discovery and the charge loop use the BPT variants."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+ac = true
+bpt = true
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)"]
+secc_log = ["service 5 selected", "session: Stopped"]

@@ -178,7 +178,10 @@
 <script>
 "use strict";
 const $ = (tag, props = {}, ...kids) => {
-  const e = Object.assign(document.createElement(tag), props);
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k.startsWith("data-")) e.setAttribute(k, v); else e[k] = v;
+  }
   for (const k of kids) e.append(k);
   return e;
 };
@@ -468,13 +471,13 @@ const simCmd = (target, cmd) => simPost("/api/sim/cmd", { target, cmd });
 const fmt = v => (v == null ? "–" : Number.isInteger(v) ? String(v) : (Math.round(v * 100) / 100).toString());
 
 // Names of settings are the keys of the settings files; the page shows words and units.
-const UNITS = [["_percent_per_min", "%/min"], ["_wh", "Wh"], ["_ms", "ms"], ["_w", "W"], ["_a", "A"], ["_v", "V"], ["_s", "s"], ["_soc", "%"]];
+const UNITS = [["_percent_per_min", "%/min"], ["_hz", "Hz"], ["_wh", "Wh"], ["_ms", "ms"], ["_w", "W"], ["_a", "A"], ["_v", "V"], ["_s", "s"], ["_soc", "%"]];
 function pretty(name) {
   let base = name, unit = "";
   for (const [suffix, u] of UNITS) {
     if (name.endsWith(suffix)) { base = name.slice(0, -suffix.length) + (suffix === "_soc" ? " SoC" : ""); unit = u; break; }
   }
-  const words = base.replace(/_/g, " ").replace(/\bsoc\b/i, "SoC");
+  const words = base.replace(/_/g, " ").replace(/\bsoc\b/i, "SoC").replace(/^ac\b/, "AC");
   return { label: words.charAt(0).toUpperCase() + words.slice(1), unit };
 }
 
@@ -486,13 +489,18 @@ function limitsTable(title, root, owner, state, defaults, usedKey) {
   table.append($("tr", {}, $("th", { textContent: "" }), $("th", { textContent: "next session" }), $("th", { className: "used", textContent: "in use" })));
   const base = getPath(defaults, ["limits"]) ?? {};
   const groups = new Set();
-  const names = Object.keys(props).sort((a, b) => a.includes("discharge") - b.includes("discharge"));
+  // DC limits first, then the AC ones (per line); each kind charging, then discharging.
+  const kind = name => (name.startsWith("ac_") ? 2 : 0) + (name.includes("discharge") ? 1 : 0);
+  const names = Object.keys(props).sort((a, b) => kind(a) - kind(b));
+  const GROUPS = ["Charging", "Discharging (bidirectional)", "AC charging, per line", "AC discharging, per line (bidirectional)"];
+  // What a row needs to be shown (see applyProtocol): the bidirectional service, the AC service, the DC ones.
+  const NEEDS = ["dc", "dc bpt", "ac", "ac bpt"];
   for (const name of names) {
     const bpt = name.includes("discharge");
-    const group = bpt ? "Discharging (bidirectional)" : "Charging";
+    const group = GROUPS[kind(name)];
     if (!groups.has(group)) {
       groups.add(group);
-      table.append($("tr", { className: "group" + (bpt ? " bpt-only" : "") }, $("td", { colSpan: 3, textContent: group })));
+      table.append($("tr", { className: "group", "data-need": NEEDS[kind(name)] }, $("td", { colSpan: 3, textContent: group })));
     }
     const input = $("input", { type: "number", step: "any", placeholder: base[name] == null ? "unset" : String(base[name]) });
     const cur = getPath(state, ["limits", name]);
@@ -510,7 +518,7 @@ function limitsTable(title, root, owner, state, defaults, usedKey) {
     };
     const { label, unit } = pretty(name);
     const doc = strip(root, props[name]).description || props[name].description || "";
-    table.append($("tr", { className: bpt ? "bpt-only" : "" },
+    table.append($("tr", { "data-need": NEEDS[kind(name)] },
       $("td", { className: "name" }, $("span", { className: doc ? "hint" : "", title: doc, textContent: label }), $("span", { className: "u", textContent: unit })),
       $("td", {}, input), $("td", { className: "used" }, used)));
   }
@@ -831,17 +839,19 @@ function updateFaults() {
 
 // The protocols the vehicle can offer; the charger speaks all of them.
 const PROTOCOLS = [
-  { id: "iso20", label: "ISO 15118-20", set: { protocol: "iso15118-20", bpt: false } },
-  { id: "iso20bpt", label: "ISO 15118-20 V2G", set: { protocol: "iso15118-20", bpt: true } },
+  { id: "iso20", label: "ISO 15118-20", set: { protocol: "iso15118-20" } },
   { id: "iso2", label: "ISO 15118-2", set: { protocol: "iso15118-2", connector: "dual2" } },
   { id: "din", label: "DIN SPEC 70121", set: { protocol: "din70121", connector: "extended" } },
 ];
-const currentProtocol = () => (sim.evcc.protocol ?? "iso15118-20") === "iso15118-20" ? (sim.evcc.bpt ? "iso20bpt" : "iso20") : (sim.evcc.protocol === "iso15118-2" ? "iso2" : "din");
+const currentProtocol = () => (sim.evcc.protocol ?? "iso15118-20") === "iso15118-20" ? "iso20" : (sim.evcc.protocol === "iso15118-2" ? "iso2" : "din");
+// ISO 15118-20 charges over DC or AC, and may be bidirectional (V2G).
+const energyKind = () => ({ ac: currentProtocol() === "iso20" && !!sim.evcc.ac, bpt: currentProtocol() === "iso20" && !!sim.evcc.bpt });
 
 // What a button can set up with one click. Each starts from the page's defaults.
 const BASE_EVCC = { time_scale: 60, stop_at_target_soc: true, stop_after: 0, charge_loop_interval_ms: 500, log: "debug" };
 const PRESETS = [
   { name: "Fast DC charge", title: "ISO 15118-20, from 20 % to 80 %", evcc: { start_soc: 20, limits: { target_soc: 80 } } },
+  { name: "AC, ISO 15118-20", title: "ISO 15118-20 with an AC charger, three phases", evcc: { ac: true, start_soc: 30, limits: { target_soc: 80 } } },
   { name: "Give back, then charge", title: "bidirectional: from 80 % down to 50 %, then back up to 80 %", evcc: { bpt: true, start_soc: 80, limits: { target_soc: 80, discharge_to_soc: 50 } } },
   { name: "AC, three phases", title: "ISO 15118-2 with an AC charger", evcc: { protocol: "iso15118-2", connector: "dual2", start_soc: 30, iso2: { mode: "ac3" } } },
   { name: "DIN SPEC 70121", title: "the older DC protocol", evcc: { protocol: "din70121", connector: "extended", start_soc: 20 } },
@@ -897,13 +907,24 @@ function buildSim() {
     b.onclick = () => {
       for (const [k, v] of Object.entries(p.set)) setPath(sim.evcc, [k], v);
       // The other protocols' options go back to what they were.
-      if (p.set.bpt === undefined) delete sim.evcc.bpt;
+      if (p.id !== "iso20") { delete sim.evcc.bpt; delete sim.evcc.ac; }
       if (p.set.protocol !== "iso15118-2") delete sim.evcc.iso2;
-      if (p.id === "iso20" || p.id === "iso20bpt") delete sim.evcc.connector;
+      if (p.id === "iso20") delete sim.evcc.connector;
       buildSim();
     };
     protocol.append(b);
   }
+
+  // ISO 15118-20 only: DC or AC, and bidirectional.
+  const energy = $("div", { className: "seg iso20-only", id: "sim-energy", role: "group", "aria-label": "energy transfer" });
+  for (const [id, label, ac] of [["dc", "DC", false], ["ac", "AC", true]]) {
+    const b = $("button", { type: "button", textContent: label, id: `energy-${id}` });
+    b.onclick = () => { if (ac) sim.evcc.ac = true; else delete sim.evcc.ac; buildSim(); };
+    energy.append(b);
+  }
+  const v2g = $("input", { type: "checkbox", id: "sim-v2g", checked: !!sim.evcc.bpt });
+  v2g.onchange = () => { if (v2g.checked) sim.evcc.bpt = true; else delete sim.evcc.bpt; buildSim(); };
+  const v2gLabel = $("label", { className: "inline iso20-only", title: "bidirectional power transfer: the car can give energy back" }, v2g, "V2G");
 
   const primary = $("button", { id: "primary", className: "big", type: "button" });
   primary.onclick = () => (sim.view.running ? simCmd("ev", { cmd: "advance", to: "ended" }) : startSession(false));
@@ -959,7 +980,7 @@ function buildSim() {
 
   view.replaceChildren(
     $("div", { className: "bar" },
-      protocol,
+      protocol, energy, v2gLabel,
       $("div", { className: "row tight", style: "margin:0" }, checkbox("sim-tls", "tls", "TLS", "encrypt the connection"), checkbox("sim-slac", "slac", "SLAC", "match the vehicle to the charger over the powerline first"), $("label", { className: "inline" }, "Certificates", pki)),
       $("span", { className: "spacer" }),
       $("span", { id: "sim-status", className: "pill" }), primary, stepStart, close),
@@ -989,17 +1010,30 @@ function buildSim() {
 // have no schedule exchange.
 function applyProtocol() {
   const id = currentProtocol();
-  const bpt = id === "iso20bpt";
+  const { ac, bpt } = energyKind();
   document.getElementById("phase-schedule_exchange").hidden = id === "iso2" || id === "din";
-  document.querySelectorAll(".iso-only").forEach(e => e.hidden = !(id === "iso20" || bpt));
+  // AC has no cable check or pre-charge, and nothing to weld.
+  for (const phase of ["cable_check", "pre_charge"]) document.getElementById(`phase-${phase}`).hidden = ac;
+  document.getElementById("phase-stop").textContent = ac ? "Stop" : "Stop and welding";
+  document.querySelectorAll(".iso-only").forEach(e => e.hidden = id !== "iso20");
+  document.querySelectorAll(".iso20-only").forEach(e => e.hidden = id !== "iso20");
   document.querySelectorAll(".din-only").forEach(e => e.hidden = id !== "din");
   document.querySelectorAll(".iso2-only").forEach(e => e.hidden = id !== "iso2");
-  document.querySelectorAll(".bpt-only").forEach(e => e.hidden = !bpt);
+  // Rows say what they need: the AC service, the bidirectional one, or the DC ones.
+  const have = new Set([ac ? "ac" : "dc"]);
+  if (bpt) have.add("bpt");
+  document.querySelectorAll("[data-need]").forEach(e => { e.hidden = !e.dataset.need.split(" ").every(n => have.has(n)); });
   for (const p of PROTOCOLS) {
     const b = document.getElementById(`proto-${p.id}`);
     b.classList.toggle("on", p.id === id);
     b.setAttribute("aria-pressed", p.id === id);
   }
+  for (const [kind, on] of [["dc", !ac], ["ac", ac]]) {
+    const b = document.getElementById(`energy-${kind}`);
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-pressed", on);
+  }
+  document.getElementById("sim-v2g").checked = bpt;
 }
 
 function applyView() {
@@ -1028,7 +1062,7 @@ function applyView() {
   $id("step-start").disabled = busy;
   $id("sim-close").disabled = !v.open || v.opening;
   for (const id of ["sim-tls", "sim-slac", "sim-pki"]) $id(id).disabled = v.open || v.opening;
-  for (const b of $id("sim-protocol").children) b.disabled = !!v.running;
+  for (const b of [...$id("sim-protocol").children, ...$id("sim-energy").children, $id("sim-v2g")]) b.disabled = !!v.running;
   $id("sim-held").textContent = !ev ? "" : ev.held ? `held before ${phaseName(ev.phase)}: click a phase to go on` : !v.running ? "" : ev.free_run ? "" : ev.stay && ev.phase === ev.target ? `staying in ${phaseName(ev.phase)}` : `running ${ev.stay ? "into" : "up to"} ${phaseName(ev.target)}`;
   if (document.activeElement !== $id("real-timers")) $id("real-timers").checked = !!ev?.real_timers;
   for (const [target, side] of [["ev", ev], ["evse", evse]]) {
@@ -1049,7 +1083,11 @@ function applyView() {
   put("v-power", unit(Math.abs(kw).toFixed(1), "kW"));
   $id("s-power").textContent = mode === "charging" ? "into the battery" : mode === "discharging" ? "out of the battery" : live ? "no energy flowing" : "";
   $id("tile-power").className = `tile hero ${mode}`;
-  const span = Math.max(1, (kw < 0 ? evse?.limits?.max_discharge_power_w ?? 11000 : evse?.limits?.max_charge_power_w ?? 150000) / 1000);
+  const lines = energyKind().ac ? evse?.limits?.ac_phases ?? 3 : 1;
+  const maxW = energyKind().ac
+    ? lines * (kw < 0 ? evse?.limits?.ac_max_discharge_power_w ?? 3680 : evse?.limits?.ac_max_charge_power_w ?? 3680)
+    : kw < 0 ? evse?.limits?.max_discharge_power_w ?? 11000 : evse?.limits?.max_charge_power_w ?? 150000;
+  const span = Math.max(1, maxW / 1000);
   const share = Math.max(-1, Math.min(1, kw / span)) * 50;
   $id("flow-bar").style.left = `${50 + Math.min(0, share)}%`;
   $id("flow-bar").style.width = `${Math.abs(share)}%`;

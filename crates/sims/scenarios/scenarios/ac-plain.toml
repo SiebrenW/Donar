@@ -1,0 +1,18 @@
+name = "ac-plain"
+description = "An ISO 15118-20 AC session over plain TCP: the vehicle offers the AC schema and selects the service AC; after the schedule exchange the power delivery starts at once (no cable check, pre-charge or welding detection) and the charge loop carries the target active power per line."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+ac = true
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)"]
+secc_log = ["service 1 selected", "tx AC_ChargeLoopRes OK", "session: Stopped"]

@@ -274,6 +274,32 @@ mod simulation {
         post(&server, "/api/sim/close", json!({}));
     }
 
+    /// An AC BPT session discharges the battery down to a floor, then charges to the target: the
+    /// charger reports a negative current first, a positive one after.
+    #[test]
+    fn an_ac_bpt_session_discharges_then_charges() {
+        let server = start();
+        post(&server, "/api/sim/open", json!({}));
+        wait(&server, "the simulation to open", |v| v["open"] == true && v["evse"].is_object());
+        let vehicle = json!({ "ac": true, "bpt": true, "charge_loop_interval_ms": 30, "poll_interval_ms": 10, "stop_after": 0, "time_scale": 3000, "start_soc": 60,
+            "stop_at_target_soc": true, "limits": { "target_soc": 62, "discharge_to_soc": 58 } });
+        post(&server, "/api/sim/session", json!({ "evcc": vehicle, "secc": {} }));
+        wait(&server, "the hold before setup", held_at("setup"));
+        advance(&server, "charge_loop");
+        wait(&server, "the hold before the charge loop", held_at("charge_loop"));
+        post(&server, "/api/sim/cmd", json!({ "target": "ev", "cmd": { "cmd": "advance", "to": "charge_loop", "stay": true } }));
+        let v = wait(&server, "a discharge", |v| v["ev"]["evse_reports"]["current"].as_f64().is_some_and(|c| c < -1.0));
+        assert!(v["ev"]["model_soc"].as_f64().unwrap() <= 60.0, "{v}");
+        // The floor is reached, then the car charges until its target and the session ends.
+        wait(&server, "the charge after the discharge", |v| v["ev"]["evse_reports"]["current"].as_f64().is_some_and(|c| c > 1.0));
+        let v = wait(&server, "the vehicle to stop at its target", |v| v["ev"]["phase"] == "stop");
+        advance(&server, "ended");
+        let v = wait(&server, "the session to end", |v| v["running"] == false);
+        assert_eq!(v["exit_code"], 0, "{v}");
+        assert!(v["ev"]["model_soc"].as_f64().unwrap() >= 62.0, "{v}");
+        post(&server, "/api/sim/close", json!({}));
+    }
+
     /// Reads the event stream for a while and returns what came.
     fn listen(server: &Server, milliseconds: u64) -> String {
         let mut stream = TcpStream::connect(&server.addr).unwrap();
