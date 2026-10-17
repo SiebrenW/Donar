@@ -276,6 +276,9 @@ pub struct Pnc {
 pub struct Config {
     /// Plug & Charge.
     pub pnc: Pnc,
+    /// Receive but do not answer anything (to see the vehicle time out). A test platform can
+    /// switch it on and off during a session.
+    pub silent: bool,
     /// The limits offered to the vehicle.
     pub limits: Limits,
     pub evse_id: String,
@@ -370,6 +373,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             pnc: Pnc::default(),
+            silent: false,
             limits: Limits::default(),
             evse_id: "DE*SIM*E0001".into(),
             session_id: [0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18],

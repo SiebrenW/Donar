@@ -8,7 +8,7 @@ use std::time::Instant;
 use evcc_core::session::{ChargeLoopStatus, State};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sim_control::{Endpoint, Metric};
+use sim_control::{Endpoint, EventLog, Metric};
 
 use crate::settings::Limits;
 
@@ -84,11 +84,21 @@ struct Inner {
     stop_asked: bool,
     closed: bool,
     result: Option<String>,
+    action: Option<Action>,
+}
+
+/// Something the vehicle does in the charge loop when asked, once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    Pause,
+    RenegotiateServices,
+    RenegotiateSchedule,
 }
 
 pub struct EvLive {
     inner: Mutex<Inner>,
     changed: Condvar,
+    events: EventLog,
 }
 
 impl Inner {
@@ -123,9 +133,34 @@ impl EvLive {
                 stop_asked: false,
                 closed: false,
                 result: None,
+                action: None,
             }),
             changed: Condvar::new(),
+            events: EventLog::new(4000),
         })
+    }
+
+    /// What the vehicle was asked to do in the charge loop, once.
+    pub fn take_action(&self) -> Option<Action> {
+        self.inner.lock().unwrap().action.take()
+    }
+
+    /// Notes a record of the session for the timeline of the test platform.
+    pub fn record(&self, record: &evcc_core::log::Record<'_>) {
+        use evcc_core::log::Record;
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        let phase = self.inner.lock().unwrap().phase;
+        let mut event = match record {
+            Record::MsgTx { msg } => json!({ "src": "ev", "t": now_ms, "kind": "tx", "msg": format!("{msg:?}") }),
+            Record::MsgRx { msg } => json!({ "src": "ev", "t": now_ms, "kind": "rx", "msg": format!("{msg:?}") }),
+            Record::Response { msg, code } => json!({ "src": "ev", "t": now_ms, "kind": "response", "msg": format!("{msg:?}"), "code": code.xml_name() }),
+            Record::StateChange { from, to } => json!({ "src": "ev", "t": now_ms, "kind": "state", "text": format!("{from:?} -> {to:?}") }),
+            // Raw payloads are for the log.
+            Record::RxPayload { .. } => return,
+            other => json!({ "src": "ev", "t": now_ms, "kind": "note", "text": format!("{other:?}") }),
+        };
+        event["phase"] = json!(phase);
+        self.events.push(event);
     }
 
     pub fn battery_voltage(&self) -> f64 {
@@ -220,6 +255,10 @@ impl Endpoint for EvLive {
         })
     }
 
+    fn events(&self, cursor: u64) -> (Vec<Value>, u64) {
+        self.events.since(cursor)
+    }
+
     fn command(&self, cmd: Value) -> Result<(), String> {
         let mut g = self.inner.lock().unwrap();
         match cmd.get("cmd").and_then(Value::as_str) {
@@ -242,6 +281,15 @@ impl Endpoint for EvLive {
                 let slot = limits.get_mut(key).ok_or_else(|| format!("no such limit: {key}"))?;
                 *slot = cmd.get("value").cloned().unwrap_or(Value::Null);
                 g.limits = serde_json::from_value(limits).map_err(|e| format!("{key}: {e}"))?;
+            }
+            // Something to do in the charge loop, once.
+            Some("event") => {
+                g.action = Some(match cmd.get("name").and_then(Value::as_str) {
+                    Some("pause") => Action::Pause,
+                    Some("renegotiate_services") => Action::RenegotiateServices,
+                    Some("renegotiate_schedule") => Action::RenegotiateSchedule,
+                    other => return Err(format!("no such event: {other:?}")),
+                });
             }
             Some("real_timers") => g.real_timers = cmd.get("on").and_then(Value::as_bool).ok_or("on: a boolean")?,
             Some("measure") => {

@@ -254,7 +254,7 @@ async fn sim_close(State(app): Shared) -> Response {
 async fn sim_events(State(app): Shared) -> Response {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(64);
     tokio::spawn(async move {
-        let (mut seen, mut follower, mut watching) = (0, None, None);
+        let (mut seen, mut follower, mut watching, mut cursor) = (0, None, None, 0);
         loop {
             let version = app.sim.version();
             if version != seen {
@@ -268,6 +268,13 @@ async fn sim_events(State(app): Shared) -> Response {
                 }
                 let event = Event::default().event("state").data(serde_json::to_string(&view).unwrap_or_default());
                 if tx.send(Ok(event)).await.is_err() {
+                    return;
+                }
+            }
+            let (events, next) = app.sim.events_since(cursor);
+            cursor = next;
+            for event in events {
+                if tx.send(Ok(Event::default().event("msg").data(event.to_string()))).await.is_err() {
                     return;
                 }
             }

@@ -17,7 +17,7 @@ use evcc_linux::{Outcome, Transport};
 mod live;
 mod settings;
 
-pub use live::{EvLive, Phase};
+pub use live::{Action, EvLive, Phase};
 pub use settings::{CertificateChecks, Connector, Contract, Limits, LogLevel, Settings, SlacValidation, Tls, TlsVersions};
 
 pub struct SimulatedEv {
@@ -201,6 +201,13 @@ pub fn run_car_live(
             loops += 1;
             if live.as_ref().is_some_and(|l| l.charge_loop(status)) || Some(loops) == behaviour.stop_after {
                 Some(Event::StopRequested)
+            } else if let Some(action) = live.as_ref().and_then(|l| l.take_action()) {
+                // Asked for from the test platform (the page), once.
+                Some(match action {
+                    Action::Pause => Event::PauseRequested,
+                    Action::RenegotiateServices => Event::RenegotiateServices,
+                    Action::RenegotiateSchedule => Event::RenegotiateSchedule,
+                })
             } else if Some(loops) == behaviour.pause_after {
                 Some(Event::PauseRequested)
             } else if Some(loops) == behaviour.renegotiate_after && !renegotiated {
@@ -224,6 +231,21 @@ pub fn run_car_live(
 /// Prints records of at most `level` to standard error.
 pub struct StderrLog {
     pub level: evcc_core::log::Level,
+}
+
+/// Sends records to a log and to the live state of a test platform for its timeline.
+pub struct LiveLog<L> {
+    pub inner: L,
+    pub live: Option<Arc<EvLive>>,
+}
+
+impl<L: LogSink> LogSink for LiveLog<L> {
+    fn record(&mut self, record: &evcc_core::log::Record<'_>) {
+        if let Some(live) = &self.live {
+            live.record(record);
+        }
+        self.inner.record(record);
+    }
 }
 
 impl LogSink for StderrLog {

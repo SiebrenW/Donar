@@ -18,6 +18,40 @@ pub trait Endpoint: Send + Sync + 'static {
     fn snapshot(&self) -> Value;
     /// One command.
     fn command(&self, cmd: Value) -> Result<(), String>;
+    /// Events since `cursor` (a number the endpoint hands out; a client starts at 0), and the
+    /// new cursor. Sent as `{"event": ...}` lines; the default has none.
+    fn events(&self, cursor: u64) -> (Vec<Value>, u64) {
+        (Vec::new(), cursor)
+    }
+}
+
+/// A bounded log of events for [`Endpoint::events`]: each gets the next number, the oldest are
+/// dropped past `capacity`.
+pub struct EventLog {
+    inner: std::sync::Mutex<(u64, std::collections::VecDeque<(u64, Value)>)>,
+    capacity: usize,
+}
+
+impl EventLog {
+    pub fn new(capacity: usize) -> Self {
+        Self { inner: std::sync::Mutex::new((0, std::collections::VecDeque::new())), capacity }
+    }
+
+    pub fn push(&self, event: Value) {
+        let mut g = self.inner.lock().unwrap();
+        g.0 += 1;
+        let n = g.0;
+        g.1.push_back((n, event));
+        while g.1.len() > self.capacity {
+            g.1.pop_front();
+        }
+    }
+
+    /// The events after `cursor` and the cursor to ask with next.
+    pub fn since(&self, cursor: u64) -> (Vec<Value>, u64) {
+        let g = self.inner.lock().unwrap();
+        (g.1.iter().filter(|(n, _)| *n > cursor).map(|(_, e)| e.clone()).collect(), g.0.max(cursor))
+    }
 }
 
 /// Listens on `path` (replacing a socket left by an earlier run) in a thread of its own; every
@@ -40,13 +74,18 @@ const TICK: Duration = Duration::from_millis(80);
 
 fn client(mut stream: std::os::unix::net::UnixStream, endpoint: &dyn Endpoint) -> io::Result<()> {
     stream.set_read_timeout(Some(TICK))?;
-    let (mut pending, mut last) = (Vec::new(), String::new());
+    let (mut pending, mut last, mut cursor) = (Vec::new(), String::new(), 0u64);
     let mut chunk = [0u8; 1024];
     loop {
         let line = serde_json::json!({ "state": endpoint.snapshot() }).to_string();
         if line != last {
             writeln!(stream, "{line}")?;
             last = line;
+        }
+        let (events, next) = endpoint.events(cursor);
+        cursor = next;
+        for event in events {
+            writeln!(stream, "{}", serde_json::json!({ "event": event }))?;
         }
         match stream.read(&mut chunk) {
             Ok(0) => return Ok(()),
@@ -140,6 +179,18 @@ mod tests {
         writeln!(writer, r#"{{"nothing":1}}"#).unwrap();
         assert_eq!(lines.next().unwrap().unwrap(), r#"{"error":"no add"}"#);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_event_log_hands_out_what_is_new() {
+        let log = EventLog::new(3);
+        for n in 1..=5 {
+            log.push(json!(n));
+        }
+        // Capacity 3: 3, 4, 5 are left; a client at 0 gets those, one at 4 gets 5.
+        assert_eq!(log.since(0), (vec![json!(3), json!(4), json!(5)], 5));
+        assert_eq!(log.since(4), (vec![json!(5)], 5));
+        assert_eq!(log.since(5), (vec![], 5));
     }
 
     #[test]

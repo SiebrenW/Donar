@@ -5,7 +5,7 @@
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
-use sim_control::{Endpoint, Metric};
+use sim_control::{Endpoint, EventLog, Metric};
 
 use crate::config::{Config, Limits};
 
@@ -17,6 +17,9 @@ struct Inner {
     limits: Limits,
     /// The session in progress (or the last one).
     used: Option<Config>,
+    /// Its settings as changed during the session, and a change the charger has not taken yet.
+    session_config: Config,
+    patch: Option<Config>,
     voltage: Metric,
     current: Metric,
     max_power: Metric,
@@ -30,6 +33,7 @@ struct Inner {
 
 pub struct EvseLive {
     inner: Mutex<Inner>,
+    events: EventLog,
 }
 
 impl EvseLive {
@@ -37,8 +41,10 @@ impl EvseLive {
         Arc::new(EvseLive {
             inner: Mutex::new(Inner {
                 limits: config.limits,
+                session_config: config.clone(),
                 next: config,
                 used: None,
+                patch: None,
                 voltage: Metric::new(400.0),
                 current: Metric::new(0.0),
                 max_power: Metric::new(0.0),
@@ -48,7 +54,27 @@ impl EvseLive {
                 ev_max_current: 0.0,
                 ev_max_power: 0.0,
             }),
+            events: EventLog::new(4000),
         })
+    }
+
+    /// Notes something the charger did, for the timeline of the test platform.
+    pub fn event(&self, line: &str) {
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        let kind = if line.starts_with("state ") {
+            "state"
+        } else if line.starts_with("rx ") || line.starts_with("tx ") {
+            // The wire is on the vehicle's side of the timeline.
+            return;
+        } else {
+            "note"
+        };
+        self.events.push(json!({ "src": "evse", "t": now_ms, "kind": kind, "text": line }));
+    }
+
+    /// A change of the session's settings made during the session, once.
+    pub fn take_patch(&self) -> Option<Config> {
+        self.inner.lock().unwrap().patch.take()
     }
 
     /// The config for a session that starts now.
@@ -57,6 +83,8 @@ impl EvseLive {
         g.sessions += 1;
         g.used = Some(g.next.clone());
         g.limits = g.next.limits;
+        g.session_config = g.next.clone();
+        g.patch = None;
         g.next.clone()
     }
 
@@ -98,9 +126,14 @@ impl Endpoint for EvseLive {
             "state": g.state,
             "sessions": g.sessions,
             "limits": g.used.as_ref().map(|_| g.limits),
+            "config": g.used.as_ref().map(|_| &g.session_config),
             "measurements": { "voltage": g.voltage, "current": g.current, "max_power": g.max_power },
             "ev_reports": { "voltage": g.ev_voltage, "max_current": g.ev_max_current, "max_power": g.ev_max_power },
         })
+    }
+
+    fn events(&self, cursor: u64) -> (Vec<Value>, u64) {
+        self.events.since(cursor)
     }
 
     fn command(&self, cmd: Value) -> Result<(), String> {
@@ -110,6 +143,20 @@ impl Endpoint for EvseLive {
             Some("config") => {
                 let session = cmd.get("session").cloned().ok_or("session: missing")?;
                 g.next = serde_json::from_value(session).map_err(|e| format!("session: {e}"))?;
+                Ok(())
+            }
+            // Settings of the session in progress (`{"values": {"cable_check_code": ...}}`), from the
+            // next message on: whatever a setting file can say, for the keys given.
+            Some("patch") => {
+                let values = cmd.get("values").and_then(Value::as_object).ok_or("values: an object")?;
+                let mut config = serde_json::to_value(&g.session_config).map_err(|e| e.to_string())?;
+                for (key, value) in values {
+                    let slot = config.get_mut(key).ok_or_else(|| format!("no such setting: {key}"))?;
+                    *slot = value.clone();
+                }
+                let config: Config = serde_json::from_value(config).map_err(|e| e.to_string())?;
+                g.session_config = config.clone();
+                g.patch = Some(config);
                 Ok(())
             }
             // The limits of the session in progress, from the next message on.

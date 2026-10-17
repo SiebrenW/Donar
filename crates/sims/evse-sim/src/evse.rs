@@ -122,6 +122,10 @@ impl Evse {
 
     /// Feeds bytes read from the stream; returns the messages to send, in order.
     pub fn handle(&mut self, bytes: &[u8]) -> Vec<Output> {
+        // Settings changed by a test platform during the session count from this message on.
+        if let Some(config) = self.live.as_ref().and_then(|l| l.take_patch()) {
+            self.config = config;
+        }
         self.rx.extend_from_slice(bytes);
         let mut outputs = Vec::new();
         while self.state != State::Closed {
@@ -173,6 +177,10 @@ impl Evse {
     fn on_frame(&mut self, payload_type: PayloadType, payload: &[u8]) -> Output {
         let before = self.state;
         self.note(format!("rx {} bytes, payload type {:#06x}, waiting for {}", payload.len(), payload_type.0, Self::expects(before)));
+        if self.config.silent {
+            self.note("silent: not answering");
+            return Output::default();
+        }
         let out = self.on_frame_inner(payload_type, payload);
         match (&out.send, out.close) {
             (None, true) => self.note(format!("closing without an answer: the frame is not a decodable {} (state {before:?})", Self::expects(before))),

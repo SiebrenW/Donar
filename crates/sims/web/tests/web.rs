@@ -227,4 +227,60 @@ mod simulation {
         post(&server, "/api/sim/close", json!({}));
         wait(&server, "the simulation to close", |v| v["open"] == false);
     }
+
+    /// Reads the event stream for a while and returns what came.
+    fn listen(server: &Server, milliseconds: u64) -> String {
+        let mut stream = TcpStream::connect(&server.addr).unwrap();
+        write!(stream, "GET /api/sim/events HTTP/1.1\r\nHost: test\r\nAccept: text/event-stream\r\n\r\n").unwrap();
+        stream.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+        let (mut text, deadline) = (Vec::new(), Instant::now() + Duration::from_millis(milliseconds));
+        let mut chunk = [0u8; 8192];
+        while Instant::now() < deadline {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => text.extend_from_slice(&chunk[..n]),
+                Err(_) => {}
+            }
+        }
+        String::from_utf8_lossy(&text).into_owned()
+    }
+
+    /// The timeline's messages and the faults injected during a session.
+    #[test]
+    fn reports_messages_and_takes_injected_faults() {
+        let server = start();
+        post(&server, "/api/sim/open", json!({}));
+        wait(&server, "the simulation to open", |v| v["open"] == true && v["evse"].is_object());
+        let vehicle = json!({ "charge_loop_interval_ms": 30, "poll_interval_ms": 10, "stop_after": 0, "time_scale": 1, "stop_at_target_soc": false });
+        post(&server, "/api/sim/session", json!({ "evcc": vehicle, "secc": {} }));
+        wait(&server, "the hold before setup", held_at("setup"));
+        post(&server, "/api/sim/cmd", json!({ "target": "ev", "cmd": { "cmd": "advance", "to": "charge_loop", "stay": true } }));
+        wait(&server, "the charge loop to run", |v| v["ev"]["phase"] == "charge_loop" && v["ev"]["loops"].as_u64().unwrap_or(0) >= 3);
+
+        // The vehicle's messages and the charger's state changes reach the page as events.
+        let stream = listen(&server, 800);
+        for wanted in ["event: msg", r#""msg":"DcChargeLoopReq""#, r#""kind":"tx""#, r#""kind":"response""#, r#""code":"OK""#, r#""src":"evse""#, r#""kind":"state""#] {
+            assert!(stream.contains(wanted), "{wanted} missing from the events: {}", &stream[..stream.len().min(1500)]);
+        }
+
+        // A charger setting changed during the session, and the charger asking to terminate.
+        post(&server, "/api/sim/cmd", json!({ "target": "evse", "cmd": { "cmd": "patch", "values": { "terminate_after_loops": 1 } } }));
+        wait(&server, "the charger's setting to show", |v| v["evse"]["config"]["terminate_after_loops"] == 1);
+        let v = wait(&server, "the stop after the charger's request", held_at("stop"));
+        assert_eq!(v["evse"]["state"], "ChargeLoop", "{v}");
+        post(&server, "/api/sim/cmd", json!({ "target": "ev", "cmd": { "cmd": "advance", "to": "ended" } }));
+        let v = wait(&server, "the session to end", |v| v["running"] == false);
+        assert_eq!(v["exit_code"], 0, "{v}");
+
+        // A bad setting is refused; a silent charger makes the vehicle time out.
+        let (status, body) = http(&server, "POST", "/api/sim/cmd", &json!({ "target": "evse", "cmd": { "cmd": "patch", "values": { "no_such": 1 } } }).to_string());
+        assert_eq!(status, 200, "{body}");
+        post(&server, "/api/sim/session", json!({ "evcc": vehicle, "secc": { "silent": true } }));
+        wait(&server, "the hold before setup", held_at("setup"));
+        post(&server, "/api/sim/cmd", json!({ "target": "ev", "cmd": { "cmd": "advance", "to": "ended" } }));
+        let v = wait(&server, "the vehicle to give up", |v| v["running"] == false && v["session"] == 2);
+        assert_ne!(v["exit_code"], 0, "{v}");
+        post(&server, "/api/sim/close", json!({}));
+        wait(&server, "the simulation to close", |v| v["open"] == false);
+    }
 }

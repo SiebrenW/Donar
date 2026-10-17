@@ -55,6 +55,8 @@ pub struct Sim {
     sudo: bool,
     inner: Mutex<Inner>,
     version: AtomicU64,
+    /// What the simulators report happening (messages, state changes, notes), numbered.
+    events: Mutex<(u64, std::collections::VecDeque<(u64, Value)>)>,
 }
 
 pub enum Failure {
@@ -70,7 +72,7 @@ impl From<std::io::Error> for Failure {
 
 impl Sim {
     pub fn new(work: PathBuf, sudo: bool) -> Arc<Sim> {
-        Arc::new(Sim { work, sudo, inner: Mutex::default(), version: AtomicU64::new(1) })
+        Arc::new(Sim { work, sudo, inner: Mutex::default(), version: AtomicU64::new(1), events: Mutex::default() })
     }
 
     pub fn version(&self) -> u64 {
@@ -79,6 +81,24 @@ impl Sim {
 
     pub fn view(&self) -> View {
         self.inner.lock().unwrap().view.clone()
+    }
+
+    /// The events after `cursor` and the cursor to ask with next.
+    pub fn events_since(&self, cursor: u64) -> (Vec<Value>, u64) {
+        let g = self.events.lock().unwrap();
+        (g.1.iter().filter(|(n, _)| *n > cursor).map(|(_, e)| e.clone()).collect(), g.0.max(cursor))
+    }
+
+    fn push_event(&self, mut event: Value) {
+        let session = self.inner.lock().unwrap().view.session;
+        event["session"] = Value::from(session);
+        let mut g = self.events.lock().unwrap();
+        g.0 += 1;
+        let n = g.0;
+        g.1.push_back((n, event));
+        while g.1.len() > 5000 {
+            g.1.pop_front();
+        }
     }
 
     fn update(&self, f: impl FnOnce(&mut Inner)) {
@@ -93,6 +113,7 @@ impl Sim {
             return Err(Failure::Conflict("a simulation is open".into()));
         }
         inner.opened += 1;
+        self.events.lock().unwrap().1.clear();
         let dir = self.work.join(format!("sim-{}", inner.opened));
         std::fs::create_dir_all(&dir)?;
         let program = std::env::current_exe()?.with_file_name("simulate");
@@ -199,6 +220,8 @@ impl Sim {
                         Target::Ev => i.view.ev = Some(state),
                         Target::Evse => i.view.evse = Some(state),
                     });
+                } else if let Some(event) = message.get("event") {
+                    this.push_event(event.clone());
                 } else if let Some(error) = message["error"].as_str() {
                     let error = error.to_string();
                     this.update(|i| i.view.error = Some(error));

@@ -84,6 +84,20 @@
   .chips { display: flex; gap: .5rem; flex-wrap: wrap; font-size: .8rem; color: var(--muted); }
   .chips b { color: var(--text); font-weight: 600; }
   .note { color: var(--muted); font-size: .8rem; margin: .3rem 0 0; }
+  .row.tight { gap: .5rem; margin: .35rem 0; align-items: center; }
+  .faults { display: grid; gap: .8rem; }
+  .legend { display: flex; flex-wrap: wrap; gap: .2rem .9rem; margin-top: .4rem; font-size: .78rem; }
+  .legend b { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 3.5rem; display: inline-block; }
+  .swatch { width: .7rem; height: .7rem; border-radius: 2px; display: inline-block; }
+  .timeline { display: grid; grid-template-columns: 3fr 2fr; gap: .6rem; margin-top: .4rem; }
+  .tl-scroll { max-height: 18rem; overflow: auto; border: 1px solid var(--line); border-radius: 4px; }
+  .tl-scroll thead th { position: sticky; top: 0; background: var(--panel); }
+  .tl-scroll tbody tr { cursor: pointer; }
+  .tl-scroll tbody tr:hover { background: var(--hover); }
+  .tl-scroll tr.muted td { color: var(--muted); }
+  .tl-scroll tr.bad td { color: var(--bad); }
+  .tl-scroll td { white-space: nowrap; font-size: .78rem; padding: .08rem .4rem; }
+  #timeline-detail { margin: 0; max-height: 18rem; overflow: auto; background: var(--hover); padding: .5rem; border-radius: 4px; font-size: .72rem; }
 </style>
 </head>
 <body>
@@ -448,6 +462,254 @@ function measureTable(title, rows) {
   return $("div", { className: "panel" }, $("h3", { textContent: title }), table);
 }
 
+// ---- graph: every signal in one plot -------------------------------------
+
+// A signal is read from the latest state of the simulators. Each is drawn against its own range
+// (the legend gives the numbers); states are steps through the list of their names.
+const EV_STATES = ["Idle", "AwaitSupportedAppProtocolRes", "AwaitSessionSetupRes", "AwaitAuthorizationSetupRes", "AwaitAuthorizationRes", "AwaitServiceDiscoveryRes", "AwaitServiceDetailRes", "AwaitServiceSelectionRes", "AwaitChargeParameterDiscoveryRes", "AwaitScheduleExchangeRes", "AwaitCableCheckRes", "AwaitPreChargeRes", "AwaitContactors", "AwaitPowerDeliveryRes", "AwaitChargeLoopRes", "AwaitPowerDeliveryStandbyRes", "AwaitCurrentStopped", "AwaitPowerDeliveryStopRes", "AwaitContactorsOpened", "AwaitWeldingDetectionRes", "AwaitSessionStopRes", "Ended"];
+const EVSE_STATES = ["Waiting", "AwaitSupportedAppProtocolReq", "AwaitSessionSetupReq", "AwaitAuthorizationSetupReq", "AwaitAuthorizationReq", "AwaitServiceDiscoveryReq", "AwaitServiceDetailReq", "AwaitServiceSelectionReq", "AwaitChargeParameterDiscoveryReq", "AwaitScheduleExchangeReq", "AwaitCableCheckReq", "AwaitPreChargeReq", "AwaitPowerDeliveryReq", "ChargeLoop", "AwaitWeldingReq", "AwaitSessionStopReq", "Stopped", "Paused", "Closed"];
+const SIGNALS = [
+  { id: "ev.soc", label: "vehicle SoC", unit: "%", on: true, get: v => v.ev?.measurements.soc.effective },
+  { id: "ev.voltage", label: "vehicle battery voltage", unit: "V", get: v => v.ev?.measurements.voltage.effective },
+  { id: "evse.current", label: "charger present current", unit: "A", on: true, get: v => v.evse?.measurements.current.effective },
+  { id: "evse.voltage", label: "charger present voltage", unit: "V", on: true, get: v => v.evse?.measurements.voltage.effective },
+  { id: "evse.power", label: "charger maximum power", unit: "W", get: v => v.evse?.measurements.max_power.effective },
+  { id: "ev.l.current", label: "vehicle max current", unit: "A", get: v => v.ev?.limits.max_charge_current_a },
+  { id: "ev.l.power", label: "vehicle max power", unit: "W", get: v => v.ev?.limits.max_charge_power_w },
+  { id: "ev.l.voltage", label: "vehicle max voltage", unit: "V", get: v => v.ev?.limits.max_voltage_v },
+  { id: "evse.l.current", label: "charger max current", unit: "A", get: v => v.evse?.limits?.max_charge_current_a },
+  { id: "evse.l.power", label: "charger max power (limit)", unit: "W", get: v => v.evse?.limits?.max_charge_power_w },
+  { id: "evse.l.voltage", label: "charger max voltage", unit: "V", get: v => v.evse?.limits?.max_voltage_v },
+  { id: "ev.model", label: "battery model SoC", unit: "%", get: v => v.ev?.model_soc },
+  { id: "ev.phase", label: "vehicle phase", unit: "", step: true, get: v => v.ev ? phaseIndex(v.ev.phase) : undefined, name: i => PHASES[i]?.[1] },
+  { id: "ev.state", label: "vehicle state", unit: "", step: true, get: v => v.ev?.state ? EV_STATES.indexOf(v.ev.state) : undefined, name: i => EV_STATES[i] },
+  { id: "evse.state", label: "charger state", unit: "", step: true, get: v => v.evse?.state ? EVSE_STATES.indexOf(v.evse.state) : undefined, name: i => EVSE_STATES[i] },
+  { id: "ev.loops", label: "charge loop rounds", unit: "", get: v => v.ev?.loops },
+];
+SIGNALS.forEach((s, i) => { s.hue = (i * 47) % 360; s.on = !!s.on; });
+const graph = { samples: [], window: 120, paused: false, hover: null };
+
+function sampleSignals() {
+  if (graph.paused || (!sim.view.ev && !sim.view.evse)) return;
+  graph.samples.push({ t: Date.now(), v: SIGNALS.map(s => s.get(sim.view)) });
+  if (graph.samples.length > 20000) graph.samples.splice(0, 2000);
+}
+
+function seriesColor(s) {
+  const dark = document.documentElement.dataset.theme === "dark" || (!document.documentElement.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
+  return `hsl(${s.hue} 65% ${dark ? 66 : 42}%)`;
+}
+
+function drawGraph() {
+  const canvas = document.getElementById("graph");
+  if (!canvas || canvas.offsetParent === null) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== w * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; }
+  const g = canvas.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const css = getComputedStyle(document.documentElement);
+  g.clearRect(0, 0, w, h);
+  g.fillStyle = css.getPropertyValue("--input"); g.fillRect(0, 0, w, h);
+  const pad = { l: 8, r: 8, t: 8, b: 18 };
+  const now = graph.samples.length ? graph.samples.at(-1).t : Date.now();
+  const span = graph.window > 0 ? graph.window * 1000 : Math.max(1000, now - (graph.samples[0]?.t ?? now));
+  const t0 = now - span;
+  const x = t => pad.l + (t - t0) / span * (w - pad.l - pad.r);
+  const visible = graph.samples.filter(s => s.t >= t0 - 2000);
+  // grid and time axis
+  g.strokeStyle = css.getPropertyValue("--line"); g.fillStyle = css.getPropertyValue("--muted"); g.font = "10px system-ui"; g.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const gx = pad.l + i * (w - pad.l - pad.r) / 4;
+    g.beginPath(); g.moveTo(gx, pad.t); g.lineTo(gx, h - pad.b); g.stroke();
+    g.fillText(i === 4 ? "now" : `-${Math.round(span * (4 - i) / 4000)} s`, gx + 2, h - 5);
+  }
+  const range = SIGNALS.map((s, i) => {
+    const values = visible.map(p => p.v[i]).filter(v => v != null);
+    if (!values.length) return null;
+    let lo = Math.min(...values), hi = Math.max(...values);
+    if (s.step) { lo = 0; hi = Math.max(hi, s.id === "ev.phase" ? PHASES.length - 1 : 1); }
+    if (hi === lo) { lo -= 1; hi += 1; }
+    return [lo, hi];
+  });
+  SIGNALS.forEach((s, i) => {
+    if (!s.on || !range[i]) return;
+    const [lo, hi] = range[i];
+    const y = v => h - pad.b - (v - lo) / (hi - lo) * (h - pad.t - pad.b);
+    g.strokeStyle = seriesColor(s); g.lineWidth = 1.5; g.beginPath();
+    let started = false, last = null;
+    for (const p of visible) {
+      const v = p.v[i];
+      if (v == null) { started = false; continue; }
+      const px = x(p.t);
+      if (!started) { g.moveTo(px, y(v)); started = true; }
+      else if (s.step) { g.lineTo(px, y(last)); g.lineTo(px, y(v)); }
+      else g.lineTo(px, y(v));
+      last = v;
+    }
+    if (started) g.lineTo(x(now), y(last));
+    g.stroke();
+  });
+  if (graph.hover != null) {
+    const hx = graph.hover;
+    g.strokeStyle = css.getPropertyValue("--muted"); g.setLineDash([3, 3]); g.beginPath(); g.moveTo(hx, pad.t); g.lineTo(hx, h - pad.b); g.stroke(); g.setLineDash([]);
+  }
+  // legend with values at the cursor (or now)
+  const at = graph.hover != null ? t0 + (graph.hover - pad.l) / (w - pad.l - pad.r) * span : now;
+  const point = visible.reduce((best, p) => (best == null || Math.abs(p.t - at) < Math.abs(best.t - at) ? p : best), null);
+  SIGNALS.forEach((s, i) => {
+    const el = document.getElementById(`legend-${s.id}`);
+    if (!el) return;
+    const v = point?.v[i];
+    el.textContent = v == null ? "–" : s.name ? s.name(v) : `${fmt(v)}${s.unit ? " " + s.unit : ""}`;
+    const r = range[i];
+    el.title = r ? `range in the window: ${fmt(r[0])} to ${fmt(r[1])}` : "";
+  });
+}
+
+function buildGraph() {
+  const canvas = $("canvas", { id: "graph", style: "width:100%;height:16rem;display:block;border-radius:4px" });
+  canvas.onmousemove = e => { const r = canvas.getBoundingClientRect(); graph.hover = e.clientX - r.left; drawGraph(); };
+  canvas.onmouseleave = () => { graph.hover = null; drawGraph(); };
+  const windowSelect = $("select", {}, ...[[30, "30 s"], [120, "2 min"], [600, "10 min"], [0, "everything"]].map(([v, t]) => $("option", { value: v, textContent: t })));
+  windowSelect.value = graph.window;
+  windowSelect.onchange = () => { graph.window = Number(windowSelect.value); drawGraph(); };
+  const pause = $("input", { type: "checkbox" });
+  pause.onchange = () => { graph.paused = pause.checked; };
+  const clear = $("button", { className: "quiet", textContent: "Clear" });
+  clear.onclick = () => { graph.samples = []; drawGraph(); };
+  const legend = $("div", { className: "legend" });
+  for (const s of SIGNALS) {
+    const box = $("input", { type: "checkbox", checked: s.on });
+    box.onchange = () => { s.on = box.checked; drawGraph(); };
+    legend.append($("label", { className: "inline" }, box, $("span", { className: "swatch", style: `background:${seriesColor(s)}` }), $("span", { textContent: s.label }), $("b", { id: `legend-${s.id}`, textContent: "–" })));
+  }
+  return $("div", { className: "panel" },
+    $("div", { className: "row" }, $("h3", { textContent: "Signals", style: "margin:0" }), $("label", { className: "inline" }, "window", windowSelect), $("label", { className: "inline" }, pause, "pause"), clear,
+      $("span", { className: "note", textContent: "each signal against its own range; hover for values" })),
+    canvas, legend);
+}
+
+// ---- timeline of the messages ---------------------------------------------
+
+const timeline = { rows: [], hideRepeats: true, detail: null, dirty: false };
+
+// A request is a row that its response completes; repeats in a row are folded.
+function onMsg(e) {
+  const rows = timeline.rows;
+  if (e.kind === "response") {
+    for (let i = rows.length - 1; i >= 0 && i > rows.length - 6; i--) {
+      if (rows[i].src === e.src && rows[i].dir === "←" && rows[i].msg === e.msg && !rows[i].code) { rows[i].code = e.code; rows[i].events.push(e); timeline.dirty = true; return; }
+    }
+  }
+  rows.push({ t: e.t, src: e.src, dir: e.kind === "tx" ? "→" : e.kind === "rx" || e.kind === "response" ? "←" : "", kind: e.kind, msg: e.msg ?? e.text, code: e.code, phase: e.phase, session: e.session, events: [e] });
+  if (rows.length > 6000) rows.splice(0, 1000);
+  timeline.dirty = true;
+}
+
+function timeText(t) {
+  const d = new Date(t);
+  return d.toTimeString().slice(0, 8) + "." + String(d.getMilliseconds()).padStart(3, "0");
+}
+
+function drawTimeline() {
+  const body = document.getElementById("timeline-body");
+  if (!body || !timeline.dirty || body.offsetParent === null) return;
+  timeline.dirty = false;
+  // Fold consecutive identical rows when asked.
+  const groups = [];
+  for (const r of timeline.rows) {
+    const last = groups.at(-1);
+    const same = last && timeline.hideRepeats && last.src === r.src && last.dir === r.dir && last.kind === r.kind && last.msg === r.msg && last.code === r.code;
+    if (same) { last.count++; last.last = r; } else groups.push({ ...r, count: 1, last: r });
+  }
+  const shown = groups.slice(-400);
+  const atEnd = body.parentElement.scrollTop + body.parentElement.clientHeight >= body.parentElement.scrollHeight - 30;
+  body.replaceChildren(...shown.map(g => {
+    const bad = g.code && !/^OK/.test(g.code);
+    const tr = $("tr", { className: (g.kind === "state" || g.kind === "note" ? "muted " : "") + (bad ? "bad" : "") },
+      $("td", { textContent: timeText(g.t) }), $("td", { textContent: g.src === "ev" ? "vehicle" : "charger" }), $("td", { textContent: g.dir }),
+      $("td", { textContent: g.msg + (g.count > 1 ? `  ×${g.count}` : "") }), $("td", { textContent: g.code ?? "" }), $("td", { textContent: g.phase ? phaseName(g.phase) : "" }));
+    tr.onclick = () => { timeline.detail = g; showDetail(); };
+    return tr;
+  }));
+  if (atEnd) body.parentElement.scrollTop = body.parentElement.scrollHeight;
+}
+
+function showDetail() {
+  const g = timeline.detail;
+  const pre = document.getElementById("timeline-detail");
+  if (!pre) return;
+  pre.textContent = g ? JSON.stringify(g.count > 1 ? { repeated: g.count, from: timeText(g.t), to: timeText(g.last.t), first: g.events, last: g.last.events } : g.events.length === 1 ? g.events[0] : g.events, null, 2) : "Click a row for what was recorded.";
+}
+
+function buildTimeline() {
+  const repeats = $("input", { type: "checkbox", checked: true });
+  repeats.onchange = () => { timeline.hideRepeats = repeats.checked; timeline.dirty = true; drawTimeline(); };
+  const clear = $("button", { className: "quiet", textContent: "Clear" });
+  clear.onclick = () => { timeline.rows = []; timeline.detail = null; timeline.dirty = true; drawTimeline(); showDetail(); };
+  return $("div", { className: "panel" },
+    $("div", { className: "row" }, $("h3", { textContent: "Messages", style: "margin:0" }), $("label", { className: "inline" }, repeats, "fold repeats"), clear),
+    $("div", { className: "timeline" },
+      $("div", { className: "tl-scroll" }, $("table", { className: "values" }, $("thead", {}, $("tr", {}, ...["time", "who", "", "message", "response", "phase"].map(h => $("th", { textContent: h })))), $("tbody", { id: "timeline-body" }))),
+      $("pre", { id: "timeline-detail", textContent: "Click a row for what was recorded." })));
+}
+
+// ---- faults ----------------------------------------------------------------
+
+const RESPONSE_CODES = ["OK", "OK_CertificateExpiresSoon", "OK_NewSessionEstablished", "OK_OldSessionJoined", "OK_PowerToleranceConfirmed", "WARNING_AuthorizationSelectionInvalid", "WARNING_CertificateExpired", "WARNING_CertificateNotYetValid", "WARNING_CertificateRevoked", "WARNING_CertificateValidationError", "WARNING_ChallengeInvalid", "WARNING_EIMAuthorizationFailure", "WARNING_eMSPUnknown", "WARNING_EVPowerProfileViolation", "WARNING_GeneralPnCAuthorizationError", "WARNING_NoCertificateAvailable", "WARNING_NoContractMatchingPCIDFound", "WARNING_PowerToleranceNotConfirmed", "WARNING_ScheduleRenegotiationFailed", "WARNING_StandbyNotAllowed", "WARNING_WPT", "FAILED", "FAILED_AssociationError", "FAILED_ContactorError", "FAILED_EVPowerProfileInvalid", "FAILED_EVPowerProfileViolation", "FAILED_MeteringSignatureNotValid", "FAILED_NoEnergyTransferServiceSelected", "FAILED_NoServiceRenegotiationSupported", "FAILED_PauseNotAllowed", "FAILED_PowerDeliveryNotApplied", "FAILED_PowerToleranceNotConfirmed", "FAILED_ScheduleRenegotiation", "FAILED_ScheduleSelectionInvalid", "FAILED_SequenceError", "FAILED_ServiceIDInvalid", "FAILED_ServiceSelectionInvalid", "FAILED_SignatureError", "FAILED_UnknownSession", "FAILED_WrongChargeParameter", "FAILED_WrongEnergyTransferMode"];
+// The response of which message each setting of the charger decides.
+const CODE_SETTINGS = [["Session setup", "setup_code"], ["Authorization", "authorization_code"], ["Service selection", "selection_code"], ["Charge parameters", "cpd_code"], ["Schedule exchange", "schedule_code"], ["Cable check", "cable_check_code"], ["Power delivery", "power_delivery_code"], ["Welding detection", "welding_code"]];
+
+function buildFaults() {
+  const evse = values => simCmd("evse", { cmd: "patch", values });
+  const ev = name => simCmd("ev", { cmd: "event", name });
+  const button = (text, title, onclick) => { const b = $("button", { className: "quiet", textContent: text, title }); b.onclick = onclick; return b; };
+  const toggle = (label, title, keys) => {
+    // `keys`: the settings and the values they take while the fault is on and off.
+    const box = $("input", { type: "checkbox" });
+    box.onchange = () => evse(Object.fromEntries(keys.map(([k, on, off]) => [k, box.checked ? on : off])));
+    sim.ui[`fault.${label}`] = { box, keys };
+    return $("label", { className: "inline", title }, box, label);
+  };
+  const code = $("select", {}, ...RESPONSE_CODES.map(c => $("option", { value: c, textContent: c })));
+  code.value = "FAILED_SequenceError";
+  const message = $("select", {}, ...CODE_SETTINGS.map(([l, k]) => $("option", { value: k, textContent: l })));
+  const answer = button("Answer with it", "from the next response to that message on", () => evse({ [message.value]: code.value }));
+  const reset = button("Reset the answers", "back to OK for all of them", () => evse(Object.fromEntries(CODE_SETTINGS.map(([, k]) => [k, "OK"]))));
+  return $("div", { className: "panel" }, $("h3", { textContent: "Inject faults" }),
+    $("div", { className: "faults" },
+      $("div", {}, $("b", { textContent: "Charger" }),
+        $("div", { className: "row tight" },
+          toggle("go silent", "receive but do not answer: the vehicle times out", [["silent", true, false]]),
+          toggle("authorization stays Ongoing", "AuthorizationRes with Ongoing for ever", [["authorization_never_finishes", true, false]]),
+          toggle("cable check stays Ongoing", "DC_CableCheckRes with Ongoing", [["cable_check_ongoing_responses", 1000000, 0]]),
+          toggle("schedule exchange stays Ongoing", "ScheduleExchangeRes with Ongoing", [["schedule_ongoing_responses", 1000000, 0]])),
+        $("div", { className: "row tight" }, $("span", { className: "note", textContent: "respond to" }), message, $("span", { className: "note", textContent: "with" }), code, answer, reset),
+        $("div", { className: "row tight" }, $("span", { className: "note", textContent: "ask the vehicle in the charge loop to" }),
+          button("terminate", "EVSENotification Terminate", () => evse({ terminate_after_loops: 1 })),
+          button("pause", "EVSENotification Pause", () => evse({ pause_after_loops: 1 })),
+          button("renegotiate services", "EVSENotification ServiceRenegotiation (needs service_renegotiation_supported)", () => evse({ service_renegotiation_after_loops: 1 })),
+          button("renegotiate the schedule", "EVSENotification ScheduleRenegotiation", () => evse({ schedule_renegotiation_after_loops: 1 })))),
+      $("div", {}, $("b", { textContent: "Vehicle" }),
+        $("div", { className: "row tight" },
+          button("pause the session", "SessionStopReq Pause in the next charge loop round", () => ev("pause")),
+          button("renegotiate services", "SessionStopReq ServiceRenegotiation (the charger has to offer it)", () => ev("renegotiate_services")),
+          button("renegotiate the schedule", "a schedule renegotiation on the side stream", () => ev("renegotiate_schedule"))))),
+    $("p", { className: "note", textContent: "Charger faults change the session's settings from the next message on; the toggles show what the charger has now." }));
+}
+
+// The toggles follow the charger's settings (also when a session ended and the settings went back).
+function updateFaults() {
+  const config = sim.view.evse?.config;
+  for (const { box, keys } of Object.values(sim.ui)) {
+    if (!box || !keys) continue;
+    if (document.activeElement === box) continue;
+    box.checked = !!config && keys.every(([k, on]) => config[k] === on);
+    box.disabled = !config;
+  }
+}
+
 function buildSim() {
   const view = document.getElementById("sim-view");
   const tls = $("input", { type: "checkbox", id: "sim-tls" });
@@ -502,12 +764,16 @@ function buildSim() {
         $("span", { id: "sim-held", className: "note" }))),
     $("div", { id: "sim-msg", className: "error" }),
     $("div", { className: "three" }, evTable, middle, evseTable),
+    buildGraph(),
+    $("div", { className: "columns" }, buildTimeline(), buildFaults()),
     $("div", { className: "columns" },
       more("More vehicle settings", schemas.evcc.schema, schemas.evcc.schema, sim.evcc, schemas.evcc.defaults, simOmitEv),
       more("More charger settings", seccRoot, seccSchema, sim.secc, schemas.secc.defaults.session, simOmitSecc)),
     $("div", { className: "logs", id: "sim-logs" }));
   updateUsed();
   applyView();
+  setInterval(sampleSignals, 200);
+  setInterval(() => { drawGraph(); drawTimeline(); }, 250);
 }
 
 function applyView() {
@@ -557,6 +823,7 @@ function applyView() {
     add("vehicle reports", `${fmt(evse.ev_reports.voltage)} V, ≤ ${fmt(evse.ev_reports.max_current)} A, ≤ ${fmt(evse.ev_reports.max_power)} W`);
   }
   $id("chips").replaceChildren(...chips);
+  updateFaults();
   if (v.error) $id("sim-msg").textContent = v.error;
   updateUsed();
 }
@@ -568,13 +835,17 @@ function connectSim() {
     const next = JSON.parse(e.data);
     // A new simulation or session starts with clean logs.
     if (next.artifacts !== sim.view.artifacts || next.session !== sim.view.session) {
-      if (next.artifacts !== sim.view.artifacts) for (const k of Object.keys(panes)) delete panes[k];
+      if (next.artifacts !== sim.view.artifacts) {
+        for (const k of Object.keys(panes)) delete panes[k];
+        timeline.rows = []; timeline.detail = null; timeline.dirty = true; graph.samples = [];
+      }
       const logs = document.getElementById("sim-logs");
       if (logs && next.artifacts !== sim.view.artifacts) logs.replaceChildren();
     }
     sim.view = next;
     applyView();
   });
+  es.addEventListener("msg", e => onMsg(JSON.parse(e.data)));
   es.addEventListener("log", e => {
     const { file, text } = JSON.parse(e.data);
     const logs = document.getElementById("sim-logs");

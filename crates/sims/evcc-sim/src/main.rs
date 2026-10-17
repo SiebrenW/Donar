@@ -187,8 +187,9 @@ fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session:
     eprintln!("sdp: {}", sdp::address(&response, ifindex));
     let tcp = sdp::connect(&response, ifindex)?;
     let config = evcc_core::session::Config { resume, ..settings.session() };
-    let log = StderrLog {
-        level: settings.log.into(),
+    let log = evcc_sim::LiveLog {
+        inner: StderrLog { level: settings.log.into() },
+        live: live.clone(),
     };
     let contract: Option<std::sync::Arc<dyn evcc_core::ev::Contract>> = match &settings.pnc {
         Some(c) => {
