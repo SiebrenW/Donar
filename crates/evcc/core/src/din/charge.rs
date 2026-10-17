@@ -176,7 +176,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         // The current asked for: what the vehicle, the charger and the power allow.
         let battery = number_of(self.ev.battery_voltage()).max(1.0);
         let mut current = number_of(limits.maximum_charge_current).min(number_of(limits.maximum_charge_power) / battery);
-        let mut voltage = number_of(limits.maximum_voltage);
+        // The voltage the vehicle wants at its inlet: the battery's, with a little more so that the
+        // charger is limited by the current, within the vehicle's maximum.
+        let mut voltage = number_of(limits.maximum_voltage).min(battery + 5.0);
         if let Some(evse) = self.evse {
             current = current.min(number_of(evse.max_current));
             voltage = voltage.min(number_of(evse.max_voltage));

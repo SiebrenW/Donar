@@ -664,15 +664,27 @@ function buildTimeline() {
 const CODE_SETTINGS = [["Session setup", "setup_code"], ["Authorization", "authorization_code"], ["Service selection", "selection_code"], ["Charge parameters", "cpd_code"], ["Schedule exchange", "schedule_code"], ["Cable check", "cable_check_code"], ["Power delivery", "power_delivery_code"], ["Welding detection", "welding_code"]];
 
 function buildFaults() {
-  const evse = values => simCmd("evse", { cmd: "patch", values });
+  // A key like `din.cpd_ongoing_responses` changes a setting inside a group: the group is sent whole.
+  const nest = values => {
+    const out = {};
+    for (const [k, v] of Object.entries(values)) {
+      const [head, ...rest] = k.split(".");
+      if (!rest.length) { out[head] = v; continue; }
+      out[head] ??= { ...(sim.view.evse?.config?.[head] ?? {}) };
+      out[head][rest.join(".")] = v;
+    }
+    return out;
+  };
+  const evse = values => simCmd("evse", { cmd: "patch", values: nest(values) });
   const ev = name => simCmd("ev", { cmd: "event", name });
-  const button = (text, title, onclick) => { const b = $("button", { className: "quiet", textContent: text, title }); b.onclick = onclick; return b; };
-  const toggle = (label, title, keys) => {
+  // `only` names the protocol a control belongs to (`iso` or `din`); the page hides the others.
+  const button = (text, title, onclick, only) => { const b = $("button", { className: "quiet" + (only ? ` ${only}-only` : ""), textContent: text, title }); b.onclick = onclick; return b; };
+  const toggle = (label, title, keys, only) => {
     // `keys`: the settings and the values they take while the fault is on and off.
     const box = $("input", { type: "checkbox" });
     box.onchange = () => evse(Object.fromEntries(keys.map(([k, on, off]) => [k, box.checked ? on : off])));
     sim.ui[`fault.${label}`] = { box, keys };
-    return $("label", { className: "inline", title }, box, label);
+    return $("label", { className: "inline" + (only ? ` ${only}-only` : ""), title }, box, label);
   };
   // The codes the message may carry (Tables 224, 226) first; the others are for provoking the vehicle.
   const code = $("select");
@@ -696,14 +708,16 @@ function buildFaults() {
           toggle("go silent", "receive but do not answer: the vehicle times out", [["silent", true, false]]),
           toggle("authorization stays Ongoing", "AuthorizationRes with Ongoing for ever", [["authorization_never_finishes", true, false]]),
           toggle("cable check stays Ongoing", "DC_CableCheckRes with Ongoing", [["cable_check_ongoing_responses", 1000000, 0]]),
-          toggle("schedule exchange stays Ongoing", "ScheduleExchangeRes with Ongoing", [["schedule_ongoing_responses", 1000000, 0]])),
+          toggle("schedule exchange stays Ongoing", "ScheduleExchangeRes with Ongoing", [["schedule_ongoing_responses", 1000000, 0]], "iso"),
+          toggle("charge parameters stay Ongoing", "ChargeParameterDiscoveryRes with Ongoing", [["din.cpd_ongoing_responses", 1000000, 0]], "din")),
         $("div", { className: "row tight" }, $("span", { className: "note", textContent: "respond to" }), message, $("span", { className: "note", textContent: "with" }), code, answer, reset),
         $("div", { className: "row tight" }, $("span", { className: "note", textContent: "ask the vehicle in the charge loop to" }),
-          button("terminate", "EVSENotification Terminate", () => evse({ terminate_after_loops: 1 })),
-          button("pause", "EVSENotification Pause", () => evse({ pause_after_loops: 1 })),
-          button("renegotiate services", "EVSENotification ServiceRenegotiation (needs service_renegotiation_supported)", () => evse({ service_renegotiation_after_loops: 1 })),
-          button("renegotiate the schedule", "EVSENotification ScheduleRenegotiation", () => evse({ schedule_renegotiation_after_loops: 1 })))),
-      $("div", {}, $("b", { textContent: "Vehicle" }),
+          button("terminate", "EVSENotification Terminate", () => evse({ terminate_after_loops: 1 }), "iso"),
+          button("shut down", "the status code EVSE_Shutdown: the vehicle stops as if it wanted to itself (V2G-DC-650)", () => evse({ "din.shutdown_after_loops": 1 }), "din"),
+          button("pause", "EVSENotification Pause", () => evse({ pause_after_loops: 1 }), "iso"),
+          button("renegotiate services", "EVSENotification ServiceRenegotiation (needs service_renegotiation_supported)", () => evse({ service_renegotiation_after_loops: 1 }), "iso"),
+          button("renegotiate the schedule", "EVSENotification ScheduleRenegotiation", () => evse({ schedule_renegotiation_after_loops: 1 }), "iso"))),
+      $("div", { className: "iso-only" }, $("b", { textContent: "Vehicle" }),
         $("div", { className: "row tight" },
           button("pause the session", "SessionStopReq Pause in the next charge loop round", () => ev("pause")),
           button("renegotiate services", "SessionStopReq ServiceRenegotiation (the charger has to offer it)", () => ev("renegotiate_services")),
@@ -717,7 +731,8 @@ function updateFaults() {
   for (const { box, keys } of Object.values(sim.ui)) {
     if (!box || !keys) continue;
     if (document.activeElement === box) continue;
-    box.checked = !!config && keys.every(([k, on]) => config[k] === on);
+    const get = k => k.split(".").reduce((o, part) => o?.[part], config);
+    box.checked = !!config && keys.every(([k, on]) => get(k) === on);
     box.disabled = !config;
   }
 }
@@ -728,6 +743,18 @@ function buildSim() {
   const slac = $("input", { type: "checkbox", id: "sim-slac" });
   const pki = $("select", { id: "sim-pki" });
   for (const p of ["p521", "ed448", "p256"]) pki.append($("option", { value: p, textContent: p }));
+  // The protocol the vehicle offers. DIN SPEC 70121 has no schedule exchange, and a CCS vehicle
+  // (the extended inlet) is what a DIN charger offers by default.
+  const protocol = $("select", { id: "sim-protocol" });
+  for (const [v, name] of [["iso15118-20", "ISO 15118-20"], ["din70121", "DIN SPEC 70121"]]) protocol.append($("option", { value: v, textContent: name }));
+  protocol.value = sim.evcc.protocol ?? "iso15118-20";
+  protocol.onchange = () => {
+    setPath(sim.evcc, ["protocol"], protocol.value);
+    if (protocol.value === "din70121") setPath(sim.evcc, ["connector"], "extended");
+    applyProtocol();
+    const old = document.getElementById("more-vehicle");
+    if (old) old.replaceWith(moreVehicle());
+  };
   const open = $("button", { id: "sim-open", textContent: "Open simulation" });
   open.onclick = () => simPost("/api/sim/open", { tls: tls.checked, slac: slac.checked, pki: pki.value });
   const close = $("button", { id: "sim-close", className: "quiet", textContent: "Close simulation" });
@@ -762,13 +789,14 @@ function buildSim() {
     measureTable("Charger measurements", [measureRow("evse", "voltage", "present voltage (V)"), measureRow("evse", "current", "present current (A)"), measureRow("evse", "max_power", "maximum power (W)")]),
     $("div", { className: "panel" }, $("h3", { textContent: "Session" }), $("div", { className: "chips", id: "chips" })));
 
-  const more = (title, root, schema, state, defaults, omit) =>
-    $("details", {}, $("summary", { textContent: title }), form(root, schema, state, defaults, [], () => {}, omit));
+  const more = (title, root, schema, state, defaults, omit, id) =>
+    $("details", { id }, $("summary", { textContent: title }), form(root, schema, state, defaults, [], () => {}, omit));
+  const moreVehicle = () => more("More vehicle settings", schemas.evcc.schema, schemas.evcc.schema, sim.evcc, schemas.evcc.defaults, simOmitEv, "more-vehicle");
 
   view.replaceChildren(
     $("div", { className: "row" },
       $("label", { className: "inline" }, tls, "TLS"), $("label", { className: "inline" }, slac, "SLAC"),
-      $("label", {}, "PKI", pki), open, close, $("span", { id: "sim-status", className: "note" })),
+      $("label", {}, "PKI", pki), $("label", {}, "Protocol", protocol), open, close, $("span", { id: "sim-status", className: "note" })),
     $("div", { className: "panel" }, stepper,
       $("div", { className: "row", style: "margin-top:.6rem" },
         $("label", {}, "Go to", target), advance, stay, stop, next,
@@ -779,13 +807,25 @@ function buildSim() {
     buildGraph(),
     $("div", { className: "columns" }, buildTimeline(), buildFaults()),
     $("div", { className: "columns" },
-      more("More vehicle settings", schemas.evcc.schema, schemas.evcc.schema, sim.evcc, schemas.evcc.defaults, simOmitEv),
-      more("More charger settings", seccRoot, seccSchema, sim.secc, schemas.secc.defaults.session, simOmitSecc)),
+      moreVehicle(),
+      more("More charger settings", seccRoot, seccSchema, sim.secc, schemas.secc.defaults.session, simOmitSecc, "more-charger")),
     $("div", { className: "logs", id: "sim-logs" }));
   updateUsed();
+  applyProtocol();
   applyView();
   setInterval(sampleSignals, 200);
   setInterval(() => { drawGraph(); drawTimeline(); }, 250);
+}
+
+// DIN SPEC 70121 has no schedule exchange: its phase is not shown and not offered.
+function applyProtocol() {
+  const din = (sim.evcc.protocol ?? "iso15118-20") === "din70121";
+  document.getElementById("phase-schedule_exchange").hidden = din;
+  const option = [...document.getElementById("advance-to").options].find(o => o.value === "schedule_exchange");
+  if (option) option.hidden = option.disabled = din;
+  document.querySelectorAll(".iso-only").forEach(e => e.hidden = din);
+  document.querySelectorAll(".din-only").forEach(e => e.hidden = !din);
+  document.getElementById("sim-protocol").disabled = !!(sim.view.open || sim.view.opening);
 }
 
 function applyView() {
@@ -801,7 +841,7 @@ function applyView() {
   $id("sim-status").textContent = v.opening ? "opening…" : v.open ? (v.running ? `session ${v.session} running` : v.session ? `session ${v.session} ended (exit ${v.exit_code ?? "?"})` : "open, no session yet") : "closed";
   $id("sim-open").disabled = v.open || v.opening;
   $id("sim-close").disabled = !v.open;
-  for (const id of ["sim-tls", "sim-slac", "sim-pki"]) $id(id).disabled = v.open || v.opening;
+  for (const id of ["sim-tls", "sim-slac", "sim-pki", "sim-protocol"]) $id(id).disabled = v.open || v.opening;
   $id("next-session").disabled = !v.open || v.running;
   const live = v.running && !!ev;
   $id("advance").disabled = !live;

@@ -115,6 +115,8 @@ impl Sim {
         inner.opened += 1;
         self.events.lock().unwrap().1.clear();
         let dir = self.work.join(format!("sim-{}", inner.opened));
+        // The number starts again with every server: what an earlier one left is not this simulation's.
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir)?;
         let program = std::env::current_exe()?.with_file_name("simulate");
         let mut cmd = if self.sudo {
