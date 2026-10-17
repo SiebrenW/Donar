@@ -63,6 +63,7 @@ mod run {
         ac_plain => "ac-plain",
         ac_bpt => "ac-bpt",
         ac_scheduled => "ac-scheduled",
+        ac_scheduled_prices => "ac-scheduled-prices",
         dc_slac => "dc-slac",
         slac_too_far => "slac-too-far",
         dc_tls_slac => "dc-tls-slac",

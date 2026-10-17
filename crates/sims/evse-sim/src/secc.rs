@@ -10,8 +10,8 @@ use evse_core::secc::{AcLoopAnswer, Action, Authorize, DcLoopAnswer, Ended, Prog
 use iso15118_20::ResponseMessage;
 use iso15118_20::ac;
 use iso15118_20::common::{
-    self, Authorization, ChargingSchedule, ChargingSession, EvpptControlModeChoice, MeteringConfirmationReq, Parameter, ParameterChoice, ParameterSet, PowerDeliveryReq,
-    PowerSchedule, PowerScheduleEntry, PowerScheduleEntryList, ScheduleTuple, SelectedService, Service, ServiceSelectionReq,
+    self, AbsolutePriceSchedule, Authorization, ChargingSchedule, ChargingSession, EvpptControlModeChoice, MeteringConfirmationReq, Parameter, ParameterChoice, ParameterSet, PowerDeliveryReq,
+    PowerSchedule, PowerScheduleEntry, PowerScheduleEntryList, PriceRule, PriceRuleStack, PriceRuleStackList, ScheduleChoice, ScheduleTuple, SelectedService, Service, ServiceSelectionReq,
 };
 use iso15118_20::common_types::{DetailedCost, EvseNotification, EvseStatus, MeterInfo, RationalNumber, Receipt, ResponseCode};
 use iso15118_20::dc;
@@ -377,12 +377,40 @@ impl SimSecc {
                     .collect(),
             )
         };
-        let schedule = |entries: &'static [PowerScheduleEntry]| ChargingSchedule {
+        let prices = self.config.schedule_prices;
+        let schedule = |id: u32, entries: &'static [PowerScheduleEntry]| ChargingSchedule {
             power_schedule: PowerSchedule { time_anchor: now, available_energy: None, power_tolerance: None, power_schedule_entries: PowerScheduleEntryList { power_schedule_entry: entries } },
-            schedule: None,
+            schedule: prices.then(|| {
+                // Tuple 1 (full power first) costs 0.40 per kWh, tuple 2 (half power) 0.20.
+                let cents = if id == 1 { 40 } else { 20 };
+                let rules = leak(vec![PriceRule {
+                    energy_fee: RationalNumber { exponent: -2, value: cents },
+                    parking_fee: None,
+                    parking_fee_period: None,
+                    carbon_dioxide_emission: None,
+                    renewable_generation_percentage: None,
+                    power_range_start: RationalNumber { exponent: 0, value: 0 },
+                }]);
+                let stacks = leak(vec![PriceRuleStack { duration: 86_400, price_rule: rules }]);
+                ScheduleChoice::AbsolutePrice(AbsolutePriceSchedule {
+                    id: None,
+                    time_anchor: now,
+                    price_schedule_id: id,
+                    price_schedule_description: None,
+                    currency: "EUR",
+                    language: "eng",
+                    price_algorithm: "urn:iso:std:iso:15118:-20:PriceAlgorithm:1-Power",
+                    minimum_cost: None,
+                    maximum_cost: None,
+                    tax_rules: None,
+                    price_rule_stacks: PriceRuleStackList { price_rule_stack: stacks },
+                    overstay_rules: None,
+                    additional_selected_services: None,
+                })
+            }),
         };
         let discharging = entries(1, true);
-        self.tuples = TUPLES.iter().map(|&id| ScheduleTuple { schedule_tuple_id: id, charging_schedule: schedule(entries(id, false)), discharging_schedule: self.bpt.then(|| schedule(discharging)) }).collect();
+        self.tuples = TUPLES.iter().map(|&id| ScheduleTuple { schedule_tuple_id: id, charging_schedule: schedule(id, entries(id, false)), discharging_schedule: self.bpt.then(|| schedule(id, discharging)) }).collect();
     }
 }
 
@@ -618,6 +646,9 @@ impl Secc for SimSecc {
 
     fn power_delivery(&mut self, request: &PowerDeliveryReq<'_>) -> ResponseCode {
         if let Some(EvpptControlModeChoice::Scheduled(m)) = request.ev_power_profile.as_ref().map(|p| p.evppt_control_mode) {
+            if self.selected_tuple != m.selected_schedule_tuple_id {
+                self.note(format!("schedule tuple {} selected", m.selected_schedule_tuple_id));
+            }
             self.selected_tuple = m.selected_schedule_tuple_id;
         }
         match request.charge_progress {

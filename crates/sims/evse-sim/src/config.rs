@@ -482,6 +482,9 @@ pub struct Config {
     pub meter_info_always: bool,
     pub metering_confirmation_every_loops: Option<u32>,
     pub receipt_every_loops: Option<u32>,
+    /// Scheduled control mode: offer prices with the schedules (tuple 1: 0.40 per kWh, tuple 2: 0.20), so that a
+    /// vehicle that compares them has something to choose from.
+    pub schedule_prices: bool,
     /// Scheduled control mode: how long one entry of an offered power schedule lasts, in seconds.
     pub schedule_entry_s: u32,
     /// Response code of the `ServiceSelectionRes` for a valid selection.
@@ -583,6 +586,7 @@ impl Default for Config {
             meter_info_always: false,
             metering_confirmation_every_loops: None,
             receipt_every_loops: None,
+            schedule_prices: false,
             schedule_entry_s: 3600,
             selection_code: ResponseCode::Ok,
             cpd_code: ResponseCode::Ok,

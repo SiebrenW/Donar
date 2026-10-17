@@ -72,10 +72,24 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         match (mode, self.config.scheduled) {
             (common::SeResControlModeChoice::Dynamic(_), false) => true,
             (common::SeResControlModeChoice::Scheduled(m), true) => {
-                let Some(first) = m.schedule_tuple.first() else { return false };
-                self.selected_tuple = first.schedule_tuple_id;
-                self.tolerance_offered = first.charging_schedule.power_schedule.power_tolerance.is_some();
-                self.schedule = super::schedule::Schedule::of(first, self.secc_now());
+                if m.schedule_tuple.is_empty() {
+                    return false;
+                }
+                // V2G20-297, 298: the first tuple is the default; a price schedule that can be compared
+                // lets the vehicle pick the cheapest that delivers what it needs before it leaves.
+                let r = self.ev.schedule_request();
+                let max_watts = if self.config.ac() {
+                    let l = self.ev_announced_ac.unwrap_or_else(|| self.ev.ac20_limits()).maximum_charge_power;
+                    super::config::rational_to_volts(l.l1) + l.l2.map_or(0.0, super::config::rational_to_volts) + l.l3.map_or(0.0, super::config::rational_to_volts)
+                } else {
+                    super::config::rational_to_volts(self.ev_announced.unwrap_or_else(|| self.ev.dc_limits()).maximum_charge_power)
+                };
+                let need_wh = super::config::rational_to_volts(r.target_energy).max(0.0);
+                let chosen = &m.schedule_tuple[super::tariff::choose(m.schedule_tuple, need_wh, max_watts, r.departure_time as f32)];
+                self.selected_tuple = chosen.schedule_tuple_id;
+                self.log.record(&crate::log::Record::ScheduleSelected { tuple_id: chosen.schedule_tuple_id, offered: m.schedule_tuple.len(), need_wh: need_wh as u32, departure_s: r.departure_time });
+                self.tolerance_offered = chosen.charging_schedule.power_schedule.power_tolerance.is_some();
+                self.schedule = super::schedule::Schedule::of(chosen, self.secc_now());
                 true
             }
             _ => false,

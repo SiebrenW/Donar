@@ -104,6 +104,9 @@ pub enum Record<'a> {
     ResponseCodeNotAllowed { msg: MsgKind, code: ResponseCode },
     /// The authorization service the vehicle selected.
     AuthorizationSelected { service: Authorization },
+    /// The schedule tuple the vehicle selected of those the charger offered (Scheduled mode), given the
+    /// energy it needs and the seconds until it leaves.
+    ScheduleSelected { tuple_id: u32, offered: usize, need_wh: u32, departure_s: u32 },
     /// The energy transfer service and parameter set the EVSE accepted.
     ServiceSelected { service_id: u16, parameter_set_id: u16 },
     RxPayload { payload_type: u16, payload: &'a [u8] },
@@ -144,6 +147,7 @@ impl Record<'_> {
             | Record::SessionResumed { .. }
             | Record::AuthorizationSelected { .. }
             | Record::Iso2ServiceDetail { .. }
+            | Record::ScheduleSelected { .. }
             | Record::ServiceSelected { .. } => Level::Info,
             Record::Response { code, .. } if !crate::session::is_ok(*code) => Level::Info,
             Record::DinResponse { code, .. } if !crate::din::is_ok(*code) => Level::Info,

@@ -1,0 +1,24 @@
+name = "ac-scheduled-prices"
+description = "ISO 15118-20 AC in Scheduled control mode with prices: the charger offers two schedule tuples with absolute price schedules (full power at 0.40 per kWh, half power at 0.20). The vehicle needs little energy and has all night, so it compares the tuples and selects the cheaper one, the second (V2G20-297, 298: the first is only the default)."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session]
+schedule_prices = true
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+ac = true
+scheduled = true
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+[evcc.settings.limits]
+target_energy_wh = 1200
+departure_time_s = 36000
+
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)"]
+secc_log = ["schedule tuple 2 selected", "session: Stopped"]

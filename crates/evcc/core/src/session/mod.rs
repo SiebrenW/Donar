@@ -37,6 +37,7 @@ mod renegotiation;
 mod schedule;
 mod setup;
 mod shutdown;
+mod tariff;
 mod types;
 
 pub use config::{Config, SERVICE_ID_AC, SERVICE_ID_AC_BPT, SERVICE_ID_DC, SERVICE_ID_DC_BPT};
