@@ -9,6 +9,7 @@ description = "A small web UI to start scenarios, change their parameters and fo
 scenarios = { path = "../scenarios" }
 evcc-sim = { path = "../evcc-sim" }
 evse-sim = { path = "../evse-sim" }
+iso15118-20 = { path = "../../codec/iso15118-20" }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "net", "sync", "io-util", "fs"] }
 tokio-stream = "0.1"

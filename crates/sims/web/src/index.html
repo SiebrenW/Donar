@@ -626,7 +626,7 @@ function drawTimeline() {
   const shown = groups.slice(-400);
   const atEnd = body.parentElement.scrollTop + body.parentElement.clientHeight >= body.parentElement.scrollHeight - 30;
   body.replaceChildren(...shown.map(g => {
-    const bad = g.code && !/^OK/.test(g.code);
+    const bad = (g.code && !/^OK/.test(g.code)) || g.kind === "violation";
     const tr = $("tr", { className: (g.kind === "state" || g.kind === "note" ? "muted " : "") + (bad ? "bad" : "") },
       $("td", { textContent: timeText(g.t) }), $("td", { textContent: g.src === "ev" ? "vehicle" : "charger" }), $("td", { textContent: g.dir }),
       $("td", { textContent: g.msg + (g.count > 1 ? `  ×${g.count}` : "") }), $("td", { textContent: g.code ?? "" }), $("td", { textContent: g.phase ? phaseName(g.phase) : "" }));
@@ -657,7 +657,6 @@ function buildTimeline() {
 
 // ---- faults ----------------------------------------------------------------
 
-const RESPONSE_CODES = ["OK", "OK_CertificateExpiresSoon", "OK_NewSessionEstablished", "OK_OldSessionJoined", "OK_PowerToleranceConfirmed", "WARNING_AuthorizationSelectionInvalid", "WARNING_CertificateExpired", "WARNING_CertificateNotYetValid", "WARNING_CertificateRevoked", "WARNING_CertificateValidationError", "WARNING_ChallengeInvalid", "WARNING_EIMAuthorizationFailure", "WARNING_eMSPUnknown", "WARNING_EVPowerProfileViolation", "WARNING_GeneralPnCAuthorizationError", "WARNING_NoCertificateAvailable", "WARNING_NoContractMatchingPCIDFound", "WARNING_PowerToleranceNotConfirmed", "WARNING_ScheduleRenegotiationFailed", "WARNING_StandbyNotAllowed", "WARNING_WPT", "FAILED", "FAILED_AssociationError", "FAILED_ContactorError", "FAILED_EVPowerProfileInvalid", "FAILED_EVPowerProfileViolation", "FAILED_MeteringSignatureNotValid", "FAILED_NoEnergyTransferServiceSelected", "FAILED_NoServiceRenegotiationSupported", "FAILED_PauseNotAllowed", "FAILED_PowerDeliveryNotApplied", "FAILED_PowerToleranceNotConfirmed", "FAILED_ScheduleRenegotiation", "FAILED_ScheduleSelectionInvalid", "FAILED_SequenceError", "FAILED_ServiceIDInvalid", "FAILED_ServiceSelectionInvalid", "FAILED_SignatureError", "FAILED_UnknownSession", "FAILED_WrongChargeParameter", "FAILED_WrongEnergyTransferMode"];
 // The response of which message each setting of the charger decides.
 const CODE_SETTINGS = [["Session setup", "setup_code"], ["Authorization", "authorization_code"], ["Service selection", "selection_code"], ["Charge parameters", "cpd_code"], ["Schedule exchange", "schedule_code"], ["Cable check", "cable_check_code"], ["Power delivery", "power_delivery_code"], ["Welding detection", "welding_code"]];
 
@@ -672,9 +671,19 @@ function buildFaults() {
     sim.ui[`fault.${label}`] = { box, keys };
     return $("label", { className: "inline", title }, box, label);
   };
-  const code = $("select", {}, ...RESPONSE_CODES.map(c => $("option", { value: c, textContent: c })));
-  code.value = "FAILED_SequenceError";
+  // The codes the message may carry (Tables 224, 226) first; the others are for provoking the vehicle.
+  const code = $("select");
   const message = $("select", {}, ...CODE_SETTINGS.map(([l, k]) => $("option", { value: k, textContent: l })));
+  const fillCodes = () => {
+    const info = schemas.response_codes.settings[message.value];
+    const allowed = info.allowed, other = schemas.response_codes.all.filter(c => !allowed.includes(c));
+    code.replaceChildren(
+      $("optgroup", { label: `defined for ${info.message}Res` }, ...allowed.map(c => $("option", { value: c, textContent: c }))),
+      $("optgroup", { label: "not defined for it (a violation)" }, ...other.map(c => $("option", { value: c, textContent: c }))));
+    code.value = allowed.find(c => c.startsWith("FAILED") && c !== "FAILED") ?? allowed.find(c => c !== "OK") ?? "FAILED";
+  };
+  message.onchange = fillCodes;
+  fillCodes();
   const answer = button("Answer with it", "from the next response to that message on", () => evse({ [message.value]: code.value }));
   const reset = button("Reset the answers", "back to OK for all of them", () => evse(Object.fromEntries(CODE_SETTINGS.map(([, k]) => [k, "OK"]))));
   return $("div", { className: "panel" }, $("h3", { textContent: "Inject faults" }),

@@ -285,6 +285,7 @@ dependencies = [
  "axum",
  "evcc-sim",
  "evse-sim",
+ "iso15118-20",
  "libc",
  "scenarios",
  "schemars",

@@ -102,6 +102,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                     if let Some(end) = self.received(MsgKind::DcChargeParameterDiscoveryRes, res.response_code) {
                         return end;
                     }
+                    self.note_evse_limits(&res.dc_cpd_res_energy_transfer_mode);
                     self.side = Side::AwaitSchedule;
                     self.push_side(Step::default(), tx)
                 }

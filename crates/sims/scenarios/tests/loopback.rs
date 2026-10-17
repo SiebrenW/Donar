@@ -488,3 +488,115 @@ fn the_vehicle_logs_which_parameters_it_wanted_and_what_was_offered() {
     }
     drop(server);
 }
+
+/// Serves one connection like `evse_sim::serve_one`, and returns what the charger logged.
+fn serve_logged(listener: TcpListener, config: evse_sim::Config) -> std::io::Result<(EvseState, Vec<String>)> {
+    use std::io::{Read, Write};
+    let (mut stream, _) = listener.accept()?;
+    let mut evse = evse_sim::Evse::new(config);
+    let (mut buf, mut log) = ([0u8; 2048], Vec::new());
+    loop {
+        let n = stream.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        let mut close = false;
+        for out in evse.handle(&buf[..n]) {
+            if let Some(bytes) = out.send {
+                stream.write_all(&bytes)?;
+            }
+            close |= out.close;
+        }
+        log.extend(evse.take_log());
+        if close {
+            break;
+        }
+    }
+    log.extend(evse.take_log());
+    Ok((evse.state(), log))
+}
+
+#[test]
+fn a_normal_session_breaks_no_rule_on_either_side() {
+    // The two state machines against each other: values in the standard's bounds, response
+    // codes from the tables, the charge loop within the discovery's limits (V2G20-2198, 2199,
+    // 2654, 2655); neither side notes a violation.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = thread::spawn(move || serve_logged(listener, evse_sim::Config::default()));
+    let mut stream = TcpStream::connect(addr).unwrap();
+    let (outcome, ev_log) = common::run_car_recorded(&mut stream, fast(), Some(5));
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    let (state, evse_log) = server.join().unwrap().unwrap();
+    assert_eq!(state, EvseState::Stopped);
+    let violations: Vec<&String> = evse_log.iter().filter(|l| l.contains("violation")).collect();
+    assert!(violations.is_empty(), "the charger found: {violations:?}");
+    assert_eq!(ev_log.count("Violation"), 0, "{:?}", ev_log.0.borrow());
+    assert_eq!(ev_log.count("ResponseCodeNotAllowed"), 0, "{:?}", ev_log.0.borrow());
+    // The charge loop was exercised.
+    assert!(evse_log.iter().any(|l| l.contains("tx DC_ChargeLoopRes OK")), "{evse_log:?}");
+}
+
+#[test]
+fn a_vehicle_that_raises_its_limits_in_the_charge_loop_is_noted_and_may_be_failed() {
+    // A car that does not hold itself to V2G20-2198: with `enforce_cpd_limits` off and limits that
+    // grow after the discovery. The charger notes it, and fails the loop when asked to.
+    struct Greedy(evcc_sim::SimulatedEv, std::cell::Cell<u32>);
+    impl evcc_core::ev::Ev for Greedy {
+        fn evcc_id(&self) -> &str {
+            self.0.evcc_id()
+        }
+        fn now_micros(&self) -> u64 {
+            self.0.now_micros()
+        }
+        fn dc_connector(&self) -> evcc_core::ev::DcConnector {
+            self.0.dc_connector()
+        }
+        fn dc_limits(&self) -> evcc_core::ev::DcLimits {
+            // The first call is the discovery; later ones ask for more.
+            let calls = self.1.get();
+            self.1.set(calls + 1);
+            let mut l = self.0.dc_limits();
+            if calls > 0 {
+                l.maximum_charge_current = iso15118_20::common_types::RationalNumber::from_f64(250.0);
+            }
+            l
+        }
+        fn battery_voltage(&self) -> iso15118_20::common_types::RationalNumber {
+            self.0.battery_voltage()
+        }
+        fn inlet_voltage(&self) -> iso15118_20::common_types::RationalNumber {
+            self.0.inlet_voltage()
+        }
+        fn schedule_request(&self) -> evcc_core::ev::ScheduleRequest {
+            self.0.schedule_request()
+        }
+    }
+    for (fail, expect_ended) in [(false, EndReason::Completed), (true, EndReason::Rejected(ResponseCode::Failed))] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let config = evse_sim::Config { fail_on_limit_violation: fail, ..Default::default() };
+        let server = thread::spawn(move || serve_logged(listener, config));
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let open = std::rc::Rc::new(std::cell::Cell::new(false));
+        let car = Greedy(evcc_sim::SimulatedEv::new(open, evcc_core::ev::DcConnector::Core), std::cell::Cell::new(0));
+        let config = Config { enforce_cpd_limits: false, ..fast() };
+        let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
+        let mut session = evcc_core::session::Session::new(config, car, evcc_core::log::NoLog, evcc_core::session::Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
+        let mut loops = 0;
+        let outcome = evcc_linux::run(&mut stream, &mut session, false, &mut |n| match n {
+            evcc_core::session::Notice::CloseContactors => Some(evcc_core::session::Event::ContactorsClosed),
+            evcc_core::session::Notice::StopEnergyTransfer { .. } => Some(evcc_core::session::Event::EnergyTransferStopped),
+            evcc_core::session::Notice::OpenContactors => Some(evcc_core::session::Event::ContactorsOpened),
+            evcc_core::session::Notice::ChargeLoop(_) => {
+                loops += 1;
+                (loops == 3).then_some(evcc_core::session::Event::StopRequested)
+            }
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(outcome, Outcome::Ended(expect_ended), "fail = {fail}");
+        let (_, log) = server.join().unwrap().unwrap();
+        assert!(log.iter().any(|l| l.contains("violation: V2G20-2198: EVMaximumChargeCurrent is 250")), "{log:?}");
+    }
+}

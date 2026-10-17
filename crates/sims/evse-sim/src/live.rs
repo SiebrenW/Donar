@@ -63,6 +63,8 @@ impl EvseLive {
         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
         let kind = if line.starts_with("state ") {
             "state"
+        } else if line.starts_with("violation") {
+            "violation"
         } else if line.starts_with("rx ") || line.starts_with("tx ") {
             // The wire is on the vehicle's side of the timeline.
             return;
@@ -132,7 +134,10 @@ impl EvseLive {
 /// The current both sides' limits allow at `voltage`.
 pub(crate) fn modelled_current(voltage: f64, ev_max_current: f64, ev_max_power: f64, limits: &Limits) -> f64 {
     let power = ev_max_power.min(f64::from(limits.max_charge_power_w));
-    ev_max_current.min(f64::from(limits.max_charge_current_a)).min(power / voltage.max(1.0)).max(0.0)
+    let current = ev_max_current.min(f64::from(limits.max_charge_current_a)).min(power / voltage.max(1.0)).max(0.0);
+    // Below its minimum current (8.3.5.5.2) the charger cannot deliver with the expected
+    // accuracy: the current drops to zero.
+    if current < f64::from(limits.min_charge_current_a) { 0.0 } else { current }
 }
 
 impl Endpoint for EvseLive {

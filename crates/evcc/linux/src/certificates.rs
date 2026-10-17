@@ -506,7 +506,7 @@ fn check_subject_id(r: &mut Report, leaf: &X509Certificate<'_>, peer: Peer) {
 /// Syntax and check digit of an identifier made of `parts` fixed-length prefixes and a
 /// variable part (C.3, C.5, C.6): letters and digits with optional hyphens between the
 /// elements, the type letter in its place, a check digit at the end.
-fn check_id(id: &str, prefix: &[(usize, Option<char>)], rest: (usize, usize), min_total: usize) -> Result<(), String> {
+fn check_id(id: &str, prefix: &[(usize, Option<char>)], rest: (usize, usize), min_total: usize, forbid_ioq: bool) -> Result<(), String> {
     if !id.is_ascii() || id.len() > 255 {
         return Err("not ASCII or longer than 255 characters".into());
     }
@@ -516,6 +516,10 @@ fn check_id(id: &str, prefix: &[(usize, Option<char>)], rest: (usize, usize), mi
     }
     if !compact.chars().all(|c| c.is_ascii_alphanumeric()) {
         return Err("only letters, digits and separators are allowed".into());
+    }
+    // V2G20-2090, 2128: the letters ISO 3780 keeps out of a WMI (I, O, Q) are not used anywhere.
+    if forbid_ioq && compact.chars().any(|c| matches!(c.to_ascii_uppercase(), 'I' | 'O' | 'Q')) {
+        return Err("the letters I, O and Q are not allowed".into());
     }
     if compact.len() < min_total {
         return Err(format!("{} characters without separators, at least {min_total} are needed", compact.len()));
@@ -587,19 +591,19 @@ fn check_digit(elements: &[String]) -> char {
 
 /// `<Country Code> <S> <EVSE Operator ID> <S> "S" <S> <ControllerID> <S> <Check Digit>` (V2G20-2083).
 pub fn check_secc_id(id: &str) -> Result<(), String> {
-    check_id(id, &[(2, None), (3, None), (1, Some('S'))], (32, 248), 39)
+    check_id(id, &[(2, None), (3, None), (1, Some('S'))], (32, 248), 39, true)
 }
 
 /// `<WMI> <S> "V" <S> <OEM's own unique ID> <S> <Check Digit>` (V2G20-2093).
 pub fn check_evcc_id(id: &str) -> Result<(), String> {
-    check_id(id, &[(3, None), (1, Some('V'))], (15, 250), 20)
+    check_id(id, &[(3, None), (1, Some('V'))], (15, 250), 20, true)
 }
 
 /// `<Country Code> <S> <Provider ID> <S> <Instance> <S> <Check Digit>` (C.1, IEC 63119-2): two
 /// letters, three letters or digits, nine letters or digits and the check digit of C.6. The
 /// format is read from the example of C.6, since IEC 63119-2 is not at hand.
 pub fn check_emaid(id: &str) -> Result<(), String> {
-    check_id(id, &[(2, None), (3, None)], (9, 9), 15)
+    check_id(id, &[(2, None), (3, None)], (9, 9), 15, false)
 }
 
 /// The chain the TLS library verified for the peer (leaf first, root last), checked now.
@@ -632,6 +636,9 @@ mod tests {
         assert!(check_secc_id("DE-8AA-V-00003C4D557878675645330967543476-4").is_err());
         assert!(check_evcc_id("DE8-V-AA0000453C4D58-2").is_err());
         assert!(check_evcc_id("DE8-V-AA0000453C4D58Y_2").is_err());
+        // The letters I, O and Q are out (V2G20-2090), the simulated car's identifier is in order.
+        assert!(check_evcc_id("WMIV1234567890ABCDEX").is_err());
+        assert_eq!(check_evcc_id("DE8VAA0000453C4D58Y2"), Ok(()));
     }
 
     #[test]

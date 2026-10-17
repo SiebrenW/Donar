@@ -105,11 +105,37 @@ async fn main() -> std::process::ExitCode {
 }
 
 /// The JSON Schemas of the two settings files with their defaults, for the forms.
+/// The response code settings of the charger and the codes the message each decides may carry
+/// (Tables 224 and 226), for the page's choice of a code.
+fn response_codes() -> Value {
+    use iso15118_20::ResponseMessage as M;
+    let settings = [
+        ("setup_code", M::SessionSetup),
+        ("authorization_code", M::Authorization),
+        ("selection_code", M::ServiceSelection),
+        ("cpd_code", M::DcChargeParameterDiscovery),
+        ("schedule_code", M::ScheduleExchange),
+        ("cable_check_code", M::DcCableCheck),
+        ("power_delivery_code", M::PowerDelivery),
+        ("welding_code", M::DcWeldingDetection),
+    ];
+    let all: Vec<&str> = iso15118_20::common_types::ResponseCode::ALL.iter().map(|c| c.xml_name()).collect();
+    let allowed: serde_json::Map<String, Value> = settings
+        .iter()
+        .map(|(setting, message)| {
+            let codes: Vec<&str> = iso15118_20::common_types::ResponseCode::ALL.iter().filter(|c| message.allows(**c)).map(|c| c.xml_name()).collect();
+            (setting.to_string(), json!({ "message": message.name(), "allowed": codes }))
+        })
+        .collect();
+    json!({ "all": all, "settings": allowed })
+}
+
 async fn schema() -> Json<Value> {
     let part = |schema: schemars::Schema, defaults: Value| json!({ "schema": schema, "defaults": defaults });
     Json(json!({
         "evcc": part(schemars::schema_for!(evcc_sim::Settings), serde_json::to_value(evcc_sim::Settings::default()).unwrap()),
         "secc": part(schemars::schema_for!(evse_sim::Settings), serde_json::to_value(evse_sim::Settings::default()).unwrap()),
+        "response_codes": response_codes(),
     }))
 }
 

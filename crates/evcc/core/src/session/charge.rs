@@ -49,7 +49,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 ..Step::default()
             };
         }
-        let inlet = rational_to_volts(self.ev.inlet_voltage());
+        // What the vehicle measures at its inlet; the next request reports it.
+        self.last_inlet = self.ev.inlet_voltage();
+        let inlet = rational_to_volts(self.last_inlet);
         let battery = rational_to_volts(self.ev.battery_voltage());
         if (inlet - battery).abs() < f32::from(self.config.precharge_tolerance_v) {
             self.precharge_finishing = true;
@@ -81,6 +83,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             // We asked for Dynamic control.
             return self.end(EndReason::UnexpectedMessage);
         };
+        self.check_evse_loop_limits(&mode);
         let status = ChargeLoopStatus {
             present_current: res.evse_present_current,
             present_voltage: res.evse_present_voltage,
@@ -173,7 +176,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         let msg = dc::DcPreChargeReq {
             header: self.header(),
             ev_processing: if finished { Processing::Finished } else { Processing::Ongoing },
-            ev_present_voltage: battery,
+            // V2G20-2180: the voltage at the inlet, which follows the charger's output until
+            // the contactors are closed; the target is the battery's.
+            ev_present_voltage: self.last_inlet,
             ev_target_voltage: battery,
         };
         let framed = frame(tx, PayloadType::DC_MAINSTREAM, |out| msg.encode(out));
@@ -192,7 +197,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     pub(super) fn send_charge_loop_req(&mut self, tx: &mut [u8]) -> Step {
         self.charge_loop_started = true;
         let r = self.ev.schedule_request();
-        let l = self.ev.dc_limits();
+        let l = self.loop_limits();
         let msg = dc::DcChargeLoopReq {
             header: self.header(),
             display_parameters: self.ev.present_soc().map(|soc| common_types::DisplayParameters {
@@ -253,15 +258,20 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     /// renegotiation (V2G20-2317).
     pub(super) fn frame_power_delivery_req(&mut self, progress: common::ChargeProgress, payload_type: PayloadType, tx: &mut [u8]) -> Result<usize, ()> {
         let r = self.ev.schedule_request();
-        let limits = self.ev.dc_limits();
-        // A single-entry profile at the vehicle's maximum charge power until departure: the
-        // "fastest charging" simulation the standard asks for is simplified (TODO).
-        let entries = [common::PowerScheduleEntry {
-            duration: r.departure_time,
-            power: limits.maximum_charge_power,
-            power_l2: None,
-            power_l3: None,
-        }];
+        // Dynamic control mode (8.3.4.3.8.2): the fastest charging the vehicle can think of up to
+        // its maximum energy request, at the lower of its own and the charger's maximum power,
+        // both as announced in the charge parameter discovery.
+        let announced = self.ev_announced.unwrap_or_else(|| self.ev.dc_limits());
+        let power = match self.evse_announced {
+            Some(evse) => super::limits::smaller(announced.maximum_charge_power, evse.evse_maximum_charge_power),
+            None => announced.maximum_charge_power,
+        };
+        let (watts, watt_hours) = (rational_to_volts(power), rational_to_volts(r.maximum_energy));
+        let seconds = if watts > 0.0 { watt_hours * 3600.0 / watts } else { r.departure_time as f32 };
+        // Rounded up, at least a second, at most until departure.
+        let whole = seconds as u32;
+        let duration = (if (whole as f32) < seconds { whole + 1 } else { whole }).clamp(1, r.departure_time.max(1));
+        let entries = [common::PowerScheduleEntry { duration, power, power_l2: None, power_l3: None }];
         let time_anchor = self.timestamp();
         let msg = common::PowerDeliveryReq {
             header: self.header(),

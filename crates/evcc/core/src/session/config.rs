@@ -68,6 +68,10 @@ pub struct Config {
     /// After a `WARNING` for a Plug & Charge authorization, authorize with EIM if the charger
     /// offered it as well (V2G20-1583); otherwise the session ends with the response code.
     pub pnc_fallback_to_eim: bool,
+    /// Keep the limits of the charge loop within those of the charge parameter discovery
+    /// (V2G20-2198, 2199): maximums no higher, minimums no lower. Off, the vehicle sends whatever
+    /// [`crate::ev::Ev::dc_limits`] says, for tests of a charger.
+    pub enforce_cpd_limits: bool,
 }
 
 impl Config {
@@ -103,6 +107,7 @@ impl Config {
         pause_on_notification: false,
         prefer_pnc: false,
         pnc_fallback_to_eim: true,
+        enforce_cpd_limits: true,
     };
 }
 

@@ -15,6 +15,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         if let Some(end) = self.received(MsgKind::DcChargeParameterDiscoveryRes, res.response_code) {
             return end;
         }
+        self.note_evse_limits(&res.dc_cpd_res_energy_transfer_mode);
         let mut step = self.send_schedule_exchange_req(tx);
         if step.end.is_none() {
             step.notice = Some(Notice::ChargeParametersDiscovered(res.dc_cpd_res_energy_transfer_mode));

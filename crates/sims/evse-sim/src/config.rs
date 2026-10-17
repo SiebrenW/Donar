@@ -239,8 +239,9 @@ pub struct Limits {
     pub min_charge_current_a: u32,
     pub max_voltage_v: u32,
     pub min_voltage_v: u32,
-    /// `EVSEPowerRampLimitation` in watts per second, when the charger limits the ramp.
-    pub power_ramp_limitation_w: Option<u32>,
+    /// `EVSEPowerRampLimitation` in percent per minute (8.3.5.5.2), when the charger limits how
+    /// fast the power may change.
+    pub power_ramp_limitation_percent_per_min: Option<u32>,
 }
 
 impl Default for Limits {
@@ -252,7 +253,7 @@ impl Default for Limits {
             min_charge_current_a: 2,
             max_voltage_v: 920,
             min_voltage_v: 150,
-            power_ramp_limitation_w: None,
+            power_ramp_limitation_percent_per_min: None,
         }
     }
 }
@@ -276,6 +277,9 @@ pub struct Pnc {
 pub struct Config {
     /// Plug & Charge.
     pub pnc: Pnc,
+    /// Answer a charge loop request whose limits break V2G20-2198 or 2199 with `FAILED`; without
+    /// it the violation is only noted.
+    pub fail_on_limit_violation: bool,
     /// Receive but do not answer anything (to see the vehicle time out). A test platform can
     /// switch it on and off during a session.
     pub silent: bool,
@@ -374,6 +378,7 @@ impl Default for Config {
         Self {
             pnc: Pnc::default(),
             silent: false,
+            fail_on_limit_violation: false,
             limits: Limits::default(),
             evse_id: "DE*SIM*E0001".into(),
             session_id: [0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18],

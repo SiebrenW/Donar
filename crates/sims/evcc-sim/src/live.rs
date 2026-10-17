@@ -13,7 +13,7 @@ use sim_control::{Endpoint, EventLog, Metric};
 use crate::settings::Limits;
 
 /// The battery the model charges.
-const CAPACITY_WH: f64 = 60_000.0;
+pub(crate) const CAPACITY_WH: f64 = 60_000.0;
 /// The battery voltage the model reports.
 const NOMINAL_VOLTAGE: f64 = 400.0;
 
@@ -157,6 +157,8 @@ impl EvLive {
             Record::StateChange { from, to } => json!({ "src": "ev", "t": now_ms, "kind": "state", "text": format!("{from:?} -> {to:?}") }),
             // Raw payloads are for the log.
             Record::RxPayload { .. } => return,
+            // The charger broke a rule: shown as such.
+            Record::Violation { .. } | Record::ResponseCodeNotAllowed { .. } => json!({ "src": "ev", "t": now_ms, "kind": "violation", "text": format!("{record:?}") }),
             other => json!({ "src": "ev", "t": now_ms, "kind": "note", "text": format!("{other:?}") }),
         };
         event["phase"] = json!(phase);

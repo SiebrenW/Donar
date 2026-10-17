@@ -66,17 +66,30 @@ fn rn(x: u32) -> RationalNumber {
 
 impl Ev for SimulatedEv {
     fn evcc_id(&self) -> &str {
-        "WMIV1234567890ABCDEX"
+        // Annex C.5: WMI, "V", the OEM's own id and the check digit; no I, O or Q. The example of C.5.2.
+        "DE8VAA0000453C4D58Y2"
     }
     fn schedule_request(&self) -> ScheduleRequest {
         let l = &self.limits();
+        // With a battery model the energy requests follow the state of charge: what is needed
+        // for the target and the minimum, and what fits before the battery is full
+        // (8.3.5.3.13: `EVTargetEnergyRequest` is "the energy the EV needs to fulfil the target
+        // SOC"). Without one they are the numbers of the settings.
+        let (target, maximum, minimum) = match &self.live {
+            Some(live) => {
+                let soc = live.present_soc();
+                let needed = |percent: f64| RationalNumber::from_f64(((percent - soc).max(0.0) / 100.0 * live::CAPACITY_WH).round());
+                (needed(f64::from(l.target_soc)), needed(100.0), needed(f64::from(l.min_soc.unwrap_or(0))))
+            }
+            None => (rn(l.target_energy_wh), rn(l.max_energy_wh), rn(l.min_energy_wh)),
+        };
         ScheduleRequest {
             departure_time: l.departure_time_s.max(1),
             minimum_soc: l.min_soc,
             target_soc: Some(l.target_soc),
-            target_energy: rn(l.target_energy_wh),
-            maximum_energy: rn(l.max_energy_wh),
-            minimum_energy: rn(l.min_energy_wh),
+            target_energy: target,
+            maximum_energy: maximum,
+            minimum_energy: minimum,
         }
     }
     fn dc_limits(&self) -> DcLimits {

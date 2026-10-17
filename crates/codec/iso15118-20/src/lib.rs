@@ -10,7 +10,9 @@
 
 mod generated;
 mod rational;
+pub mod response_codes;
 pub mod signature;
 
 pub use generated::{common, common_types, dc, xmldsig};
+pub use response_codes::ResponseMessage;
 pub use signature::Signature;

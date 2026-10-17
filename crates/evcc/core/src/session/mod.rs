@@ -29,6 +29,7 @@ use crate::{Timer, TimerCmd, Timers};
 
 mod charge;
 mod config;
+mod limits;
 mod parameters;
 mod renegotiation;
 mod setup;
@@ -88,6 +89,12 @@ struct Machine<E, L> {
     eim_offered: bool,
     /// The challenge of `AuthorizationSetupRes` a Plug & Charge request answers.
     pnc_challenge: Option<[u8; 16]>,
+    /// The limits the vehicle announced in its last charge parameter discovery and the charger's
+    /// answer to it, which the charge loop has to stay within (V2G20-2198, 2199, 2654, 2655).
+    ev_announced: Option<crate::ev::DcLimits>,
+    evse_announced: Option<dc::DcCpdResEnergyTransferMode>,
+    /// The voltage at the inlet as the vehicle last measured it (side B during pre-charge).
+    last_inlet: iso15118_20::common_types::RationalNumber,
 }
 
 impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
@@ -123,6 +130,9 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 authorization: common::Authorization::Eim,
                 eim_offered: false,
                 pnc_challenge: None,
+                ev_announced: None,
+                evse_announced: None,
+                last_inlet: iso15118_20::common_types::RationalNumber { exponent: 0, value: 0 },
             },
         }
     }
@@ -436,7 +446,14 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     fn received_or(&mut self, msg: MsgKind, code: ResponseCode, also_ok: Option<ResponseCode>) -> Option<Step> {
         self.log.record(&Record::MsgRx { msg });
         self.log.record(&Record::Response { msg, code });
+        self.check_response_code(msg, code);
         if is_ok(code) || Some(code) == also_ok { None } else { Some(self.end(EndReason::Rejected(code))) }
+    }
+    /// Notes a response code the message may not carry.
+    fn check_response_code(&mut self, msg: MsgKind, code: ResponseCode) {
+        if msg.response_message().is_some_and(|m| !m.allows(code)) {
+            self.log.record(&Record::ResponseCodeNotAllowed { msg, code });
+        }
     }
     fn arm_sequence(&self) -> TimerCmd {
         TimerCmd::Arm { timer: Timer::Sequence, ms: self.config.sequence_performance_ms }

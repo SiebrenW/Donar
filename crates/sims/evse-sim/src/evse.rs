@@ -63,7 +63,7 @@ pub struct Output {
 }
 
 pub struct Evse {
-    config: Config,
+    pub(crate) config: Config,
     state: State,
     rx: Vec<u8>,
     schema_id: u8,
@@ -88,11 +88,15 @@ pub struct Evse {
     log: Vec<String>,
     /// The challenge of this session's `AuthorizationSetupRes` (V2G20-697: 128 random bits).
     challenge: [u8; 16],
+    last_stamp: std::cell::Cell<u64>,
+    /// The limits of the vehicle's charge parameter discovery request, which its charge loop
+    /// requests have to stay within (V2G20-2198, 2199).
+    ev_announced: Option<dc::DcCpdReqEnergyTransferMode>,
 }
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge() }
+        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge(), last_stamp: std::cell::Cell::new(0), ev_announced: None }
     }
 
     /// Reports the charge loop measurements to a test platform and takes its edits.
@@ -109,6 +113,28 @@ impl Evse {
     /// offered and answered, why it refused or closed.
     pub fn take_log(&mut self) -> Vec<String> {
         std::mem::take(&mut self.log)
+    }
+
+    /// Notes the values of a charge loop request that break V2G20-2198 or 2199 (maximums above and
+    /// minimums below what the charge parameter discovery announced); false when there were any.
+    fn check_ev_loop_limits(&mut self, m: &dc::DynamicDcClReqControlMode) -> bool {
+        let Some(a) = self.ev_announced else { return true };
+        let checks = [
+            ("V2G20-2198", "EVMaximumChargePower", m.ev_maximum_charge_power, a.ev_maximum_charge_power, true),
+            ("V2G20-2198", "EVMaximumChargeCurrent", m.ev_maximum_charge_current, a.ev_maximum_charge_current, true),
+            ("V2G20-2198", "EVMaximumVoltage", m.ev_maximum_voltage, a.ev_maximum_voltage, true),
+            ("V2G20-2199", "EVMinimumChargePower", m.ev_minimum_charge_power, a.ev_minimum_charge_power, false),
+            ("V2G20-2199", "EVMinimumVoltage", m.ev_minimum_voltage, a.ev_minimum_voltage, false),
+        ];
+        let mut fine = true;
+        for (requirement, item, sent, announced, maximum) in checks {
+            let (sent, announced) = (sent.to_f64(), announced.to_f64());
+            if if maximum { sent > announced } else { sent < announced } {
+                self.note(format!("violation: {requirement}: {item} is {sent}, the discovery announced {announced}"));
+                fine = false;
+            }
+        }
+        fine
     }
 
     /// The limits now: a test platform's live ones, which it may change during the session.
@@ -181,11 +207,33 @@ impl Evse {
             self.note("silent: not answering");
             return Output::default();
         }
-        let out = self.on_frame_inner(payload_type, payload);
+        let mut out = self.on_frame_inner(payload_type, payload);
+        // A request that is none of what the charger waits for gets FAILED_SequenceError of the
+        // response type it asks for (V2G20-459); only what is not a request at all closes silently.
+        if out.send.is_none() && out.close && !self.config.silent {
+            let mut mem = vec![0u8; 8192];
+            let arena = Arena::new(&mut mem);
+            let reply = crate::answers::decode_request(payload_type, payload, &arena).and_then(|r| self.failing(&r, ResponseCode::FailedSequenceError));
+            if reply.is_some() {
+                self.note(format!("a request out of sequence (state {before:?}): FAILED_SequenceError (V2G20-459)"));
+                out = Output { send: reply, close: true };
+            }
+        }
         match (&out.send, out.close) {
             (None, true) => self.note(format!("closing without an answer: the frame is not a decodable {} (state {before:?})", Self::expects(before))),
             (None, false) => self.note("no answer"),
-            (Some(bytes), close) => self.note(format!("tx {} bytes{}", bytes.len(), if close { ", then closing" } else { "" })),
+            (Some(bytes), close) => {
+                let tail = if close { ", then closing" } else { "" };
+                match crate::answers::response_of(bytes) {
+                    Some((name, message, code)) => {
+                        self.note(format!("tx {name} {} ({} bytes{tail})", code.xml_name(), bytes.len()));
+                        if !message.allows(code) {
+                            self.note(format!("violation: {} with {} is not defined (Tables 224, 226)", name, code.xml_name()));
+                        }
+                    }
+                    None => self.note(format!("tx {} bytes{tail}", bytes.len())),
+                }
+            }
         }
         if self.state != before {
             self.note(format!("state {before:?} -> {:?}", self.state));
@@ -249,7 +297,7 @@ impl Evse {
                     ResponseCode::Ok | ResponseCode::OkNewSessionEstablished | ResponseCode::OkOldSessionJoined
                 );
                 let res = SessionSetupRes {
-                    header: MessageHeader::new(self.session_id, now()),
+                    header: MessageHeader::new(self.session_id, self.stamp()),
                     response_code: code,
                     evseid: &self.config.evse_id,
                 };
@@ -363,6 +411,9 @@ impl Evse {
             }
             State::AwaitChargeParameterDiscoveryReq if payload_type == PayloadType::DC_MAINSTREAM => {
                 let Ok(dc::Message::DcChargeParameterDiscoveryReq(req)) = dc::decode(payload, &arena) else { return closed };
+                if let dc::DcCpdReqEnergyTransferModeChoice::Base(m) = &req.dc_cpd_req_energy_transfer_mode {
+                    self.ev_announced = Some(*m);
+                }
                 let code = if req.header.session_id != self.session_id {
                     ResponseCode::FailedUnknownSession
                 } else {
@@ -383,7 +434,7 @@ impl Evse {
                 let (processing, code) = if req.header.session_id != self.session_id {
                     (Processing::Finished, ResponseCode::FailedUnknownSession)
                 } else if !matches!(req.se_req_control_mode, common::SeReqControlModeChoice::Dynamic(_)) {
-                    (Processing::Finished, ResponseCode::FailedWrongChargeParameter)
+                    (Processing::Finished, ResponseCode::Failed)
                 } else if self.schedule_reqs_seen <= self.config.schedule_ongoing_responses {
                     (Processing::Ongoing, ResponseCode::Ok)
                 } else {
@@ -457,7 +508,8 @@ impl Evse {
                 let code = if req.header.session_id != self.session_id {
                     ResponseCode::FailedUnknownSession
                 } else if !matches!(req.cl_req_control_mode, dc::ClReqControlModeChoice::DynamicDc(_)) {
-                    ResponseCode::FailedWrongChargeParameter
+                    // Table 226: FAILED_WrongChargeParameter is for the parameter discovery only.
+                    ResponseCode::Failed
                 } else {
                     ResponseCode::Ok
                 };
@@ -483,14 +535,24 @@ impl Evse {
                 };
                 let rn = |value: u32| RationalNumber::from_f64(f64::from(value));
                 let l = &self.limits();
-                let (ev_voltage, ev_max_current, ev_max_power) = match &req.cl_req_control_mode {
-                    dc::ClReqControlModeChoice::DynamicDc(m) => (req.ev_present_voltage.to_f64(), m.ev_maximum_charge_current.to_f64(), m.ev_maximum_charge_power.to_f64()),
-                    _ => (req.ev_present_voltage.to_f64(), 0.0, 0.0),
+                let (ev_voltage, ev_max_current, ev_max_power, ev_max_voltage) = match &req.cl_req_control_mode {
+                    dc::ClReqControlModeChoice::DynamicDc(m) => (req.ev_present_voltage.to_f64(), m.ev_maximum_charge_current.to_f64(), m.ev_maximum_charge_power.to_f64(), m.ev_maximum_voltage.to_f64()),
+                    _ => (req.ev_present_voltage.to_f64(), 0.0, 0.0, 0.0),
                 };
+                let mut code = code;
+                if let dc::ClReqControlModeChoice::DynamicDc(m) = &req.cl_req_control_mode
+                    && !self.check_ev_loop_limits(m) && self.config.fail_on_limit_violation {
+                        code = ResponseCode::Failed;
+                    }
                 let (voltage, current, max_power) = match &self.live {
                     Some(live) => live.charge_loop(ev_voltage, ev_max_current, ev_max_power),
                     None => (ev_voltage, crate::live::modelled_current(ev_voltage, ev_max_current, ev_max_power, l), f64::from(l.max_charge_power_w)),
                 };
+                // What limited the delivery: the flags say which limit the charger has reached.
+                let limit = |achieved: f64, limit: f64| current > 0.0 && achieved >= limit * 0.999;
+                let current_limit_achieved = limit(current, ev_max_current.min(f64::from(l.max_charge_current_a)));
+                let power_limit_achieved = limit(voltage * current, ev_max_power.min(f64::from(l.max_charge_power_w)));
+                let voltage_limit_achieved = limit(voltage, if ev_max_voltage > 0.0 { ev_max_voltage.min(f64::from(l.max_voltage_v)) } else { f64::from(l.max_voltage_v) });
                 let res = dc::DcChargeLoopRes {
                     header: self.header(),
                     response_code: code,
@@ -502,9 +564,9 @@ impl Evse {
                     receipt: None,
                     evse_present_current: RationalNumber::from_f64(current),
                     evse_present_voltage: RationalNumber::from_f64(voltage),
-                    evse_power_limit_achieved: false,
-                    evse_current_limit_achieved: false,
-                    evse_voltage_limit_achieved: false,
+                    evse_power_limit_achieved: power_limit_achieved,
+                    evse_current_limit_achieved: current_limit_achieved,
+                    evse_voltage_limit_achieved: voltage_limit_achieved,
                     cl_res_control_mode: dc::ClResControlModeChoice::DynamicDc(dc::DynamicDcClResControlMode {
                         departure_time: None,
                         minimum_soc: None,
@@ -605,7 +667,7 @@ impl Evse {
 }
 
 impl Evse {
-    fn cpd_res(&self, code: ResponseCode) -> dc::DcChargeParameterDiscoveryRes<'static> {
+    pub(crate) fn cpd_res(&self, code: ResponseCode) -> dc::DcChargeParameterDiscoveryRes<'static> {
         let rn = |value: u32| RationalNumber::from_f64(f64::from(value));
         let l = &self.limits();
         dc::DcChargeParameterDiscoveryRes {
@@ -618,7 +680,7 @@ impl Evse {
                 evse_minimum_charge_current: rn(l.min_charge_current_a),
                 evse_maximum_voltage: rn(l.max_voltage_v),
                 evse_minimum_voltage: rn(l.min_voltage_v),
-                evse_power_ramp_limitation: l.power_ramp_limitation_w.map(rn),
+                evse_power_ramp_limitation: l.power_ramp_limitation_percent_per_min.map(rn),
             }),
         }
     }
@@ -648,6 +710,9 @@ impl Evse {
         }
         let side = PayloadType::SCHEDULE_RENEGOTIATION;
         if let Ok(dc::Message::DcChargeParameterDiscoveryReq(req)) = dc::decode(payload, &arena) {
+            if let dc::DcCpdReqEnergyTransferModeChoice::Base(m) = &req.dc_cpd_req_energy_transfer_mode {
+                self.ev_announced = Some(*m);
+            }
             let code = if req.header.session_id != self.session_id { ResponseCode::FailedUnknownSession } else { self.config.cpd_code };
             self.side_schedule_reqs_seen = 0;
             let res = self.cpd_res(code);
@@ -739,50 +804,41 @@ impl Evse {
         }
     }
 
-    fn header(&self) -> MessageHeader<'static> {
-        MessageHeader::new(self.session_id, now())
+    pub(crate) fn header(&self) -> MessageHeader<'static> {
+        MessageHeader::new(self.session_id, self.stamp())
     }
 
-    /// Answers a message that carries the wrong session id with `FAILED_UnknownSession`.
+    /// The `TimeStamp` of a message: microseconds (V2G20-1534), larger with each message
+    /// (V2G20-1537).
+    fn stamp(&self) -> u64 {
+        let t = now_micros().max(self.last_stamp.get() + 1);
+        self.last_stamp.set(t);
+        t
+    }
+
+    /// Answers a message that carries the wrong session id with `FAILED_UnknownSession` (V2G20-460),
+    /// with the response of the type it asks for.
     fn unknown_session(&self, msg: common::Message<'_>) -> Output {
-        let send = match msg {
-            common::Message::AuthorizationSetupReq(_) => {
-                let res = AuthorizationSetupRes {
-                    header: self.header(),
-                    response_code: ResponseCode::FailedUnknownSession,
-                    authorization_services: &[Authorization::Eim],
-                    certificate_installation_service: false,
-                    // V2G20-1219, 1220: the PnC element when PnC is offered, EIM's otherwise.
-                    as_res_authorization_mode: if self.config.offered_authorization.contains(&Authorization::PnC) {
-                        AsResAuthorizationModeChoice::PnC(PnCAsResAuthorizationMode { gen_challenge: self.challenge, supported_providers: None })
-                    } else {
-                        AsResAuthorizationModeChoice::Eim(EimAsResAuthorizationMode {})
-                    },
-                };
-                frame(PayloadType::MAINSTREAM, |out| res.encode(out))
-            }
-            _ => {
-                let res = AuthorizationRes {
-                    header: self.header(),
-                    response_code: ResponseCode::FailedUnknownSession,
-                    evse_processing: Processing::Finished,
-                };
-                frame(PayloadType::MAINSTREAM, |out| res.encode(out))
-            }
-        };
-        Output { send, close: true }
+        Output { send: self.failing(&crate::answers::Request::Common(msg), ResponseCode::FailedUnknownSession), close: true }
     }
 }
 
 fn is_ok(code: ResponseCode) -> bool {
-    matches!(code, ResponseCode::Ok | ResponseCode::OkNewSessionEstablished | ResponseCode::OkOldSessionJoined)
+    matches!(
+        code,
+        ResponseCode::Ok
+            | ResponseCode::OkCertificateExpiresSoon
+            | ResponseCode::OkNewSessionEstablished
+            | ResponseCode::OkOldSessionJoined
+            | ResponseCode::OkPowerToleranceConfirmed
+    )
 }
 
-fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+fn now_micros() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_micros() as u64)
 }
 
-fn frame(payload_type: PayloadType, encode: impl FnOnce(&mut [u8]) -> Result<usize, EncodeError>) -> Option<Vec<u8>> {
+pub(crate) fn frame(payload_type: PayloadType, encode: impl FnOnce(&mut [u8]) -> Result<usize, EncodeError>) -> Option<Vec<u8>> {
     let mut buf = vec![0u8; 4096];
     let n = encode(&mut buf[HEADER_LEN..]).ok()?;
     write_header(&mut buf, payload_type, n).ok()?;

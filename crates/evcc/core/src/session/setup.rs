@@ -16,6 +16,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     pub(super) fn on_session_setup_res(&mut self, res: SessionSetupRes<'_>, tx: &mut [u8]) -> Step {
         self.log.record(&Record::MsgRx { msg: MsgKind::SessionSetupRes });
         self.log.record(&Record::Response { msg: MsgKind::SessionSetupRes, code: res.response_code });
+        self.check_response_code(MsgKind::SessionSetupRes, res.response_code);
         if !is_ok(res.response_code) {
             return self.end(EndReason::Rejected(res.response_code));
         }
@@ -64,6 +65,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     pub(super) fn on_authorization_setup_res(&mut self, res: AuthorizationSetupRes<'_>, tx: &mut [u8]) -> Step {
         self.log.record(&Record::MsgRx { msg: MsgKind::AuthorizationSetupRes });
         self.log.record(&Record::Response { msg: MsgKind::AuthorizationSetupRes, code: res.response_code });
+        self.check_response_code(MsgKind::AuthorizationSetupRes, res.response_code);
         if !is_ok(res.response_code) {
             return self.end(EndReason::Rejected(res.response_code));
         }
@@ -91,6 +93,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     pub(super) fn on_authorization_res(&mut self, res: AuthorizationRes, tx: &mut [u8]) -> Step {
         self.log.record(&Record::MsgRx { msg: MsgKind::AuthorizationRes });
         self.log.record(&Record::Response { msg: MsgKind::AuthorizationRes, code: res.response_code });
+        self.check_response_code(MsgKind::AuthorizationRes, res.response_code);
         self.log.record(&Record::EvseProcessing { processing: res.evse_processing });
         // V2G20-1583: a warning about the contract; EIM is the way out when it is on offer.
         if self.authorization == Authorization::PnC
@@ -198,6 +201,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     /// The request for the EVSE's DC limits; also the first message of a schedule renegotiation.
     pub(super) fn frame_charge_parameter_discovery_req(&mut self, payload_type: PayloadType, tx: &mut [u8]) -> Result<usize, ()> {
         let limits = self.ev.dc_limits();
+        self.ev_announced = Some(limits);
         let msg = dc::DcChargeParameterDiscoveryReq {
             header: self.header(),
             dc_cpd_req_energy_transfer_mode: dc::DcCpdReqEnergyTransferModeChoice::Base(

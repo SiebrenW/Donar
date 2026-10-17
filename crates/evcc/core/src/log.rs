@@ -5,7 +5,7 @@
 
 use exi::DecodeError;
 use iso15118_20::common::{Authorization, ParameterSet, Service};
-use iso15118_20::common_types::{Processing, ResponseCode};
+use iso15118_20::common_types::{Processing, RationalNumber, ResponseCode};
 
 use crate::session::{EndReason, State};
 
@@ -67,6 +67,11 @@ pub enum Record<'a> {
     SessionResumed { session_id: [u8; 8] },
     /// The `EVSEProcessing` value of an `AuthorizationRes`.
     EvseProcessing { processing: Processing },
+    /// The charger broke a rule of the standard with a value in a response (the requirement is
+    /// the one it breaks, `item` the element, `value` what was sent and `limit` what it may be).
+    Violation { requirement: &'static str, item: &'static str, value: RationalNumber, limit: RationalNumber },
+    /// The charger answered with a response code that the message may not carry (Tables 224, 226).
+    ResponseCodeNotAllowed { msg: MsgKind, code: ResponseCode },
     /// The authorization service the vehicle selected.
     AuthorizationSelected { service: Authorization },
     /// The energy transfer service and parameter set the EVSE accepted.
@@ -99,7 +104,7 @@ impl Record<'_> {
                 Level::Debug
             }
             Record::RxPayload { .. } => Level::Trace,
-            Record::DecodeFailed { .. } | Record::NoAuthorization { .. } | Record::NoService { .. } | Record::NoParameterSet { .. } => Level::Error,
+            Record::DecodeFailed { .. } | Record::Violation { .. } | Record::ResponseCodeNotAllowed { .. } | Record::NoAuthorization { .. } | Record::NoService { .. } | Record::NoParameterSet { .. } => Level::Error,
             Record::Ignored { .. } => Level::Info,
             Record::Ended { reason } => match reason {
                 EndReason::Completed => Level::Info,
@@ -118,4 +123,28 @@ pub struct NoLog;
 
 impl LogSink for NoLog {
     fn record(&mut self, _: &Record<'_>) {}
+}
+
+impl MsgKind {
+    /// The response message this is (the request kinds have none), for the response code tables.
+    pub fn response_message(self) -> Option<iso15118_20::ResponseMessage> {
+        use iso15118_20::ResponseMessage as M;
+        Some(match self {
+            MsgKind::SessionSetupRes => M::SessionSetup,
+            MsgKind::AuthorizationSetupRes => M::AuthorizationSetup,
+            MsgKind::AuthorizationRes => M::Authorization,
+            MsgKind::ServiceDiscoveryRes => M::ServiceDiscovery,
+            MsgKind::ServiceDetailRes => M::ServiceDetail,
+            MsgKind::ServiceSelectionRes => M::ServiceSelection,
+            MsgKind::ScheduleExchangeRes => M::ScheduleExchange,
+            MsgKind::PowerDeliveryRes => M::PowerDelivery,
+            MsgKind::DcChargeParameterDiscoveryRes => M::DcChargeParameterDiscovery,
+            MsgKind::DcCableCheckRes => M::DcCableCheck,
+            MsgKind::DcPreChargeRes => M::DcPreCharge,
+            MsgKind::DcChargeLoopRes => M::DcChargeLoop,
+            MsgKind::DcWeldingDetectionRes => M::DcWeldingDetection,
+            MsgKind::SessionStopRes => M::SessionStop,
+            _ => return None,
+        })
+    }
 }
