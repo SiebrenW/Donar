@@ -328,6 +328,17 @@ pub fn run_car_live(
             let reached = live.as_ref().is_some_and(|l| l.charge_loop(status));
             on_loop(reached)
         }
+        Notice::AcChargeParametersDiscovered(mode) => {
+            // V2G20-1829: the ramp limit in percent per minute of the maximum power; 0 is none (V2G20-1830).
+            let ramp = match mode {
+                iso15118_20::ac::AcCpdResEnergyTransferModeChoice::Base(m) => m.evse_power_ramp_limitation,
+                iso15118_20::ac::AcCpdResEnergyTransferModeChoice::Bpt(m) => m.evse_power_ramp_limitation,
+            };
+            if let Some(live) = &live {
+                live.set_ramp_limit(ramp.map_or(0.0, |r| r.to_f64()));
+            }
+            None
+        }
         Notice::AcChargeLoop(status) => {
             let reached = live.as_ref().is_some_and(|l| l.ac_charge_loop(status));
             on_loop(reached)

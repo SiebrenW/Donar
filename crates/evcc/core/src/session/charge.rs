@@ -405,6 +405,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         // Without a target (V2G20-1826: the charger names one only for the grid code) the vehicle
         // follows its schedule.
         let followed = self.schedule.power_at(self.secc_now());
+        let from_schedule = matches!(&res.cl_res_control_mode, ac::ClResControlModeChoice::ScheduledAc(m) if m.evse_target_active_power.is_none())
+            || matches!(&res.cl_res_control_mode, ac::ClResControlModeChoice::BptScheduledAc(m) if m.evse_target_active_power.is_none());
         let scheduled_mode = |m: ac::ScheduledAcClResControlMode| ac::DynamicAcClResControlMode {
             departure_time: None,
             minimum_soc: None,
@@ -456,6 +458,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             target_reactive_power: [mode.evse_target_reactive_power, mode.evse_target_reactive_power_l2, mode.evse_target_reactive_power_l3],
             present_active_power: [mode.evse_present_active_power, mode.evse_present_active_power_l2, mode.evse_present_active_power_l3],
             target_frequency: res.evse_target_frequency,
+            target_from_schedule: from_schedule,
             meter: res.meter_info.as_ref().map(reading),
         };
         self.after_charge_loop_res(res.evse_status, Notice::AcChargeLoop(status), res.meter_info.as_ref(), res.receipt.as_ref(), tx)

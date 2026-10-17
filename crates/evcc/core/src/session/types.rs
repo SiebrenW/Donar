@@ -256,6 +256,10 @@ pub struct AcChargeLoopStatus {
     /// What the EVSE measures (`EVSEPresentActivePower`), per line.
     pub present_active_power: [Option<iso15118_20::common_types::RationalNumber>; 3],
     pub target_frequency: Option<iso15118_20::common_types::RationalNumber>,
+    /// The target comes from the vehicle's own schedule (Scheduled mode, the charger named none): changes of it
+    /// are held to the charger's power ramp limit (V2G20-1831); a target the charger names overrides the limit
+    /// (V2G20-1832).
+    pub target_from_schedule: bool,
     /// The meter reading of this answer, if it had one.
     pub meter: Option<MeterReading>,
 }

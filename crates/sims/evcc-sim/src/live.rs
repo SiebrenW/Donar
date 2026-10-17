@@ -75,6 +75,10 @@ struct Inner {
     seen_current: f64,
     /// The active power per line the charger last asked of the on-board charger (AC), watts.
     ac_power: [f64; 3],
+    /// The charger's `EVSEPowerRampLimitation`, percent of the maximum power per minute (0: none), and when the
+    /// AC power was last moved.
+    ramp_percent: f64,
+    ac_power_at: Option<Instant>,
     loops: u32,
     phase: Phase,
     state: Option<State>,
@@ -162,6 +166,8 @@ impl EvLive {
                 seen_voltage: 0.0,
                 seen_current: 0.0,
                 ac_power: [0.0; 3],
+                ramp_percent: 0.0,
+                ac_power_at: None,
                 loops: 0,
                 phase: Phase::Connecting,
                 state: None,
@@ -244,12 +250,31 @@ impl EvLive {
     pub fn ac_charge_loop(&self, status: &AcChargeLoopStatus) -> bool {
         let mut g = self.inner.lock().unwrap();
         let p = status.target_active_power;
-        let watts = [Some(p.l1), p.l2, p.l3].map(|v| v.map_or(0.0, iso15118_20::common_types::RationalNumber::to_f64));
+        let target = [Some(p.l1), p.l2, p.l3].map(|v| v.map_or(0.0, iso15118_20::common_types::RationalNumber::to_f64));
+        let now = Instant::now();
+        let elapsed = g.ac_power_at.replace(now).map_or(0.0, |t| now.duration_since(t).as_secs_f64());
+        // V2G20-1831: changes of a power that comes from the vehicle's own schedule are held to the ramp limit;
+        // a target the charger names overrides it (V2G20-1832).
+        let watts = if status.target_from_schedule && g.ramp_percent > 0.0 {
+            let step = g.ramp_percent / 100.0 * f64::from(g.limits.ac_max_charge_power_w) * elapsed / 60.0;
+            let mut now_power = g.ac_power;
+            for (present, target) in now_power.iter_mut().zip(target) {
+                *present += (target - *present).clamp(-step, step);
+            }
+            now_power
+        } else {
+            target
+        };
         g.ac_power = watts;
         // Shown like a DC charge: the nominal voltage and the current the power comes to.
         g.seen_voltage = NOMINAL_VOLTAGE;
         g.seen_current = watts.iter().sum::<f64>() / NOMINAL_VOLTAGE;
         g.take_energy(watts.iter().sum())
+    }
+
+    /// The charger's power ramp limit from its charge parameters, percent of the maximum power per minute.
+    pub fn set_ramp_limit(&self, percent: f64) {
+        self.inner.lock().unwrap().ramp_percent = percent;
     }
 
     /// The active power per line the charger last asked for, which the on-board charger now
@@ -432,6 +457,30 @@ mod tests {
         assert_eq!(live.present_soc(), 55.0);
         assert!(live.command(json!({ "cmd": "measure", "key": "nope" })).is_err());
         assert!(live.command(json!({ "cmd": "advance", "to": "connecting" })).is_err());
+    }
+
+    #[test]
+    fn a_schedule_change_is_held_to_the_ramp_limit_and_a_named_target_is_not() {
+        use evcc_core::ev::Phases;
+        let live = EvLive::new(Limits::default(), 20, 1, false);
+        // 10 % of 3680 W per line per minute: about 6 W in a hundredth of a second is nothing.
+        live.set_ramp_limit(10.0);
+        let rn = RationalNumber::from_f64;
+        let status = |from_schedule| AcChargeLoopStatus {
+            target_active_power: Phases::three(rn(3680.0)),
+            target_reactive_power: [None; 3],
+            present_active_power: [None; 3],
+            target_frequency: None,
+            target_from_schedule: from_schedule,
+            meter: None,
+        };
+        live.ac_charge_loop(&status(true));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        live.ac_charge_loop(&status(true));
+        let held = live.ac_present_power()[0];
+        assert!(held < 100.0, "{held}");
+        live.ac_charge_loop(&status(false));
+        assert_eq!(live.ac_present_power()[0], 3680.0);
     }
 
     #[test]
