@@ -20,6 +20,7 @@ use app_protocol;
 use exi::{Arena, DecodeError};
 use iso15118_20::common::{self, SelectedService};
 use iso15118_20::common_types::{MessageHeader, ResponseCode};
+use iso15118_20::ac;
 use iso15118_20::dc;
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
@@ -36,8 +37,8 @@ mod setup;
 mod shutdown;
 mod types;
 
-pub use config::{Config, SERVICE_ID_DC, SERVICE_ID_DC_BPT};
-pub use types::{Buffers, ChargeLoopStatus, ControlPilot, EndReason, Event, Notice, Resume, State, Step};
+pub use config::{Config, SERVICE_ID_AC, SERVICE_ID_AC_BPT, SERVICE_ID_DC, SERVICE_ID_DC_BPT};
+pub use types::{AcChargeLoopStatus, Buffers, ChargeLoopStatus, ControlPilot, EndReason, Event, Notice, Resume, State, Step};
 
 pub struct Session<'a, E: Ev, L: LogSink> {
     rx: &'a mut [u8],
@@ -94,6 +95,10 @@ struct Machine<E, L> {
     ev_announced: Option<crate::ev::DcLimits>,
     ev_announced_discharge: Option<crate::ev::DischargeLimits>,
     evse_announced: Option<dc::DcCpdResEnergyTransferMode>,
+    /// The same for an AC session.
+    ev_announced_ac: Option<crate::ev::AcPowerLimits>,
+    ev_announced_ac_discharge: Option<crate::ev::AcDischargePowerLimits>,
+    evse_announced_ac: Option<ac::AcCpdResEnergyTransferMode>,
     /// The voltage at the inlet as the vehicle last measured it (side B during pre-charge).
     last_inlet: iso15118_20::common_types::RationalNumber,
 }
@@ -134,6 +139,9 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 ev_announced: None,
                 ev_announced_discharge: None,
                 evse_announced: None,
+                ev_announced_ac: None,
+                ev_announced_ac_discharge: None,
+                evse_announced_ac: None,
                 last_inlet: iso15118_20::common_types::RationalNumber { exponent: 0, value: 0 },
             },
         }
@@ -397,7 +405,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 timer: Timer::Response,
                 ms: if msg == MsgKind::ServiceDetailReq {
                     self.config.service_detail_timeout_ms
-                } else if msg == MsgKind::DcChargeLoopReq {
+                } else if matches!(msg, MsgKind::DcChargeLoopReq | MsgKind::AcChargeLoopReq) {
                     self.config.charge_loop_timeout_ms
                 } else {
                     self.config.response_timeout_ms
@@ -525,6 +533,23 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
     }
 
+    /// The same for AC mainstream messages.
+    fn ac_mainstream(
+        &mut self,
+        payload_type: PayloadType,
+        payload: &[u8],
+        arena: &Arena<'_>,
+        f: impl FnOnce(&mut Self, ac::Message<'_>) -> Option<Step>,
+    ) -> Step {
+        if payload_type != PayloadType::AC_MAINSTREAM {
+            return self.ignore(payload_type);
+        }
+        match ac::decode(payload, arena) {
+            Ok(msg) => f(self, msg).unwrap_or_else(|| self.ignore(payload_type)),
+            Err(e) => self.malformed(e),
+        }
+    }
+
     /// A frame arrived: decode it according to what the machine waits for and run the handler.
     fn on_frame(&mut self, payload_type: PayloadType, payload: &[u8], arena: &Arena<'_>, tx: &mut [u8]) -> Step {
         use common::Message as M;
@@ -566,6 +591,12 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 M::ServiceSelectionRes(res) => Some(m.on_service_selection_res(res, tx)),
                 _ => None,
             }),
+            State::AwaitChargeParameterDiscoveryRes if self.config.ac() => {
+                self.ac_mainstream(payload_type, payload, arena, |m, msg| match msg {
+                    ac::Message::AcChargeParameterDiscoveryRes(res) => Some(m.on_ac_charge_parameter_discovery_res(res, tx)),
+                    _ => None,
+                })
+            }
             State::AwaitChargeParameterDiscoveryRes => {
                 self.dc_mainstream(payload_type, payload, arena, |m, msg| match msg {
                     dc::Message::DcChargeParameterDiscoveryRes(res) => Some(m.on_charge_parameter_discovery_res(res, tx)),
@@ -586,6 +617,10 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             }),
             State::AwaitPowerDeliveryRes => self.mainstream(payload_type, payload, arena, |m, msg| match msg {
                 M::PowerDeliveryRes(res) => Some(m.on_power_delivery_start_res(res, tx)),
+                _ => None,
+            }),
+            State::AwaitChargeLoopRes if self.config.ac() => self.ac_mainstream(payload_type, payload, arena, |m, msg| match msg {
+                ac::Message::AcChargeLoopRes(res) => Some(m.on_ac_charge_loop_res(res, tx)),
                 _ => None,
             }),
             State::AwaitChargeLoopRes => self.dc_mainstream(payload_type, payload, arena, |m, msg| match msg {

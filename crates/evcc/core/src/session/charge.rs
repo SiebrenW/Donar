@@ -2,6 +2,7 @@
 
 use iso15118_20::common::{self, *};
 use iso15118_20::common_types::{self, EvseNotification, Processing, ResponseCode};
+use iso15118_20::ac;
 use iso15118_20::dc;
 use v2gtp::PayloadType;
 
@@ -105,8 +106,15 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             maximum_charge_current: mode.evse_maximum_charge_current,
             maximum_voltage: mode.evse_maximum_voltage,
         };
+        self.after_charge_loop_res(res.evse_status, Notice::ChargeLoop(status), tx)
+    }
+
+    /// The part of a charge loop answer that is the same in every kind of charge loop: what the
+    /// EVSE's notification asks for, or else the next request of the cycle. `notice` is handed to
+    /// the host when the loop goes on.
+    fn after_charge_loop_res(&mut self, evse_status: Option<common_types::EvseStatus>, notice: Notice, tx: &mut [u8]) -> Step {
         // V2G20-1416, V2G20-1960: Terminate means shut down and stop the session.
-        let notification = res.evse_status.map(|s| (s.evse_notification, s.notification_max_delay));
+        let notification = evse_status.map(|s| (s.evse_notification, s.notification_max_delay));
         if let Some((EvseNotification::Terminate, within_s)) = notification {
             self.stop_kind = StopKind::Terminate;
             return self.begin_stop(Some(within_s));
@@ -142,14 +150,14 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             Some((EvseNotification::ScheduleRenegotiation, _)) => {
                 let mut step = self.pace_charge_loop(tx);
                 step = self.start_schedule_renegotiation(step, tx);
-                step.notice = Some(Notice::ChargeLoop(status));
+                step.notice = Some(notice);
                 return step;
             }
             // Metering confirmation belongs to Plug & Charge and is ignored.
             _ => {}
         }
         let mut step = self.pace_charge_loop(tx);
-        step.notice = Some(Notice::ChargeLoop(status));
+        step.notice = Some(notice);
         step
     }
 
@@ -207,6 +215,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
     pub(super) fn send_charge_loop_req(&mut self, tx: &mut [u8]) -> Step {
         self.charge_loop_started = true;
+        if self.config.ac() {
+            return self.send_ac_charge_loop_req(tx);
+        }
         let r = self.ev.schedule_request();
         let l = self.loop_limits();
         let control_mode = if self.config.bpt() {
@@ -242,18 +253,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         };
         let msg = dc::DcChargeLoopReq {
             header: self.header(),
-            display_parameters: self.ev.present_soc().map(|soc| common_types::DisplayParameters {
-                present_soc: Some(soc.min(100) as i8),
-                minimum_soc: None,
-                target_soc: None,
-                maximum_soc: None,
-                remaining_time_to_minimum_soc: None,
-                remaining_time_to_target_soc: None,
-                remaining_time_to_maximum_soc: None,
-                charging_complete: None,
-                battery_energy_capacity: None,
-                inlet_hot: None,
-            }),
+            display_parameters: self.display_parameters(),
             meter_info_requested: false,
             ev_present_voltage: self.ev.battery_voltage(),
             cl_req_control_mode: control_mode,
@@ -264,6 +264,120 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
         self.send_then(State::AwaitChargeLoopRes, MsgKind::DcChargeLoopReq, framed)
     }
+    fn send_ac_charge_loop_req(&mut self, tx: &mut [u8]) -> Step {
+        let r = self.ev.schedule_request();
+        let l = self.loop_ac_limits();
+        let p = self.ev.ac_present_power();
+        let control_mode = if self.config.bpt() {
+            let d = self.loop_ac_discharge_limits();
+            ac::ClReqControlModeChoice::BptDynamicAc(ac::BptDynamicAcClReqControlMode {
+                departure_time: None,
+                ev_target_energy_request: r.target_energy,
+                ev_maximum_energy_request: r.maximum_energy,
+                ev_minimum_energy_request: r.minimum_energy,
+                ev_maximum_charge_power: l.maximum_charge_power.l1,
+                ev_maximum_charge_power_l2: l.maximum_charge_power.l2,
+                ev_maximum_charge_power_l3: l.maximum_charge_power.l3,
+                ev_minimum_charge_power: l.minimum_charge_power.l1,
+                ev_minimum_charge_power_l2: l.minimum_charge_power.l2,
+                ev_minimum_charge_power_l3: l.minimum_charge_power.l3,
+                ev_present_active_power: p.active.l1,
+                ev_present_active_power_l2: p.active.l2,
+                ev_present_active_power_l3: p.active.l3,
+                ev_present_reactive_power: p.reactive.l1,
+                ev_present_reactive_power_l2: p.reactive.l2,
+                ev_present_reactive_power_l3: p.reactive.l3,
+                ev_maximum_discharge_power: d.maximum_discharge_power.l1,
+                ev_maximum_discharge_power_l2: d.maximum_discharge_power.l2,
+                ev_maximum_discharge_power_l3: d.maximum_discharge_power.l3,
+                ev_minimum_discharge_power: d.minimum_discharge_power.l1,
+                ev_minimum_discharge_power_l2: d.minimum_discharge_power.l2,
+                ev_minimum_discharge_power_l3: d.minimum_discharge_power.l3,
+                ev_maximum_v2x_energy_request: None,
+                ev_minimum_v2x_energy_request: None,
+            })
+        } else {
+            ac::ClReqControlModeChoice::DynamicAc(ac::DynamicAcClReqControlMode {
+                departure_time: None,
+                ev_target_energy_request: r.target_energy,
+                ev_maximum_energy_request: r.maximum_energy,
+                ev_minimum_energy_request: r.minimum_energy,
+                ev_maximum_charge_power: l.maximum_charge_power.l1,
+                ev_maximum_charge_power_l2: l.maximum_charge_power.l2,
+                ev_maximum_charge_power_l3: l.maximum_charge_power.l3,
+                ev_minimum_charge_power: l.minimum_charge_power.l1,
+                ev_minimum_charge_power_l2: l.minimum_charge_power.l2,
+                ev_minimum_charge_power_l3: l.minimum_charge_power.l3,
+                ev_present_active_power: p.active.l1,
+                ev_present_active_power_l2: p.active.l2,
+                ev_present_active_power_l3: p.active.l3,
+                ev_present_reactive_power: p.reactive.l1,
+                ev_present_reactive_power_l2: p.reactive.l2,
+                ev_present_reactive_power_l3: p.reactive.l3,
+            })
+        };
+        let msg = ac::AcChargeLoopReq {
+            header: self.header(),
+            display_parameters: self.display_parameters(),
+            meter_info_requested: false,
+            cl_req_control_mode: control_mode,
+        };
+        let framed = frame(tx, PayloadType::AC_MAINSTREAM, |out| msg.encode(out));
+        if self.state == State::AwaitChargeLoopRes {
+            return self.sent(MsgKind::AcChargeLoopReq, framed);
+        }
+        self.send_then(State::AwaitChargeLoopRes, MsgKind::AcChargeLoopReq, framed)
+    }
+
+    pub(super) fn on_ac_charge_loop_res(&mut self, res: ac::AcChargeLoopRes, tx: &mut [u8]) -> Step {
+        if let Some(end) = self.received(MsgKind::AcChargeLoopRes, res.response_code) {
+            return end;
+        }
+        // We asked for Dynamic control, with the BPT variant in a BPT session.
+        let mode = match (res.cl_res_control_mode, self.config.bpt()) {
+            (ac::ClResControlModeChoice::DynamicAc(m), false) => m,
+            (ac::ClResControlModeChoice::BptDynamicAc(m), true) => ac::DynamicAcClResControlMode {
+                departure_time: m.departure_time,
+                minimum_soc: m.minimum_soc,
+                target_soc: m.target_soc,
+                ack_max_delay: m.ack_max_delay,
+                evse_target_active_power: m.evse_target_active_power,
+                evse_target_active_power_l2: m.evse_target_active_power_l2,
+                evse_target_active_power_l3: m.evse_target_active_power_l3,
+                evse_target_reactive_power: m.evse_target_reactive_power,
+                evse_target_reactive_power_l2: m.evse_target_reactive_power_l2,
+                evse_target_reactive_power_l3: m.evse_target_reactive_power_l3,
+                evse_present_active_power: m.evse_present_active_power,
+                evse_present_active_power_l2: m.evse_present_active_power_l2,
+                evse_present_active_power_l3: m.evse_present_active_power_l3,
+            },
+            _ => return self.end(EndReason::UnexpectedMessage),
+        };
+        let status = AcChargeLoopStatus {
+            target_active_power: crate::ev::Phases { l1: mode.evse_target_active_power, l2: mode.evse_target_active_power_l2, l3: mode.evse_target_active_power_l3 },
+            target_reactive_power: [mode.evse_target_reactive_power, mode.evse_target_reactive_power_l2, mode.evse_target_reactive_power_l3],
+            present_active_power: [mode.evse_present_active_power, mode.evse_present_active_power_l2, mode.evse_present_active_power_l3],
+            target_frequency: res.evse_target_frequency,
+        };
+        self.after_charge_loop_res(res.evse_status, Notice::AcChargeLoop(status), tx)
+    }
+
+    /// The vehicle's `DisplayParameters` for a charge loop request.
+    fn display_parameters(&self) -> Option<common_types::DisplayParameters> {
+        self.ev.present_soc().map(|soc| common_types::DisplayParameters {
+            present_soc: Some(soc.min(100) as i8),
+            minimum_soc: None,
+            target_soc: None,
+            maximum_soc: None,
+            remaining_time_to_minimum_soc: None,
+            remaining_time_to_target_soc: None,
+            remaining_time_to_maximum_soc: None,
+            charging_complete: None,
+            battery_energy_capacity: None,
+            inlet_hot: None,
+        })
+    }
+
     /// After a `DC_ChargeLoopRes`: wait the loop interval, then send the next request.
     pub(super) fn pace_charge_loop(&mut self, tx: &mut [u8]) -> Step {
         if self.config.charge_loop_interval_ms == 0 {
@@ -293,17 +407,34 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         // Dynamic control mode (8.3.4.3.8.2): the fastest charging the vehicle can think of up to
         // its maximum energy request, at the lower of its own and the charger's maximum power,
         // both as announced in the charge parameter discovery.
-        let announced = self.ev_announced.unwrap_or_else(|| self.ev.dc_limits());
-        let power = match self.evse_announced {
-            Some(evse) => super::limits::smaller(announced.maximum_charge_power, evse.evse_maximum_charge_power),
-            None => announced.maximum_charge_power,
+        let (power, power_l2, power_l3) = if self.config.ac() {
+            let announced = self.ev_announced_ac.unwrap_or_else(|| self.ev.ac20_limits()).maximum_charge_power;
+            let evse = self.evse_announced_ac;
+            let take = |ev: Option<iso15118_20::common_types::RationalNumber>, evse: Option<iso15118_20::common_types::RationalNumber>| match (ev, evse) {
+                (Some(a), Some(b)) => Some(super::limits::smaller(a, b)),
+                (a, None) => a,
+                (None, _) => None,
+            };
+            (
+                take(Some(announced.l1), evse.map(|e| e.evse_maximum_charge_power)).unwrap_or(announced.l1),
+                take(announced.l2, evse.and_then(|e| e.evse_maximum_charge_power_l2)),
+                take(announced.l3, evse.and_then(|e| e.evse_maximum_charge_power_l3)),
+            )
+        } else {
+            let announced = self.ev_announced.unwrap_or_else(|| self.ev.dc_limits());
+            let power = match self.evse_announced {
+                Some(evse) => super::limits::smaller(announced.maximum_charge_power, evse.evse_maximum_charge_power),
+                None => announced.maximum_charge_power,
+            };
+            (power, None, None)
         };
-        let (watts, watt_hours) = (rational_to_volts(power), rational_to_volts(r.maximum_energy));
+        let total_watts = rational_to_volts(power) + power_l2.map_or(0.0, rational_to_volts) + power_l3.map_or(0.0, rational_to_volts);
+        let (watts, watt_hours) = (total_watts, rational_to_volts(r.maximum_energy));
         let seconds = if watts > 0.0 { watt_hours * 3600.0 / watts } else { r.departure_time as f32 };
         // Rounded up, at least a second, at most until departure.
         let whole = seconds as u32;
         let duration = (if (whole as f32) < seconds { whole + 1 } else { whole }).clamp(1, r.departure_time.max(1));
-        let entries = [common::PowerScheduleEntry { duration, power, power_l2: None, power_l3: None }];
+        let entries = [common::PowerScheduleEntry { duration, power, power_l2, power_l3 }];
         let time_anchor = self.timestamp();
         let msg = common::PowerDeliveryReq {
             header: self.header(),
@@ -316,7 +447,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             }),
             // A BPT session says which channel the power flows on at the start (unified channel:
             // charging; discharging follows from the charge loop's setpoints).
-            bpt_channel_selection: (self.config.bpt() && progress == common::ChargeProgress::Start).then_some(common::ChannelSelection::Charge),
+            bpt_channel_selection: (self.config.bpt() && !self.config.ac() && progress == common::ChargeProgress::Start).then_some(common::ChannelSelection::Charge),
         };
         frame(tx, payload_type, |out| msg.encode(out))
     }}

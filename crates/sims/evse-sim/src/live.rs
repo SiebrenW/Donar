@@ -131,6 +131,19 @@ impl EvseLive {
     }
 }
 
+impl EvseLive {
+    /// The values of an AC charge loop answer: the voltage shown (the nominal one), the current
+    /// the target power comes to at it (negative for a discharge), and the power limit. Modelled
+    /// as they are given; set by hand, they replace those, and the target power follows.
+    pub fn ac_charge_loop(&self, voltage: f64, current: f64, max_power: f64) -> (f64, f64, f64) {
+        let mut g = self.inner.lock().unwrap();
+        g.ev_voltage = voltage;
+        g.ev_max_current = current.abs();
+        g.ev_max_power = max_power;
+        (g.voltage.resolve(voltage), g.current.resolve(current), g.max_power.resolve(max_power))
+    }
+}
+
 /// What the vehicle allows for a discharge in a BPT charge loop request.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Discharge {

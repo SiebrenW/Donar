@@ -67,6 +67,14 @@ impl SimulatedEv {
     }
 }
 
+impl SimulatedEv {
+    /// A power per line for the lines the car has.
+    fn per_line(&self, watts: u32) -> evcc_core::ev::Phases {
+        let w = rn(watts);
+        if self.limits().ac_phases >= 3 { evcc_core::ev::Phases::three(w) } else { evcc_core::ev::Phases::single(w) }
+    }
+}
+
 fn rn(x: u32) -> RationalNumber {
     RationalNumber::from_f64(f64::from(x))
 }
@@ -148,6 +156,34 @@ impl Ev for SimulatedEv {
     }
     fn dc_connector(&self) -> DcConnector {
         self.connector
+    }
+    fn ac_connector(&self) -> evcc_core::ev::AcConnector {
+        if self.limits().ac_phases >= 3 { evcc_core::ev::AcConnector::ThreePhase } else { evcc_core::ev::AcConnector::SinglePhase }
+    }
+    fn ac20_limits(&self) -> evcc_core::ev::AcPowerLimits {
+        let l = &self.limits();
+        evcc_core::ev::AcPowerLimits {
+            maximum_charge_power: self.per_line(l.ac_max_charge_power_w),
+            minimum_charge_power: self.per_line(l.ac_min_charge_power_w),
+        }
+    }
+    fn ac20_discharge_limits(&self) -> evcc_core::ev::AcDischargePowerLimits {
+        let l = &self.limits();
+        evcc_core::ev::AcDischargePowerLimits {
+            maximum_discharge_power: self.per_line(l.ac_max_discharge_power_w),
+            minimum_discharge_power: self.per_line(l.ac_min_discharge_power_w),
+        }
+    }
+    /// The on-board charger follows the charger's target; with no battery model it draws nothing.
+    fn ac_present_power(&self) -> evcc_core::ev::AcPresentPower {
+        let watts = self.live.as_ref().map_or([0.0; 3], |l| l.ac_present_power());
+        let lines = self.limits().ac_phases.clamp(1, 3) as usize;
+        let phase = |i: usize| (i < lines).then(|| RationalNumber::from_f64(watts[i]));
+        let zero = RationalNumber::from_f64(0.0);
+        evcc_core::ev::AcPresentPower {
+            active: evcc_core::ev::Phases { l1: RationalNumber::from_f64(watts[0]), l2: phase(1), l3: phase(2) },
+            reactive: evcc_core::ev::Phases { l1: zero, l2: phase(1).map(|_| zero), l3: phase(2).map(|_| zero) },
+        }
     }
     fn now_micros(&self) -> u64 {
         std::time::SystemTime::now()
@@ -248,6 +284,30 @@ pub fn run_car_live(
     let buffers = Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena };
     let (mut loops, mut renegotiated, mut rescheduled) = (0, false, false);
     let mut gate = |state| live.as_ref().is_some_and(|l| l.gate(state));
+    // What the car does after a charge loop answer, DC or AC; `reached` is the battery model's wish to stop.
+    let mut on_loop = |reached: bool| {
+        loops += 1;
+        if reached || Some(loops) == behaviour.stop_after {
+            Some(Event::StopRequested)
+        } else if let Some(action) = live.as_ref().and_then(|l| l.take_action()) {
+            // Asked for from the test platform (the page), once.
+            Some(match action {
+                Action::Pause => Event::PauseRequested,
+                Action::RenegotiateServices => Event::RenegotiateServices,
+                Action::RenegotiateSchedule => Event::RenegotiateSchedule,
+            })
+        } else if Some(loops) == behaviour.pause_after {
+            Some(Event::PauseRequested)
+        } else if Some(loops) == behaviour.renegotiate_after && !renegotiated {
+            renegotiated = true;
+            Some(Event::RenegotiateServices)
+        } else if Some(loops) == behaviour.renegotiate_schedule_after && !rescheduled {
+            rescheduled = true;
+            Some(Event::RenegotiateSchedule)
+        } else {
+            None
+        }
+    };
     let mut host = |n: &Notice| match n {
         // The car closes its contactors and stops drawing current as soon as it is asked to.
         Notice::CloseContactors => Some(Event::ContactorsClosed),
@@ -265,27 +325,12 @@ pub fn run_car_live(
         }
         Notice::ScheduleRenegotiated => behaviour.stop_when_rescheduled.then_some(Event::StopRequested),
         Notice::ChargeLoop(status) => {
-            loops += 1;
-            if live.as_ref().is_some_and(|l| l.charge_loop(status)) || Some(loops) == behaviour.stop_after {
-                Some(Event::StopRequested)
-            } else if let Some(action) = live.as_ref().and_then(|l| l.take_action()) {
-                // Asked for from the test platform (the page), once.
-                Some(match action {
-                    Action::Pause => Event::PauseRequested,
-                    Action::RenegotiateServices => Event::RenegotiateServices,
-                    Action::RenegotiateSchedule => Event::RenegotiateSchedule,
-                })
-            } else if Some(loops) == behaviour.pause_after {
-                Some(Event::PauseRequested)
-            } else if Some(loops) == behaviour.renegotiate_after && !renegotiated {
-                renegotiated = true;
-                Some(Event::RenegotiateServices)
-            } else if Some(loops) == behaviour.renegotiate_schedule_after && !rescheduled {
-                rescheduled = true;
-                Some(Event::RenegotiateSchedule)
-            } else {
-                None
-            }
+            let reached = live.as_ref().is_some_and(|l| l.charge_loop(status));
+            on_loop(reached)
+        }
+        Notice::AcChargeLoop(status) => {
+            let reached = live.as_ref().is_some_and(|l| l.ac_charge_loop(status));
+            on_loop(reached)
         }
         _ => None,
     };

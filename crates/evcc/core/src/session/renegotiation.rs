@@ -10,6 +10,7 @@
 
 use iso15118_20::common;
 use iso15118_20::common_types::Processing;
+use iso15118_20::ac;
 use iso15118_20::dc;
 use v2gtp::PayloadType;
 
@@ -57,7 +58,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         let (framed, msg) = match self.side {
             Side::AwaitChargeParameters => (
                 self.frame_charge_parameter_discovery_req(PayloadType::SCHEDULE_RENEGOTIATION, tail),
-                MsgKind::DcChargeParameterDiscoveryReq,
+                self.cpd_req_kind(),
             ),
             Side::AwaitSchedule => {
                 (self.frame_schedule_exchange_req(PayloadType::SCHEDULE_RENEGOTIATION, tail), MsgKind::ScheduleExchangeReq)
@@ -97,6 +98,18 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
         match self.side {
             Side::Idle => self.ignore(payload_type),
+            Side::AwaitChargeParameters if self.config.ac() => match ac::decode(payload, arena) {
+                Ok(ac::Message::AcChargeParameterDiscoveryRes(res)) => {
+                    if let Some(end) = self.received(MsgKind::AcChargeParameterDiscoveryRes, res.response_code) {
+                        return end;
+                    }
+                    self.note_evse_ac_limits(&res.ac_cpd_res_energy_transfer_mode);
+                    self.side = Side::AwaitSchedule;
+                    self.push_side(Step::default(), tx)
+                }
+                Ok(_) => self.ignore(payload_type),
+                Err(e) => self.malformed(e),
+            },
             Side::AwaitChargeParameters => match dc::decode(payload, arena) {
                 Ok(dc::Message::DcChargeParameterDiscoveryRes(res)) => {
                     if let Some(end) = self.received(MsgKind::DcChargeParameterDiscoveryRes, res.response_code) {

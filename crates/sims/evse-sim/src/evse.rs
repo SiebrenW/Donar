@@ -11,6 +11,7 @@ use iso15118_20::common::{
     SessionSetupRes,
 };
 use iso15118_20::common_types::{self, MessageHeader, Processing, RationalNumber, ResponseCode};
+use iso15118_20::ac;
 use iso15118_20::dc;
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
@@ -26,9 +27,11 @@ fn random_challenge() -> [u8; 16] {
 }
 
 const DC_NAMESPACE: &str = "urn:iso:std:iso:15118:-20:DC";
+const AC_NAMESPACE: &str = "urn:iso:std:iso:15118:-20:AC";
 const DIN_NAMESPACE: &str = "urn:din:70121:2012:MsgDef";
 const ISO2_NAMESPACE: &str = "urn:iso:15118:2:2013:MsgDef";
 
+mod ac20;
 mod din;
 mod iso2;
 
@@ -107,6 +110,14 @@ pub struct Evse {
     ev_announced: Option<dc::DcCpdReqEnergyTransferMode>,
     /// The selected energy service is DC_BPT: charge parameter discovery and charge loop use the BPT variants.
     bpt: bool,
+    /// The vehicle offered the AC schema, and the selected service is an AC one: the energy
+    /// messages are the `AC_` ones (payload type `AC_MAINSTREAM`).
+    ac: bool,
+    ac_namespace: bool,
+    /// The `EVSENominalVoltage` of the selected AC parameter set, which the live measurements
+    /// show (the AC power over this voltage is the current shown).
+    ac_voltage: f64,
+    ac_announced: Option<ac20::Announced>,
     /// DIN SPEC 70121: what the vehicle announced in its charge parameter discovery.
     din_ev_announced: Option<din70121::types::DcEvChargeParameter>,
     /// ISO 15118-2: the vehicle's announced power limit, and whether this is an AC session.
@@ -125,7 +136,7 @@ pub struct Evse {
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, protocol: Protocol::Iso20, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge(), last_stamp: std::cell::Cell::new(0), ev_announced: None, bpt: false, din_ev_announced: None, iso2_ev_power: None, iso2_ac: false, iso2_phases: 1.0, iso2_renegotiating: false, iso2_renegotiation_asked: false, iso2_receipt_reading: None, iso2_contract: None }
+        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, protocol: Protocol::Iso20, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge(), last_stamp: std::cell::Cell::new(0), ev_announced: None, bpt: false, ac: false, ac_namespace: false, ac_voltage: 400.0, ac_announced: None, din_ev_announced: None, iso2_ev_power: None, iso2_ac: false, iso2_phases: 1.0, iso2_renegotiating: false, iso2_renegotiation_asked: false, iso2_receipt_reading: None, iso2_contract: None }
     }
 
     /// Reports the charge loop measurements to a test platform and takes its edits.
@@ -136,6 +147,32 @@ impl Evse {
 
     pub fn state(&self) -> State {
         self.state
+    }
+
+    /// The notification the next charge loop answer carries, if the config calls for one (the
+    /// same in the DC and the AC loop).
+    pub(super) fn loop_notification(&mut self) -> Option<(common_types::EvseNotification, u16)> {
+        let terminate = self.config.terminate_after_loops.is_some_and(|n| self.loops_seen >= n);
+        let notification = if terminate {
+            Some((common_types::EvseNotification::Terminate, 5))
+        } else if !self.side_renegotiated
+            && self.config.schedule_renegotiation_after_loops.is_some_and(|n| self.loops_seen >= n)
+        {
+            Some((common_types::EvseNotification::ScheduleRenegotiation, 10))
+        } else if !self.renegotiated
+            && self.config.service_renegotiation_after_loops.is_some_and(|n| self.loops_seen >= n)
+        {
+            self.renegotiation_requested = true;
+            Some((common_types::EvseNotification::ServiceRenegotiation, 10))
+        } else if let Some(rounds) = &mut self.standby {
+            *rounds += 1;
+            (*rounds > self.config.standby_loops).then_some((common_types::EvseNotification::ExitStandby, 60))
+        } else if !self.pause_answered && self.config.pause_after_loops.is_some_and(|n| self.loops_seen >= n) {
+            Some((common_types::EvseNotification::Pause, 60))
+        } else {
+            None
+        };
+        notification
     }
 
     /// What the charger did since the last call, one line each: what it received, what it
@@ -226,11 +263,13 @@ impl Evse {
             State::AwaitServicePaymentSelectionReq => "ServicePaymentSelectionReq",
             State::AwaitPaymentDetailsReq => "PaymentDetailsReq",
             State::AwaitContractAuthenticationReq => "ContractAuthenticationReq",
+            State::AwaitChargeParameterDiscoveryReq if self.ac => "AC_ChargeParameterDiscoveryReq",
             State::AwaitChargeParameterDiscoveryReq => "DC_ChargeParameterDiscoveryReq",
             State::AwaitScheduleExchangeReq => "ScheduleExchangeReq",
             State::AwaitCableCheckReq => "DC_CableCheckReq",
             State::AwaitPreChargeReq => "DC_PreChargeReq",
             State::AwaitPowerDeliveryReq => "PowerDeliveryReq",
+            State::ChargeLoop if self.ac => "AC_ChargeLoopReq or PowerDeliveryReq",
             State::ChargeLoop => "DC_ChargeLoopReq or PowerDeliveryReq",
             State::AwaitWeldingReq => "DC_WeldingDetectionReq",
             State::AwaitSessionStopReq => "SessionStopReq",
@@ -305,7 +344,7 @@ impl Evse {
                     .app_protocol
                     .iter()
                     .filter(|p| {
-                        (speaks(Protocol::Iso20) && p.protocol_namespace == DC_NAMESPACE && p.version_number_major == 1)
+                        (speaks(Protocol::Iso20) && (p.protocol_namespace == DC_NAMESPACE || p.protocol_namespace == AC_NAMESPACE) && p.version_number_major == 1)
                             || (speaks(Protocol::Din) && p.protocol_namespace == DIN_NAMESPACE && p.version_number_major == 2)
                             || (speaks(Protocol::Iso2) && p.protocol_namespace == ISO2_NAMESPACE && p.version_number_major == 2)
                     })
@@ -319,6 +358,7 @@ impl Evse {
                         };
                         self.note(format!("protocol {}, schema id {}", p.protocol_namespace, p.schema_id));
                         self.schema_id = p.schema_id;
+                        self.ac_namespace = p.protocol_namespace == AC_NAMESPACE;
                         self.state = State::AwaitSessionSetupReq;
                         let res = SupportedAppProtocolRes { response_code: SapCode::OkSuccessfulNegotiation, schema_id: Some(p.schema_id) };
                         Output { send: frame(PayloadType::SAP, |out| res.encode(out)), close: false }
@@ -440,7 +480,7 @@ impl Evse {
                 if req.header.session_id != self.session_id {
                     return self.detail_res(ResponseCode::FailedUnknownSession, req.service_id);
                 }
-                if !self.config.energy_services.contains(&req.service_id) {
+                if !self.config.energy_services.contains(&req.service_id) || self.sets_for(req.service_id).is_empty() {
                     return self.detail_res(ResponseCode::FailedServiceIdInvalid, req.service_id);
                 }
                 self.state = State::AwaitServiceSelectionReq;
@@ -453,21 +493,28 @@ impl Evse {
                 }
                 let SelectedService { service_id, parameter_set_id } = req.selected_energy_transfer_service;
                 let valid = self.config.energy_services.contains(&service_id)
-                    && self.config.parameter_sets.iter().any(|set| set.id == parameter_set_id);
+                    && self.sets_for(service_id).iter().any(|set| set.id == parameter_set_id)
+                    // The schema the vehicle offered is that of the service it selects.
+                    && is_ac_service(service_id) == self.ac_namespace;
                 if !valid {
-                    let sets: Vec<u16> = self.config.parameter_sets.iter().map(|s| s.id).collect();
+                    let sets: Vec<u16> = self.sets_for(service_id).iter().map(|s| s.id).collect();
                     self.note(format!("selected service {service_id} with parameter set {parameter_set_id}; offered services {:?}, parameter set ids {sets:?}", self.config.energy_services));
                     return self.selection_res(ResponseCode::FailedServiceSelectionInvalid);
                 }
                 let code = self.config.selection_code;
-                self.bpt = service_id == SERVICE_ID_DC_BPT;
+                self.bpt = matches!(service_id, SERVICE_ID_DC_BPT | ac20::SERVICE_ID_AC_BPT);
+                self.ac = is_ac_service(service_id);
+                if let Some(volts) = self.sets_for(service_id).iter().find(|set| set.id == parameter_set_id).and_then(|set| set.values.get("EVSENominalVoltage")) {
+                    self.ac_voltage = f64::from(*volts);
+                }
                 self.note(format!("service {service_id} selected, parameter set {parameter_set_id}"));
                 if matches!(code, ResponseCode::Ok) {
                     self.state = State::AwaitChargeParameterDiscoveryReq;
                 }
                 self.selection_res(code)
             }
-            State::AwaitChargeParameterDiscoveryReq if payload_type == PayloadType::DC_MAINSTREAM => {
+            State::AwaitChargeParameterDiscoveryReq if self.ac && payload_type == PayloadType::AC_MAINSTREAM => self.on_ac_cpd(payload, &arena, false),
+            State::AwaitChargeParameterDiscoveryReq if !self.ac && payload_type == PayloadType::DC_MAINSTREAM => {
                 let Ok(dc::Message::DcChargeParameterDiscoveryReq(req)) = dc::decode(payload, &arena) else { return closed };
                 self.ev_announced = Some(match &req.dc_cpd_req_energy_transfer_mode {
                     dc::DcCpdReqEnergyTransferModeChoice::Base(m) => *m,
@@ -506,7 +553,8 @@ impl Evse {
                 let res = self.schedule_res(processing, code);
                 let ongoing = processing == Processing::Ongoing;
                 if !ongoing && is_ok(code) {
-                    self.state = State::AwaitCableCheckReq;
+                    // AC has no cable check or pre-charge: the power delivery follows.
+                    self.state = if self.ac { State::AwaitPowerDeliveryReq } else { State::AwaitCableCheckReq };
                 }
                 Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: !ongoing && !is_ok(code) }
             }
@@ -565,7 +613,8 @@ impl Evse {
                 }
                 Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) }
             }
-            State::ChargeLoop if payload_type == PayloadType::DC_MAINSTREAM => {
+            State::ChargeLoop if self.ac && payload_type == PayloadType::AC_MAINSTREAM => self.on_ac_loop(payload, &arena),
+            State::ChargeLoop if !self.ac && payload_type == PayloadType::DC_MAINSTREAM => {
                 let Ok(dc::Message::DcChargeLoopReq(req)) = dc::decode(payload, &arena) else { return closed };
                 self.loops_seen += 1;
                 let code = if req.header.session_id != self.session_id {
@@ -579,26 +628,7 @@ impl Evse {
                 } else {
                     ResponseCode::Ok
                 };
-                let terminate = self.config.terminate_after_loops.is_some_and(|n| self.loops_seen >= n);
-                let notification = if terminate {
-                    Some((common_types::EvseNotification::Terminate, 5))
-                } else if !self.side_renegotiated
-                    && self.config.schedule_renegotiation_after_loops.is_some_and(|n| self.loops_seen >= n)
-                {
-                    Some((common_types::EvseNotification::ScheduleRenegotiation, 10))
-                } else if !self.renegotiated
-                    && self.config.service_renegotiation_after_loops.is_some_and(|n| self.loops_seen >= n)
-                {
-                    self.renegotiation_requested = true;
-                    Some((common_types::EvseNotification::ServiceRenegotiation, 10))
-                } else if let Some(rounds) = &mut self.standby {
-                    *rounds += 1;
-                    (*rounds > self.config.standby_loops).then_some((common_types::EvseNotification::ExitStandby, 60))
-                } else if !self.pause_answered && self.config.pause_after_loops.is_some_and(|n| self.loops_seen >= n) {
-                    Some((common_types::EvseNotification::Pause, 60))
-                } else {
-                    None
-                };
+                let notification = self.loop_notification();
                 let rn = |value: u32| RationalNumber::from_f64(f64::from(value));
                 let l = &self.limits();
                 // A negative EVTargetEnergyRequest asks to discharge: the vehicle gives energy back,
@@ -707,7 +737,7 @@ impl Evse {
                 };
                 let res = common::PowerDeliveryRes { header: self.header(), response_code: code, evse_status: None };
                 if is_ok(code) && req.charge_progress == common::ChargeProgress::Stop {
-                    self.state = State::AwaitWeldingReq;
+                    self.state = if self.ac { State::AwaitSessionStopReq } else { State::AwaitWeldingReq };
                 }
                 let refused = code == ResponseCode::WarningStandbyNotAllowed;
                 Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) && !refused }
@@ -768,6 +798,10 @@ impl Evse {
 
 /// Service id of DC_BPT (Table 204).
 const SERVICE_ID_DC_BPT: u16 = 6;
+
+fn is_ac_service(service_id: u16) -> bool {
+    matches!(service_id, ac20::SERVICE_ID_AC | ac20::SERVICE_ID_AC_BPT)
+}
 
 fn base_of_bpt_cpd(m: &dc::BptDcCpdReqEnergyTransferMode) -> dc::DcCpdReqEnergyTransferMode {
     dc::DcCpdReqEnergyTransferMode {
@@ -852,6 +886,9 @@ impl Evse {
             return nothing;
         }
         let side = PayloadType::SCHEDULE_RENEGOTIATION;
+        if self.ac && matches!(ac::decode(payload, &arena), Ok(ac::Message::AcChargeParameterDiscoveryReq(_))) {
+            return self.on_ac_cpd(payload, &arena, true);
+        }
         if let Ok(dc::Message::DcChargeParameterDiscoveryReq(req)) = dc::decode(payload, &arena) {
             self.ev_announced = Some(match &req.dc_cpd_req_energy_transfer_mode {
                 dc::DcCpdReqEnergyTransferModeChoice::Base(m) => *m,
@@ -891,6 +928,11 @@ impl Evse {
         }
     }
 
+    /// The parameter sets offered for a service.
+    fn sets_for(&self, service_id: u16) -> &[crate::config::OfferedSet] {
+        if is_ac_service(service_id) { &self.config.ac_parameter_sets } else { &self.config.parameter_sets }
+    }
+
     /// `ServiceDiscoveryRes`; a failure code closes the connection.
     fn discovery_res(&mut self, code: ResponseCode) -> Output {
         self.note(format!("ServiceDiscoveryReq: answering {code:?}, energy services {:?}", self.config.energy_services));
@@ -910,11 +952,10 @@ impl Evse {
     }
 
     fn detail_res(&mut self, code: ResponseCode, service_id: u16) -> Output {
-        let offered: Vec<String> = self.config.parameter_sets.iter().map(|s| s.describe()).collect();
+        let offered: Vec<String> = self.sets_for(service_id).iter().map(|s| s.describe()).collect();
         self.note(format!("ServiceDetailReq for service {service_id}: answering {code:?}, offering {}", if offered.is_empty() { "no parameter sets".to_string() } else { offered.join("; ") }));
         let names: Vec<Vec<Parameter<'_>>> = self
-            .config
-            .parameter_sets
+            .sets_for(service_id)
             .iter()
             .map(|set| {
                 // Table 207: DC_BPT adds the channel (1 unified) and the generator mode (1 grid following).
@@ -923,8 +964,7 @@ impl Evse {
             })
             .collect();
         let sets: Vec<ParameterSet<'_>> = self
-            .config
-            .parameter_sets
+            .sets_for(service_id)
             .iter()
             .zip(&names)
             .map(|(set, parameters)| ParameterSet { parameter_set_id: set.id, parameter: parameters })

@@ -7,6 +7,7 @@ use exi::Arena;
 use iso15118_20::ResponseMessage;
 use iso15118_20::common::{self, AsResAuthorizationModeChoice, Authorization, EimAsResAuthorizationMode};
 use iso15118_20::common_types::{Processing, RationalNumber, ResponseCode};
+use iso15118_20::ac;
 use iso15118_20::dc;
 use v2gtp::{Parse, PayloadType, parse};
 
@@ -16,14 +17,20 @@ use crate::evse::{Evse, frame};
 pub enum Request<'a> {
     Common(common::Message<'a>),
     Dc(dc::Message<'a>),
+    Ac(ac::Message<'a>),
 }
 
 /// Decodes a frame's payload as a request, wherever it belongs.
 pub fn decode_request<'a>(payload_type: PayloadType, payload: &[u8], arena: &'a Arena<'_>) -> Option<Request<'a>> {
-    let dc_first = payload_type == PayloadType::DC_MAINSTREAM;
     let common = || common::decode(payload, arena).ok().map(Request::Common);
     let dc = || dc::decode(payload, arena).ok().map(Request::Dc);
-    if payload_type == PayloadType::MAINSTREAM { common() } else if dc_first { dc() } else { dc().or_else(common) }
+    let ac = || ac::decode(payload, arena).ok().map(Request::Ac);
+    match payload_type {
+        PayloadType::MAINSTREAM => common(),
+        PayloadType::DC_MAINSTREAM => dc(),
+        PayloadType::AC_MAINSTREAM => ac(),
+        _ => dc().or_else(common),
+    }
 }
 
 impl Evse {
@@ -114,6 +121,39 @@ impl Evse {
                 dc::Message::DcWeldingDetectionReq(_) => frame(dcm, |o| dc::DcWeldingDetectionRes { header: header(), response_code: code, evse_present_voltage: zero }.encode(o)),
                 _ => None,
             },
+            Request::Ac(m) => match m {
+                ac::Message::AcChargeParameterDiscoveryReq(_) => {
+                    let res = self.ac_cpd_res(code);
+                    frame(PayloadType::AC_MAINSTREAM, |o| res.encode(o))
+                }
+                ac::Message::AcChargeLoopReq(_) => frame(PayloadType::AC_MAINSTREAM, |o| {
+                    ac::AcChargeLoopRes {
+                        header: header(),
+                        response_code: code,
+                        evse_status: None,
+                        meter_info: None,
+                        receipt: None,
+                        evse_target_frequency: None,
+                        cl_res_control_mode: ac::ClResControlModeChoice::DynamicAc(ac::DynamicAcClResControlMode {
+                            departure_time: None,
+                            minimum_soc: None,
+                            target_soc: None,
+                            ack_max_delay: None,
+                            evse_target_active_power: zero,
+                            evse_target_active_power_l2: None,
+                            evse_target_active_power_l3: None,
+                            evse_target_reactive_power: None,
+                            evse_target_reactive_power_l2: None,
+                            evse_target_reactive_power_l3: None,
+                            evse_present_active_power: None,
+                            evse_present_active_power_l2: None,
+                            evse_present_active_power_l3: None,
+                        }),
+                    }
+                    .encode(o)
+                }),
+                _ => None,
+            },
         }
     }
 }
@@ -124,6 +164,13 @@ pub fn response_of(bytes: &[u8]) -> Option<(&'static str, ResponseMessage, Respo
     let mut mem = vec![0u8; 16384];
     let arena = Arena::new(&mut mem);
     use ResponseMessage as M;
+    if f.payload_type == PayloadType::AC_MAINSTREAM {
+        return Some(match ac::decode(f.payload, &arena).ok()? {
+            ac::Message::AcChargeParameterDiscoveryRes(r) => ("AC_ChargeParameterDiscoveryRes", M::AcChargeParameterDiscovery, r.response_code),
+            ac::Message::AcChargeLoopRes(r) => ("AC_ChargeLoopRes", M::AcChargeLoop, r.response_code),
+            _ => return None,
+        });
+    }
     if f.payload_type != PayloadType::DC_MAINSTREAM
         && let Ok(m) = common::decode(f.payload, &arena) {
             return Some(match m {

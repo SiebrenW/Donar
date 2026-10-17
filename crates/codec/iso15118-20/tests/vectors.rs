@@ -4,6 +4,7 @@
 use exi::Arena;
 use iso15118_20::common::{self, *};
 use iso15118_20::common_types::{MessageHeader, Processing, RationalNumber, ResponseCode};
+use iso15118_20::ac;
 use iso15118_20::dc;
 
 fn vector(name: &str) -> Vec<u8> {
@@ -823,4 +824,292 @@ fn signed_fragments() {
     let mut out = [0u8; 512];
     let n = info.encode_fragment(&mut out).unwrap();
     assert_eq!(&out[..n], &vector("fragment_signed_info")[..]);
+}
+
+// ---------------------------------------------------------------- AC
+
+fn check_ac(name: &str, msg: ac::Message<'_>, enc: impl FnOnce(&mut [u8]) -> Result<usize, exi::EncodeError>) {
+    let want = vector(name);
+    let mut out = [0u8; 2048];
+    let n = enc(&mut out).unwrap_or_else(|e| panic!("{name}: encode failed: {e:?}"));
+    assert_eq!(&out[..n], &want[..], "{name}: encode differs from EXIficient");
+    let mut mem = [0u8; 8192];
+    let arena = Arena::new(&mut mem);
+    assert_eq!(ac::decode(&want, &arena).unwrap_or_else(|e| panic!("{name}: {e:?}")), msg, "{name}: decode");
+}
+
+#[test]
+fn ac_charge_parameter_discovery() {
+    let base = ac::AcCpdReqEnergyTransferMode {
+        ev_maximum_charge_power: rn(3, 11),
+        ev_maximum_charge_power_l2: None,
+        ev_maximum_charge_power_l3: None,
+        ev_minimum_charge_power: rn(0, 1400),
+        ev_minimum_charge_power_l2: None,
+        ev_minimum_charge_power_l3: None,
+    };
+    let m = ac::AcChargeParameterDiscoveryReq { header: hdr(), ac_cpd_req_energy_transfer_mode: ac::AcCpdReqEnergyTransferModeChoice::Base(base) };
+    check_ac("ac_cpd_req", ac::Message::AcChargeParameterDiscoveryReq(m), |o| m.encode(o));
+    let three = ac::AcCpdReqEnergyTransferMode { ev_maximum_charge_power_l2: Some(rn(3, 11)), ev_maximum_charge_power_l3: Some(rn(3, 11)), ..base };
+    let m = ac::AcChargeParameterDiscoveryReq { header: hdr(), ac_cpd_req_energy_transfer_mode: ac::AcCpdReqEnergyTransferModeChoice::Base(three) };
+    check_ac("ac_cpd_req_3ph", ac::Message::AcChargeParameterDiscoveryReq(m), |o| m.encode(o));
+    let m = ac::AcChargeParameterDiscoveryReq {
+        header: hdr(),
+        ac_cpd_req_energy_transfer_mode: ac::AcCpdReqEnergyTransferModeChoice::Bpt(ac::BptAcCpdReqEnergyTransferMode {
+            ev_maximum_charge_power: rn(3, 11),
+            ev_maximum_charge_power_l2: None,
+            ev_maximum_charge_power_l3: None,
+            ev_minimum_charge_power: rn(0, 1400),
+            ev_minimum_charge_power_l2: None,
+            ev_minimum_charge_power_l3: None,
+            ev_maximum_discharge_power: rn(3, 11),
+            ev_maximum_discharge_power_l2: Some(rn(3, 4)),
+            ev_maximum_discharge_power_l3: None,
+            ev_minimum_discharge_power: rn(0, 500),
+            ev_minimum_discharge_power_l2: None,
+            ev_minimum_discharge_power_l3: None,
+        }),
+    };
+    check_ac("ac_bpt_cpd_req", ac::Message::AcChargeParameterDiscoveryReq(m), |o| m.encode(o));
+
+    let res = ac::AcCpdResEnergyTransferMode {
+        evse_maximum_charge_power: rn(3, 11),
+        evse_maximum_charge_power_l2: None,
+        evse_maximum_charge_power_l3: None,
+        evse_minimum_charge_power: rn(0, 1400),
+        evse_minimum_charge_power_l2: None,
+        evse_minimum_charge_power_l3: None,
+        evse_nominal_frequency: rn(0, 50),
+        maximum_power_asymmetry: None,
+        evse_power_ramp_limitation: None,
+        evse_present_active_power: None,
+        evse_present_active_power_l2: None,
+        evse_present_active_power_l3: None,
+    };
+    let m = ac::AcChargeParameterDiscoveryRes { header: hdr(), response_code: ResponseCode::Ok, ac_cpd_res_energy_transfer_mode: ac::AcCpdResEnergyTransferModeChoice::Base(res) };
+    check_ac("ac_cpd_res", ac::Message::AcChargeParameterDiscoveryRes(m), |o| m.encode(o));
+    let full = ac::AcCpdResEnergyTransferMode {
+        evse_maximum_charge_power: rn(3, 22),
+        evse_maximum_charge_power_l2: Some(rn(3, 7)),
+        evse_maximum_charge_power_l3: Some(rn(3, 7)),
+        maximum_power_asymmetry: Some(rn(0, 100)),
+        evse_power_ramp_limitation: Some(rn(0, 50)),
+        evse_present_active_power: Some(rn(3, 5)),
+        ..res
+    };
+    let m = ac::AcChargeParameterDiscoveryRes { header: hdr(), response_code: ResponseCode::Ok, ac_cpd_res_energy_transfer_mode: ac::AcCpdResEnergyTransferModeChoice::Base(full) };
+    check_ac("ac_cpd_res_full", ac::Message::AcChargeParameterDiscoveryRes(m), |o| m.encode(o));
+    let m = ac::AcChargeParameterDiscoveryRes {
+        header: hdr(),
+        response_code: ResponseCode::Ok,
+        ac_cpd_res_energy_transfer_mode: ac::AcCpdResEnergyTransferModeChoice::Bpt(ac::BptAcCpdResEnergyTransferMode {
+            evse_maximum_charge_power: rn(3, 11),
+            evse_maximum_charge_power_l2: None,
+            evse_maximum_charge_power_l3: None,
+            evse_minimum_charge_power: rn(0, 1400),
+            evse_minimum_charge_power_l2: None,
+            evse_minimum_charge_power_l3: None,
+            evse_nominal_frequency: rn(0, 50),
+            maximum_power_asymmetry: None,
+            evse_power_ramp_limitation: None,
+            evse_present_active_power: None,
+            evse_present_active_power_l2: None,
+            evse_present_active_power_l3: None,
+            evse_maximum_discharge_power: rn(3, 11),
+            evse_maximum_discharge_power_l2: None,
+            evse_maximum_discharge_power_l3: None,
+            evse_minimum_discharge_power: rn(0, 500),
+            evse_minimum_discharge_power_l2: None,
+            evse_minimum_discharge_power_l3: None,
+        }),
+    };
+    check_ac("ac_bpt_cpd_res", ac::Message::AcChargeParameterDiscoveryRes(m), |o| m.encode(o));
+}
+
+fn dynamic_request() -> ac::DynamicAcClReqControlMode {
+    ac::DynamicAcClReqControlMode {
+        departure_time: None,
+        ev_target_energy_request: rn(3, 40),
+        ev_maximum_energy_request: rn(3, 60),
+        ev_minimum_energy_request: rn(0, 0),
+        ev_maximum_charge_power: rn(3, 11),
+        ev_maximum_charge_power_l2: None,
+        ev_maximum_charge_power_l3: None,
+        ev_minimum_charge_power: rn(0, 1400),
+        ev_minimum_charge_power_l2: None,
+        ev_minimum_charge_power_l3: None,
+        ev_present_active_power: rn(3, 7),
+        ev_present_active_power_l2: None,
+        ev_present_active_power_l3: None,
+        ev_present_reactive_power: rn(0, 200),
+        ev_present_reactive_power_l2: None,
+        ev_present_reactive_power_l3: None,
+    }
+}
+
+#[test]
+fn ac_charge_loop_request() {
+    let loop_req = |meter_info_requested, mode| ac::AcChargeLoopReq { header: hdr(), display_parameters: None, meter_info_requested, cl_req_control_mode: mode };
+    let dynamic = dynamic_request();
+    let m = loop_req(false, ac::ClReqControlModeChoice::DynamicAc(dynamic));
+    check_ac("ac_charge_loop_req_dynamic", ac::Message::AcChargeLoopReq(m), |o| m.encode(o));
+    let three = ac::DynamicAcClReqControlMode {
+        ev_maximum_charge_power_l2: Some(rn(3, 11)),
+        ev_maximum_charge_power_l3: Some(rn(3, 11)),
+        ev_present_active_power_l2: Some(rn(3, 7)),
+        ev_present_active_power_l3: Some(rn(3, 7)),
+        ev_present_reactive_power_l2: Some(rn(0, 200)),
+        ev_present_reactive_power_l3: Some(rn(0, 200)),
+        ..dynamic
+    };
+    let m = loop_req(true, ac::ClReqControlModeChoice::DynamicAc(three));
+    check_ac("ac_charge_loop_req_dynamic_3ph", ac::Message::AcChargeLoopReq(m), |o| m.encode(o));
+    let m = loop_req(
+        false,
+        ac::ClReqControlModeChoice::BptDynamicAc(ac::BptDynamicAcClReqControlMode {
+            departure_time: dynamic.departure_time,
+            ev_target_energy_request: dynamic.ev_target_energy_request,
+            ev_maximum_energy_request: dynamic.ev_maximum_energy_request,
+            ev_minimum_energy_request: dynamic.ev_minimum_energy_request,
+            ev_maximum_charge_power: dynamic.ev_maximum_charge_power,
+            ev_maximum_charge_power_l2: None,
+            ev_maximum_charge_power_l3: None,
+            ev_minimum_charge_power: dynamic.ev_minimum_charge_power,
+            ev_minimum_charge_power_l2: None,
+            ev_minimum_charge_power_l3: None,
+            ev_present_active_power: dynamic.ev_present_active_power,
+            ev_present_active_power_l2: None,
+            ev_present_active_power_l3: None,
+            ev_present_reactive_power: dynamic.ev_present_reactive_power,
+            ev_present_reactive_power_l2: None,
+            ev_present_reactive_power_l3: None,
+            ev_maximum_discharge_power: rn(3, 11),
+            ev_maximum_discharge_power_l2: None,
+            ev_maximum_discharge_power_l3: None,
+            ev_minimum_discharge_power: rn(0, 500),
+            ev_minimum_discharge_power_l2: None,
+            ev_minimum_discharge_power_l3: None,
+            ev_maximum_v2x_energy_request: Some(rn(3, 20)),
+            ev_minimum_v2x_energy_request: Some(rn(0, 500)),
+        }),
+    );
+    check_ac("ac_charge_loop_req_bpt", ac::Message::AcChargeLoopReq(m), |o| m.encode(o));
+    let scheduled = ac::ScheduledAcClReqControlMode {
+        ev_target_energy_request: Some(rn(3, 40)),
+        ev_maximum_energy_request: None,
+        ev_minimum_energy_request: None,
+        ev_maximum_charge_power: Some(rn(3, 11)),
+        ev_maximum_charge_power_l2: None,
+        ev_maximum_charge_power_l3: None,
+        ev_minimum_charge_power: None,
+        ev_minimum_charge_power_l2: None,
+        ev_minimum_charge_power_l3: None,
+        ev_present_active_power: rn(3, 7),
+        ev_present_active_power_l2: None,
+        ev_present_active_power_l3: None,
+        ev_present_reactive_power: Some(rn(0, 100)),
+        ev_present_reactive_power_l2: None,
+        ev_present_reactive_power_l3: None,
+    };
+    let m = loop_req(false, ac::ClReqControlModeChoice::ScheduledAc(scheduled));
+    check_ac("ac_charge_loop_req_scheduled", ac::Message::AcChargeLoopReq(m), |o| m.encode(o));
+    let m = loop_req(
+        false,
+        ac::ClReqControlModeChoice::BptScheduledAc(ac::BptScheduledAcClReqControlMode {
+            ev_target_energy_request: scheduled.ev_target_energy_request,
+            ev_maximum_energy_request: None,
+            ev_minimum_energy_request: None,
+            ev_maximum_charge_power: scheduled.ev_maximum_charge_power,
+            ev_maximum_charge_power_l2: None,
+            ev_maximum_charge_power_l3: None,
+            ev_minimum_charge_power: None,
+            ev_minimum_charge_power_l2: None,
+            ev_minimum_charge_power_l3: None,
+            ev_present_active_power: scheduled.ev_present_active_power,
+            ev_present_active_power_l2: None,
+            ev_present_active_power_l3: None,
+            ev_present_reactive_power: None,
+            ev_present_reactive_power_l2: None,
+            ev_present_reactive_power_l3: None,
+            ev_maximum_discharge_power: Some(rn(3, 11)),
+            ev_maximum_discharge_power_l2: None,
+            ev_maximum_discharge_power_l3: None,
+            ev_minimum_discharge_power: Some(rn(0, 500)),
+            ev_minimum_discharge_power_l2: None,
+            ev_minimum_discharge_power_l3: None,
+        }),
+    );
+    check_ac("ac_charge_loop_req_scheduled_bpt", ac::Message::AcChargeLoopReq(m), |o| m.encode(o));
+}
+
+#[test]
+fn ac_charge_loop_response() {
+    let loop_res = |frequency, mode| ac::AcChargeLoopRes {
+        header: hdr(),
+        response_code: ResponseCode::Ok,
+        evse_status: None,
+        meter_info: None,
+        receipt: None,
+        evse_target_frequency: frequency,
+        cl_res_control_mode: mode,
+    };
+    let dynamic = ac::DynamicAcClResControlMode {
+        departure_time: None,
+        minimum_soc: None,
+        target_soc: None,
+        ack_max_delay: None,
+        evse_target_active_power: rn(3, 7),
+        evse_target_active_power_l2: Some(rn(3, 7)),
+        evse_target_active_power_l3: None,
+        evse_target_reactive_power: Some(rn(0, 100)),
+        evse_target_reactive_power_l2: None,
+        evse_target_reactive_power_l3: None,
+        evse_present_active_power: Some(rn(3, 6)),
+        evse_present_active_power_l2: None,
+        evse_present_active_power_l3: None,
+    };
+    let m = loop_res(Some(rn(0, 50)), ac::ClResControlModeChoice::DynamicAc(dynamic));
+    check_ac("ac_charge_loop_res_dynamic", ac::Message::AcChargeLoopRes(m), |o| m.encode(o));
+    let minimal = ac::DynamicAcClResControlMode {
+        evse_target_active_power_l2: None,
+        evse_target_reactive_power: None,
+        evse_present_active_power: None,
+        ..dynamic
+    };
+    let m = loop_res(None, ac::ClResControlModeChoice::DynamicAc(minimal));
+    check_ac("ac_charge_loop_res_dynamic_min", ac::Message::AcChargeLoopRes(m), |o| m.encode(o));
+    let m = loop_res(
+        None,
+        ac::ClResControlModeChoice::ScheduledAc(ac::ScheduledAcClResControlMode {
+            evse_target_active_power: Some(rn(3, 7)),
+            evse_target_active_power_l2: None,
+            evse_target_active_power_l3: None,
+            evse_target_reactive_power: None,
+            evse_target_reactive_power_l2: None,
+            evse_target_reactive_power_l3: None,
+            evse_present_active_power: Some(rn(3, 6)),
+            evse_present_active_power_l2: None,
+            evse_present_active_power_l3: None,
+        }),
+    );
+    check_ac("ac_charge_loop_res_scheduled", ac::Message::AcChargeLoopRes(m), |o| m.encode(o));
+    let m = loop_res(
+        None,
+        ac::ClResControlModeChoice::BptDynamicAc(ac::BptDynamicAcClResControlMode {
+            departure_time: None,
+            minimum_soc: None,
+            target_soc: None,
+            ack_max_delay: None,
+            evse_target_active_power: rn(3, -7),
+            evse_target_active_power_l2: None,
+            evse_target_active_power_l3: None,
+            evse_target_reactive_power: None,
+            evse_target_reactive_power_l2: None,
+            evse_target_reactive_power_l3: None,
+            evse_present_active_power: None,
+            evse_present_active_power_l2: None,
+            evse_present_active_power_l3: None,
+        }),
+    );
+    check_ac("ac_charge_loop_res_bpt", ac::Message::AcChargeLoopRes(m), |o| m.encode(o));
 }

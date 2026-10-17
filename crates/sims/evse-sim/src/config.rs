@@ -142,10 +142,24 @@ const NAMED_VALUES: &[(&str, &[(&str, i32)])] = &[
     ("Pricing", &[("none", 0), ("absolute", 1), ("levels", 2)]),
 ];
 
-/// The name of a parameter value, if it has one.
+/// The names of an AC service's `Connector` (Table 205). A set of an AC service is told apart by
+/// its `EVSENominalVoltage`, which no DC set has.
+const AC_CONNECTORS: &[(&str, i32)] = &[("single_phase", 1), ("three_phase", 2)];
+
+fn names_of(parameter: &str, ac: bool) -> Option<&'static [(&'static str, i32)]> {
+    if ac && parameter == "Connector" {
+        return Some(AC_CONNECTORS);
+    }
+    NAMED_VALUES.iter().find(|(p, _)| *p == parameter).map(|(_, n)| *n)
+}
+
+/// The name of a parameter value of a DC set, if it has one.
 pub fn value_name(parameter: &str, value: i32) -> Option<&'static str> {
-    let names = NAMED_VALUES.iter().find(|(p, _)| *p == parameter)?.1;
-    names.iter().find(|(_, v)| *v == value).map(|(n, _)| *n)
+    named(parameter, value, false)
+}
+
+fn named(parameter: &str, value: i32, ac: bool) -> Option<&'static str> {
+    names_of(parameter, ac)?.iter().find(|(_, v)| *v == value).map(|(n, _)| *n)
 }
 
 mod parameter_values {
@@ -155,8 +169,9 @@ mod parameter_values {
     /// The names where there are some, the numbers otherwise.
     pub fn serialize<S: Serializer>(values: &BTreeMap<String, i32>, s: S) -> Result<S::Ok, S::Error> {
         let mut map = s.serialize_map(Some(values.len()))?;
+        let ac = values.contains_key("EVSENominalVoltage");
         for (parameter, value) in values {
-            match value_name(parameter, *value) {
+            match named(parameter, *value, ac) {
                 Some(name) => map.serialize_entry(parameter, name)?,
                 None => map.serialize_entry(parameter, value)?,
             }
@@ -172,12 +187,14 @@ mod parameter_values {
             Number(i32),
             Name(String),
         }
+        let raw = BTreeMap::<String, Value>::deserialize(d)?;
+        let ac = raw.contains_key("EVSENominalVoltage");
         let mut out = BTreeMap::new();
-        for (parameter, value) in BTreeMap::<String, Value>::deserialize(d)? {
+        for (parameter, value) in raw {
             let number = match value {
                 Value::Number(n) => n,
                 Value::Name(name) => {
-                    let names = NAMED_VALUES.iter().find(|(p, _)| *p == parameter).map(|(_, n)| *n).ok_or_else(|| D::Error::custom(format!("{parameter} has no named values, use a number")))?;
+                    let names = names_of(&parameter, ac).ok_or_else(|| D::Error::custom(format!("{parameter} has no named values, use a number")))?;
                     names
                         .iter()
                         .find(|(n, _)| *n == name)
@@ -207,10 +224,11 @@ pub struct OfferedSet {
 impl OfferedSet {
     /// `id 2: Connector=extended(2), ControlMode=dynamic(2)`, for logs.
     pub fn describe(&self) -> String {
+        let ac = self.values.contains_key("EVSENominalVoltage");
         let values: Vec<String> = self
             .values
             .iter()
-            .map(|(k, v)| match value_name(k, *v) {
+            .map(|(k, v)| match named(k, *v, ac) {
                 Some(name) => format!("{k}={name}({v})"),
                 None => format!("{k}={v}"),
             })
@@ -247,6 +265,15 @@ pub struct Limits {
     pub min_discharge_power_w: u32,
     pub max_discharge_current_a: u32,
     pub min_discharge_current_a: u32,
+    /// The AC services (1 and 5), per phase: what the charger delivers (and takes back) on each
+    /// line.
+    pub ac_max_charge_power_w: u32,
+    pub ac_min_charge_power_w: u32,
+    pub ac_max_discharge_power_w: u32,
+    pub ac_min_discharge_power_w: u32,
+    /// Lines the charger has: 1, or 3 (then every power is also given for lines 2 and 3).
+    pub ac_phases: u8,
+    pub ac_nominal_frequency_hz: u32,
 }
 
 impl Default for Limits {
@@ -263,6 +290,12 @@ impl Default for Limits {
             min_discharge_power_w: 100,
             max_discharge_current_a: 30,
             min_discharge_current_a: 1,
+            ac_max_charge_power_w: 3680,
+            ac_min_charge_power_w: 1380,
+            ac_max_discharge_power_w: 3680,
+            ac_min_discharge_power_w: 500,
+            ac_phases: 3,
+            ac_nominal_frequency_hz: 50,
         }
     }
 }
@@ -437,8 +470,11 @@ pub struct Config {
     pub offered_authorization: Vec<Authorization>,
     /// Energy transfer services offered in `ServiceDiscoveryRes`.
     pub energy_services: Vec<u16>,
-    /// Parameter sets answered for every offered service.
+    /// Parameter sets answered for every offered DC service.
     pub parameter_sets: Vec<OfferedSet>,
+    /// Parameter sets answered for the AC services (Table 205: `Connector` 1 single phase, 2 three
+    /// phase, `EVSENominalVoltage`, `ControlMode`, `MobilityNeedsMode`, `Pricing`).
+    pub ac_parameter_sets: Vec<OfferedSet>,
     /// Response code of the `ServiceSelectionRes` for a valid selection.
     #[serde(with = "code")]
     #[schemars(with = "String")]
@@ -520,12 +556,15 @@ impl Default for Config {
             authorization_never_finishes: false,
             authorization_code: ResponseCode::Ok,
             offered_authorization: vec![Authorization::Eim],
-            energy_services: vec![2, 6],
+            energy_services: vec![1, 2, 5, 6],
             // One set per inlet (Connector 1 to 4), ControlMode 2 (Dynamic), MobilityNeedsMode 1,
             // Pricing 0, so that any vehicle finds its own; the numbers are those of
             // ISO 15118-20:2022 Table 207.
             parameter_sets: (1..=4)
                 .map(|connector| OfferedSet::new(connector as u16, [("Connector", connector), ("ControlMode", 2), ("MobilityNeedsMode", 1), ("Pricing", 0)]))
+                .collect(),
+            ac_parameter_sets: (1..=2)
+                .map(|connector| OfferedSet::new(connector as u16, [("Connector", connector), ("EVSENominalVoltage", 400), ("ControlMode", 2), ("MobilityNeedsMode", 1), ("Pricing", 0)]))
                 .collect(),
             selection_code: ResponseCode::Ok,
             cpd_code: ResponseCode::Ok,

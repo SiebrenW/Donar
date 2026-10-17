@@ -127,6 +127,12 @@ impl World {
 
     /// Every global element of `ns` and of the schemas it imports, transitively.
     pub fn global_elements(&self, ns: &str) -> Vec<&ElementDecl> {
+        self.reachable(ns).iter().filter_map(|n| self.schemas.get(n)).flat_map(|s| s.elements.iter()).collect()
+    }
+
+    /// `ns` and the namespaces it imports, transitively: what a processor holding only the
+    /// schema of `ns` knows about.
+    pub fn reachable(&self, ns: &str) -> Vec<String> {
         let mut seen = vec![ns.to_string()];
         let mut i = 0;
         while i < seen.len() {
@@ -139,7 +145,7 @@ impl World {
             }
             i += 1;
         }
-        seen.iter().filter_map(|n| self.schemas.get(n)).flat_map(|s| s.elements.iter()).collect()
+        seen
     }
 }
 

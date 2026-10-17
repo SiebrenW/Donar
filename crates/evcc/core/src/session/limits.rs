@@ -5,11 +5,12 @@
 //! (V2G20-2198, 2199 for the vehicle, 2654, 2655 for the charger).
 
 use iso15118_20::common_types::RationalNumber;
+use iso15118_20::ac;
 use iso15118_20::dc;
 
 use super::Machine;
 use super::config::rational_to_volts;
-use crate::ev::{DcLimits, Ev};
+use crate::ev::{AcDischargePowerLimits, AcPowerLimits, DcLimits, Ev, Phases};
 use crate::log::{LogSink, Record};
 
 fn value(r: RationalNumber) -> f32 {
@@ -24,6 +25,16 @@ pub(super) fn smaller(a: RationalNumber, b: RationalNumber) -> RationalNumber {
 /// The larger of two quantities.
 pub(super) fn larger(a: RationalNumber, b: RationalNumber) -> RationalNumber {
     if value(a) >= value(b) { a } else { b }
+}
+
+/// Combines two per-phase quantities phase by phase with `pick`; a phase only one of them has is
+/// left out (the request may not go beyond what was announced).
+fn phases_with(a: Phases, b: Phases, pick: fn(RationalNumber, RationalNumber) -> RationalNumber) -> Phases {
+    let both = |x: Option<RationalNumber>, y: Option<RationalNumber>| match (x, y) {
+        (Some(x), Some(y)) => Some(pick(x, y)),
+        _ => None,
+    };
+    Phases { l1: pick(a.l1, b.l1), l2: both(a.l2, b.l2), l3: both(a.l3, b.l3) }
 }
 
 impl<E: Ev, L: LogSink> Machine<E, L> {
@@ -42,6 +53,51 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 evse_power_ramp_limitation: m.evse_power_ramp_limitation,
             },
         });
+    }
+
+    /// Remembers what the charger offered for AC.
+    pub(super) fn note_evse_ac_limits(&mut self, mode: &ac::AcCpdResEnergyTransferModeChoice) {
+        self.evse_announced_ac = Some(match mode {
+            ac::AcCpdResEnergyTransferModeChoice::Base(m) => *m,
+            ac::AcCpdResEnergyTransferModeChoice::Bpt(m) => ac::AcCpdResEnergyTransferMode {
+                evse_maximum_charge_power: m.evse_maximum_charge_power,
+                evse_maximum_charge_power_l2: m.evse_maximum_charge_power_l2,
+                evse_maximum_charge_power_l3: m.evse_maximum_charge_power_l3,
+                evse_minimum_charge_power: m.evse_minimum_charge_power,
+                evse_minimum_charge_power_l2: m.evse_minimum_charge_power_l2,
+                evse_minimum_charge_power_l3: m.evse_minimum_charge_power_l3,
+                evse_nominal_frequency: m.evse_nominal_frequency,
+                maximum_power_asymmetry: m.maximum_power_asymmetry,
+                evse_power_ramp_limitation: m.evse_power_ramp_limitation,
+                evse_present_active_power: m.evse_present_active_power,
+                evse_present_active_power_l2: m.evse_present_active_power_l2,
+                evse_present_active_power_l3: m.evse_present_active_power_l3,
+            },
+        });
+    }
+
+    /// The vehicle's AC power limits for a charge loop request: the host's, and within what was
+    /// announced in the charge parameter discovery (V2G20-2198, 2199).
+    pub(super) fn loop_ac_limits(&self) -> AcPowerLimits {
+        let now = self.ev.ac20_limits();
+        match (self.config.enforce_cpd_limits, self.ev_announced_ac) {
+            (true, Some(then)) => AcPowerLimits {
+                maximum_charge_power: phases_with(now.maximum_charge_power, then.maximum_charge_power, smaller),
+                minimum_charge_power: phases_with(now.minimum_charge_power, then.minimum_charge_power, larger),
+            },
+            _ => now,
+        }
+    }
+
+    pub(super) fn loop_ac_discharge_limits(&self) -> AcDischargePowerLimits {
+        let now = self.ev.ac20_discharge_limits();
+        match (self.config.enforce_cpd_limits, self.ev_announced_ac_discharge) {
+            (true, Some(then)) => AcDischargePowerLimits {
+                maximum_discharge_power: phases_with(now.maximum_discharge_power, then.maximum_discharge_power, smaller),
+                minimum_discharge_power: phases_with(now.minimum_discharge_power, then.minimum_discharge_power, larger),
+            },
+            _ => now,
+        }
     }
 
     /// The vehicle's limits for a charge loop request: the host's, and within what was announced

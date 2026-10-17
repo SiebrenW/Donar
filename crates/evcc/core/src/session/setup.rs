@@ -3,6 +3,7 @@
 use app_protocol::{self, SupportedAppProtocolReq};
 use iso15118_20::common::*;
 use iso15118_20::common_types::{MessageHeader, Processing, ResponseCode};
+use iso15118_20::ac;
 use iso15118_20::dc;
 use v2gtp::PayloadType;
 
@@ -39,8 +40,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 self.log.record(&Record::SessionResumed { session_id: old.session_id });
                 self.selected = old.selected;
                 self.renegotiation_supported = old.renegotiation_supported;
-                let framed = self.frame_charge_parameter_discovery_req(PayloadType::DC_MAINSTREAM, tx);
-                let mut step = self.send_then(State::AwaitChargeParameterDiscoveryRes, MsgKind::DcChargeParameterDiscoveryReq, framed);
+                let framed = self.frame_charge_parameter_discovery_req(self.energy_payload_type(), tx);
+                let mut step = self.send_then(State::AwaitChargeParameterDiscoveryRes, self.cpd_req_kind(), framed);
                 if step.end.is_none() {
                     step.timers = step.timers.with(TimerCmd::Cancel(Timer::Setup));
                     step.notice = Some(Notice::SessionResumed { session_id: old.session_id });
@@ -163,7 +164,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
         let Some(parameter_set_id) = self.pick_parameter_set(res.service_parameter_list.parameter_set) else {
             self.log.record(&Record::NoParameterSet {
-                connector: self.ev.dc_connector() as i32,
+                connector: if self.config.ac() { self.ev.ac_connector() as i32 } else { self.ev.dc_connector() as i32 },
                 filter: self.config.parameter_filter,
                 offered: res.service_parameter_list.parameter_set,
             });
@@ -186,20 +187,29 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
         let SelectedService { service_id, parameter_set_id } = self.selected;
         self.log.record(&Record::ServiceSelected { service_id, parameter_set_id });
-        let framed = self.frame_charge_parameter_discovery_req(PayloadType::DC_MAINSTREAM, tx);
-        let mut step = self.send_then(
-            State::AwaitChargeParameterDiscoveryRes,
-            MsgKind::DcChargeParameterDiscoveryReq,
-            framed,
-        );
+        let framed = self.frame_charge_parameter_discovery_req(self.energy_payload_type(), tx);
+        let mut step = self.send_then(State::AwaitChargeParameterDiscoveryRes, self.cpd_req_kind(), framed);
         if step.end.is_none() {
             step.notice = Some(Notice::ServiceSelected { service_id, parameter_set_id });
         }
         step
     }
 
-    /// The request for the EVSE's DC limits; also the first message of a schedule renegotiation.
+    /// The payload type of the energy service's own messages (charge parameter discovery, charge
+    /// loop).
+    pub(super) fn energy_payload_type(&self) -> PayloadType {
+        if self.config.ac() { PayloadType::AC_MAINSTREAM } else { PayloadType::DC_MAINSTREAM }
+    }
+
+    pub(super) fn cpd_req_kind(&self) -> MsgKind {
+        if self.config.ac() { MsgKind::AcChargeParameterDiscoveryReq } else { MsgKind::DcChargeParameterDiscoveryReq }
+    }
+
+    /// The request for the EVSE's limits; also the first message of a schedule renegotiation.
     pub(super) fn frame_charge_parameter_discovery_req(&mut self, payload_type: PayloadType, tx: &mut [u8]) -> Result<usize, ()> {
+        if self.config.ac() {
+            return self.frame_ac_charge_parameter_discovery_req(payload_type, tx);
+        }
         let limits = self.ev.dc_limits();
         self.ev_announced = Some(limits);
         let mode = if self.config.bpt() {
@@ -230,6 +240,40 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             })
         };
         let msg = dc::DcChargeParameterDiscoveryReq { header: self.header(), dc_cpd_req_energy_transfer_mode: mode };
+        frame(tx, payload_type, |out| msg.encode(out))
+    }
+
+    fn frame_ac_charge_parameter_discovery_req(&mut self, payload_type: PayloadType, tx: &mut [u8]) -> Result<usize, ()> {
+        let l = self.ev.ac20_limits();
+        self.ev_announced_ac = Some(l);
+        let mode = if self.config.bpt() {
+            let d = self.ev.ac20_discharge_limits();
+            self.ev_announced_ac_discharge = Some(d);
+            ac::AcCpdReqEnergyTransferModeChoice::Bpt(ac::BptAcCpdReqEnergyTransferMode {
+                ev_maximum_charge_power: l.maximum_charge_power.l1,
+                ev_maximum_charge_power_l2: l.maximum_charge_power.l2,
+                ev_maximum_charge_power_l3: l.maximum_charge_power.l3,
+                ev_minimum_charge_power: l.minimum_charge_power.l1,
+                ev_minimum_charge_power_l2: l.minimum_charge_power.l2,
+                ev_minimum_charge_power_l3: l.minimum_charge_power.l3,
+                ev_maximum_discharge_power: d.maximum_discharge_power.l1,
+                ev_maximum_discharge_power_l2: d.maximum_discharge_power.l2,
+                ev_maximum_discharge_power_l3: d.maximum_discharge_power.l3,
+                ev_minimum_discharge_power: d.minimum_discharge_power.l1,
+                ev_minimum_discharge_power_l2: d.minimum_discharge_power.l2,
+                ev_minimum_discharge_power_l3: d.minimum_discharge_power.l3,
+            })
+        } else {
+            ac::AcCpdReqEnergyTransferModeChoice::Base(ac::AcCpdReqEnergyTransferMode {
+                ev_maximum_charge_power: l.maximum_charge_power.l1,
+                ev_maximum_charge_power_l2: l.maximum_charge_power.l2,
+                ev_maximum_charge_power_l3: l.maximum_charge_power.l3,
+                ev_minimum_charge_power: l.minimum_charge_power.l1,
+                ev_minimum_charge_power_l2: l.minimum_charge_power.l2,
+                ev_minimum_charge_power_l3: l.minimum_charge_power.l3,
+            })
+        };
+        let msg = ac::AcChargeParameterDiscoveryReq { header: self.header(), ac_cpd_req_energy_transfer_mode: mode };
         frame(tx, payload_type, |out| msg.encode(out))
     }
 
@@ -284,13 +328,16 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             ParameterChoice::IntValue(v) => Some(v),
             _ => None,
         };
+        // A three-phase charger also serves a single-phase vehicle.
+        let ac_connector = self.ev.ac_connector() as i32;
         let connector = self.ev.dc_connector() as i32;
+        let is_ac = self.config.ac();
         let has = |set: &ParameterSet<'_>, name: &str, want: i32| {
             set.parameter.iter().any(|p| p.name == name && as_int(p.choice) == Some(want))
         };
         sets.iter()
             .find(|set| {
-                has(set, "Connector", connector)
+                (if is_ac { has(set, "Connector", ac_connector) || has(set, "Connector", 2) } else { has(set, "Connector", connector) })
                     && self.config.parameter_filter.iter().all(|&(name, want)| has(set, name, want))
                     && self.config.optional_parameters.iter().all(|&(name, want)| has(set, name, want) || !set.parameter.iter().any(|p| p.name == name))
             })

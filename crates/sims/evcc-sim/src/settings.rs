@@ -164,6 +164,13 @@ pub struct Limits {
     pub min_discharge_power_w: u32,
     pub max_discharge_current_a: u32,
     pub min_discharge_current_a: u32,
+    /// The AC services (`ac = true`), per line: what the on-board charger draws, and feeds back
+    /// in a BPT session, and how many lines the car has (1 or 3).
+    pub ac_max_charge_power_w: u32,
+    pub ac_min_charge_power_w: u32,
+    pub ac_max_discharge_power_w: u32,
+    pub ac_min_discharge_power_w: u32,
+    pub ac_phases: u8,
     /// In a BPT session: discharge (a negative `EVTargetEnergyRequest`) until the battery is at
     /// this state of charge (percent), then charge to `target_soc`. Needs the battery model.
     pub discharge_to_soc: Option<u8>,
@@ -188,6 +195,11 @@ impl Default for Limits {
             min_discharge_power_w: 100,
             max_discharge_current_a: 30,
             min_discharge_current_a: 1,
+            ac_max_charge_power_w: 3680,
+            ac_min_charge_power_w: 1380,
+            ac_max_discharge_power_w: 3680,
+            ac_min_discharge_power_w: 500,
+            ac_phases: 3,
             discharge_to_soc: None,
         }
     }
@@ -267,8 +279,11 @@ pub struct Tls {
 pub struct Settings {
     /// The protocol to offer the charger.
     pub protocol: Protocol,
-    /// ISO 15118-20: select the bidirectional service `DC_BPT` instead of `DC`.
+    /// ISO 15118-20: select the bidirectional service `DC_BPT` instead of `DC` (`AC_BPT` instead
+    /// of `AC` with `ac`).
     pub bpt: bool,
+    /// ISO 15118-20: charge with the AC service (offering the AC schema) instead of DC.
+    pub ac: bool,
     /// DIN SPEC 70121.
     pub din: Din,
     /// ISO 15118-2.
@@ -331,6 +346,7 @@ impl Default for Settings {
         Self {
             protocol: Protocol::Iso20,
             bpt: false,
+            ac: false,
             din: Din::default(),
             iso2: Iso2::default(),
             slac: false,
@@ -427,7 +443,12 @@ impl Settings {
         let mut config = evcc_core::session::Config {
             allow_unsecured: self.tls.is_none(),
             prefer_pnc: self.pnc.is_some(),
-            ..if self.bpt { evcc_core::session::Config::DC_BPT_20 } else { evcc_core::session::Config::DC_20 }
+            ..match (self.ac, self.bpt) {
+                (false, false) => evcc_core::session::Config::DC_20,
+                (false, true) => evcc_core::session::Config::DC_BPT_20,
+                (true, false) => evcc_core::session::Config::AC_20,
+                (true, true) => evcc_core::session::Config::AC_BPT_20,
+            }
         };
         if let Some(ms) = self.poll_interval_ms {
             config.poll_interval_ms = ms;

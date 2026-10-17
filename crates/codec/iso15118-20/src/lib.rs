@@ -4,7 +4,7 @@
 //! and is `no_std` and allocation-free: decoded messages borrow from a host-provided
 //! [`exi::Arena`]. Each module is one schema namespace: [`common_types`] (shared types such
 //! as the header and response codes), [`common`] (the messages every service uses) and
-//! [`dc`].
+//! [`dc`] and [`ac`].
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
@@ -13,6 +13,6 @@ mod rational;
 pub mod response_codes;
 pub mod signature;
 
-pub use generated::{common, common_types, dc, xmldsig};
+pub use generated::{ac, common, common_types, dc, xmldsig};
 pub use response_codes::ResponseMessage;
 pub use signature::Signature;

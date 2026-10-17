@@ -4,6 +4,7 @@ use crate::{Timer, Timers};
 use exi::DecodeError;
 use iso15118_20::common::SelectedService;
 use iso15118_20::common_types::ResponseCode;
+use iso15118_20::ac;
 use iso15118_20::dc;
 
 /// Host-provided memory. Nothing is allocated by the core.
@@ -179,6 +180,11 @@ pub enum Notice {
     ServiceSelected { service_id: u16, parameter_set_id: u16 },
     /// The EVSE's DC limits, from `DC_ChargeParameterDiscoveryRes`.
     ChargeParametersDiscovered(dc::DcCpdResEnergyTransferModeChoice),
+    /// The EVSE's AC limits, from `AC_ChargeParameterDiscoveryRes`.
+    AcChargeParametersDiscovered(ac::AcCpdResEnergyTransferModeChoice),
+    /// What the EVSE reported in the latest `AC_ChargeLoopRes`: the power the on-board charger
+    /// is to draw (or feed back, negative).
+    AcChargeLoop(AcChargeLoopStatus),
     /// The EVSE finished the schedule exchange.
     ScheduleExchanged,
     /// The cable check finished successfully.
@@ -225,6 +231,18 @@ pub struct ChargeLoopStatus {
     pub maximum_charge_power: iso15118_20::common_types::RationalNumber,
     pub maximum_charge_current: iso15118_20::common_types::RationalNumber,
     pub maximum_voltage: iso15118_20::common_types::RationalNumber,
+}
+
+/// The EVSE's side of one AC charge loop exchange (Dynamic control mode). A negative target
+/// active power is a discharge of the vehicle (BPT).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcChargeLoopStatus {
+    pub target_active_power: crate::ev::Phases,
+    /// Per line, `None` where the EVSE sent none.
+    pub target_reactive_power: [Option<iso15118_20::common_types::RationalNumber>; 3],
+    /// What the EVSE measures (`EVSEPresentActivePower`), per line.
+    pub present_active_power: [Option<iso15118_20::common_types::RationalNumber>; 3],
+    pub target_frequency: Option<iso15118_20::common_types::RationalNumber>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

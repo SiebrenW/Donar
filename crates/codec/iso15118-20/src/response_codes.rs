@@ -25,10 +25,12 @@ pub enum ResponseMessage {
     DcPreCharge,
     DcChargeLoop,
     DcWeldingDetection,
+    AcChargeParameterDiscovery,
+    AcChargeLoop,
 }
 
 impl ResponseMessage {
-    pub const ALL: [ResponseMessage; 16] = [
+    pub const ALL: [ResponseMessage; 18] = [
         ResponseMessage::SessionSetup,
         ResponseMessage::AuthorizationSetup,
         ResponseMessage::Authorization,
@@ -45,6 +47,8 @@ impl ResponseMessage {
         ResponseMessage::DcPreCharge,
         ResponseMessage::DcChargeLoop,
         ResponseMessage::DcWeldingDetection,
+        ResponseMessage::AcChargeParameterDiscovery,
+        ResponseMessage::AcChargeLoop,
     ];
 
     /// The name of the message as in the schema, without `Res`.
@@ -66,6 +70,8 @@ impl ResponseMessage {
             ResponseMessage::DcPreCharge => "DC_PreCharge",
             ResponseMessage::DcChargeLoop => "DC_ChargeLoop",
             ResponseMessage::DcWeldingDetection => "DC_WeldingDetection",
+            ResponseMessage::AcChargeParameterDiscovery => "AC_ChargeParameterDiscovery",
+            ResponseMessage::AcChargeLoop => "AC_ChargeLoop",
         }
     }
 
@@ -122,8 +128,8 @@ impl ResponseMessage {
                     | FailedSignatureError
             ),
             M::SessionStop => matches!(code, FailedNoServiceRenegotiationSupported | FailedPauseNotAllowed),
-            M::DcChargeParameterDiscovery => code == FailedWrongChargeParameter,
-            M::DcChargeLoop => matches!(
+            M::DcChargeParameterDiscovery | M::AcChargeParameterDiscovery => code == FailedWrongChargeParameter,
+            M::DcChargeLoop | M::AcChargeLoop => matches!(
                 code,
                 WarningEvPowerProfileViolation | WarningScheduleRenegotiationFailed | FailedEvPowerProfileViolation | FailedScheduleRenegotiation
             ),

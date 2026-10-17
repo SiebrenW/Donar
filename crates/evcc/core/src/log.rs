@@ -52,6 +52,10 @@ pub enum MsgKind {
     SessionStopRes,
     DcWeldingDetectionReq,
     DcWeldingDetectionRes,
+    AcChargeParameterDiscoveryReq,
+    AcChargeParameterDiscoveryRes,
+    AcChargeLoopReq,
+    AcChargeLoopRes,
     // DIN SPEC 70121 (the messages it shares with ISO 15118-20 keep their kinds above).
     ServicePaymentSelectionReq,
     ServicePaymentSelectionRes,
@@ -188,6 +192,8 @@ impl MsgKind {
             MsgKind::DcPreChargeRes => M::DcPreCharge,
             MsgKind::DcChargeLoopRes => M::DcChargeLoop,
             MsgKind::DcWeldingDetectionRes => M::DcWeldingDetection,
+            MsgKind::AcChargeParameterDiscoveryRes => M::AcChargeParameterDiscovery,
+            MsgKind::AcChargeLoopRes => M::AcChargeLoop,
             MsgKind::SessionStopRes => M::SessionStop,
             _ => return None,
         })

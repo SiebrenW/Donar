@@ -2,6 +2,7 @@
 
 use iso15118_20::common::{self, *};
 use iso15118_20::common_types::Processing;
+use iso15118_20::ac;
 use iso15118_20::dc;
 use v2gtp::PayloadType;
 
@@ -23,6 +24,18 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         step
     }
 
+    pub(super) fn on_ac_charge_parameter_discovery_res(&mut self, res: ac::AcChargeParameterDiscoveryRes, tx: &mut [u8]) -> Step {
+        if let Some(end) = self.received(MsgKind::AcChargeParameterDiscoveryRes, res.response_code) {
+            return end;
+        }
+        self.note_evse_ac_limits(&res.ac_cpd_res_energy_transfer_mode);
+        let mut step = self.send_schedule_exchange_req(tx);
+        if step.end.is_none() {
+            step.notice = Some(Notice::AcChargeParametersDiscovered(res.ac_cpd_res_energy_transfer_mode));
+        }
+        step
+    }
+
     pub(super) fn on_schedule_exchange_res(&mut self, res: ScheduleExchangeRes<'_>, tx: &mut [u8]) -> Step {
         if let Some(end) = self.received(MsgKind::ScheduleExchangeRes, res.response_code) {
             return end;
@@ -36,7 +49,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             Processing::Finished => {
                 self.ongoing_armed = false;
                 self.poll_pending = false;
-                let mut step = self.send_cable_check_req(tx);
+                // AC has no cable check or pre-charge: the power delivery starts at once.
+                let mut step = if self.config.ac() { self.send_power_delivery(common::ChargeProgress::Start, tx) } else { self.send_cable_check_req(tx) };
                 if step.end.is_none() {
                     step.notice = Some(Notice::ScheduleExchanged);
                 }

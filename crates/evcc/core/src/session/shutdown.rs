@@ -13,9 +13,14 @@ use crate::log::{LogSink, MsgKind};
 use crate::{Timer, TimerCmd, Timers};
 
 impl<E: Ev, L: LogSink> Machine<E, L> {
-    pub(super) fn on_power_delivery_stop_res(&mut self, res: PowerDeliveryRes, _tx: &mut [u8]) -> Step {
+    pub(super) fn on_power_delivery_stop_res(&mut self, res: PowerDeliveryRes, tx: &mut [u8]) -> Step {
         if let Some(end) = self.received(MsgKind::PowerDeliveryRes, res.response_code) {
             return end;
+        }
+        if self.config.ac() {
+            // Nothing to open or weld-check on the AC side: the session stops.
+            self.ongoing_armed = false;
+            return self.send_session_stop_req(tx);
         }
         // The energy flow is over. Contactors open, then welding detection
         // (V2G20-1448), then the session stops.
@@ -35,22 +40,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             // V2G20-1462: OK to the final request: stop the session.
             self.welding_finishing = false;
             self.ongoing_armed = false;
-            let msg = common::SessionStopReq {
-                header: self.header(),
-                charging_session: match self.stop_kind {
-                    StopKind::Terminate => common::ChargingSession::Terminate,
-                    StopKind::Pause => common::ChargingSession::Pause,
-                    StopKind::ServiceRenegotiation => common::ChargingSession::ServiceRenegotiation,
-                },
-                ev_termination_code: None,
-                ev_termination_explanation: None,
-            };
-            let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
-            let mut step = self.send_then(State::AwaitSessionStopRes, MsgKind::SessionStopReq, framed);
-            if step.end.is_none() {
-                step.timers = step.timers.with(TimerCmd::Cancel(Timer::Ongoing));
-            }
-            return step;
+            return self.send_session_stop_req(tx);
         }
         // The EV decides when welding detection is over (IEC 61851-23 CC.3.3: it
         // may read the side B voltage from several responses).
@@ -61,6 +51,26 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             return self.send_welding_req(true, tx);
         }
         self.ongoing_repeat(tx)
+    }
+
+    /// `SessionStopReq` of the kind the shutdown under way ends in.
+    fn send_session_stop_req(&mut self, tx: &mut [u8]) -> Step {
+        let msg = common::SessionStopReq {
+            header: self.header(),
+            charging_session: match self.stop_kind {
+                StopKind::Terminate => common::ChargingSession::Terminate,
+                StopKind::Pause => common::ChargingSession::Pause,
+                StopKind::ServiceRenegotiation => common::ChargingSession::ServiceRenegotiation,
+            },
+            ev_termination_code: None,
+            ev_termination_explanation: None,
+        };
+        let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
+        let mut step = self.send_then(State::AwaitSessionStopRes, MsgKind::SessionStopReq, framed);
+        if step.end.is_none() {
+            step.timers = step.timers.with(TimerCmd::Cancel(Timer::Ongoing));
+        }
+        step
     }
 
     pub(super) fn on_session_stop_res(&mut self, res: SessionStopRes, tx: &mut [u8]) -> Step {

@@ -600,3 +600,60 @@ fn a_vehicle_that_raises_its_limits_in_the_charge_loop_is_noted_and_may_be_faile
         assert!(log.iter().any(|l| l.contains("violation: V2G20-2198: EVMaximumChargeCurrent is 250")), "{log:?}");
     }
 }
+
+// ---------------------------------------------------------------- ISO 15118-20 AC
+
+fn fast_ac() -> Config {
+    Config { poll_interval_ms: 10, charge_loop_interval_ms: 10, allow_unsecured: true, ..Config::AC_20 }
+}
+
+fn run_ac(addr: std::net::SocketAddr, config: Config, stop_after: Option<u32>) -> (Outcome, common::Recording) {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    common::run_car_recorded(&mut stream, config, stop_after)
+}
+
+#[test]
+fn an_ac_session_goes_from_the_schedule_exchange_straight_to_power_delivery() {
+    let (addr, server) = start(evse_sim::Config::default());
+    let (outcome, log) = run_ac(addr, fast_ac(), Some(3));
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    assert_eq!(log.count("MsgTx { msg: AcChargeParameterDiscoveryReq }"), 1);
+    assert_eq!(log.count("MsgTx { msg: AcChargeLoopReq }"), 3);
+    // Start and Stop; nothing of DC.
+    assert_eq!(log.count("MsgTx { msg: PowerDeliveryReq }"), 2);
+    assert_eq!(log.count("DcCableCheckReq") + log.count("DcPreChargeReq") + log.count("DcWeldingDetectionReq"), 0);
+    assert_eq!(log.count("Notice::OpenContactors") + log.count("OpenContactors"), 0);
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+}
+
+#[test]
+fn a_bidirectional_ac_session_uses_the_bpt_variants() {
+    let (addr, server) = start(evse_sim::Config::default());
+    let config = Config { poll_interval_ms: 10, charge_loop_interval_ms: 10, allow_unsecured: true, ..Config::AC_BPT_20 };
+    let (outcome, log) = run_ac(addr, config, Some(2));
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    assert_eq!(log.count("MsgTx { msg: AcChargeLoopReq }"), 2);
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+}
+
+#[test]
+fn a_three_phase_car_does_not_choose_a_single_phase_set() {
+    let single = OfferedSet::new(1, [("Connector", 1), ("EVSENominalVoltage", 230), ("ControlMode", 2), ("MobilityNeedsMode", 1), ("Pricing", 0)]);
+    let (addr, server) = start(evse_sim::Config { ac_parameter_sets: vec![single], ..Default::default() });
+    let (outcome, _) = run_ac(addr, fast_ac(), Some(2));
+    assert_eq!(outcome, Outcome::Ended(EndReason::NoCompatibleParameterSet));
+    drop(server);
+}
+
+#[test]
+fn the_evse_can_end_an_ac_charge_and_renegotiate_the_schedule() {
+    let config = evse_sim::Config { schedule_renegotiation_after_loops: Some(2), terminate_after_loops: Some(6), ..Default::default() };
+    let (addr, server) = start(config);
+    let (outcome, log) = run_ac(addr, fast_ac(), None);
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    // The side stream asked for the charge parameters again, once, next to the main one.
+    assert_eq!(log.count("MsgTx { msg: AcChargeParameterDiscoveryReq }"), 2);
+    // Start, the one that ends the renegotiation, Stop.
+    assert_eq!(log.count("MsgTx { msg: PowerDeliveryReq }"), 3);
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+}

@@ -5,7 +5,7 @@
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
-use evcc_core::session::{ChargeLoopStatus, State};
+use evcc_core::session::{AcChargeLoopStatus, ChargeLoopStatus, State};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sim_control::{Endpoint, EventLog, Metric};
@@ -73,6 +73,8 @@ struct Inner {
     /// What the charger reported in the last charge loop answer.
     seen_voltage: f64,
     seen_current: f64,
+    /// The active power per line the charger last asked of the on-board charger (AC), watts.
+    ac_power: [f64; 3],
     loops: u32,
     phase: Phase,
     state: Option<State>,
@@ -110,6 +112,33 @@ impl Inner {
         self.limits.discharge_to_soc.is_some() && !self.discharge_done
     }
 
+    /// The battery takes `power_w` for the time since the last answer (the model); true when the
+    /// vehicle should stop now: it was asked to advance to the stop, or the target state of
+    /// charge is reached.
+    fn take_energy(&mut self, power_w: f64) -> bool {
+        let g = self;
+        g.loops += 1;
+        let now = Instant::now();
+        if let Some(before) = g.updated.replace(now) {
+            let hours = now.duration_since(before).as_secs_f64() * g.time_scale / 3600.0;
+            let energy_wh = power_w * hours;
+            g.model_soc = (g.model_soc + energy_wh / CAPACITY_WH * 100.0).clamp(0.0, 100.0);
+        }
+        if g.limits.discharge_to_soc.is_some_and(|floor| g.model_soc <= f64::from(floor)) {
+            g.discharge_done = true;
+        }
+        // The shown state of charge follows the model, also where the protocol never asks for it.
+        let modelled = g.model_soc;
+        g.soc.resolve(modelled);
+        let reached = g.stop_at_target_soc && !g.discharging() && g.model_soc >= f64::from(g.limits.target_soc);
+        let stop = reached || (g.target >= Phase::Stop && !g.free_run);
+        if stop && !g.stop_asked {
+            g.stop_asked = true;
+            return true;
+        }
+        false
+    }
+
     /// Whether entering `phase` is a place to hold: beyond the target, or at it when the
     /// vehicle is to hold before it.
     fn holds_at(&self, phase: Phase) -> bool {
@@ -132,6 +161,7 @@ impl EvLive {
                 stop_at_target_soc,
                 seen_voltage: 0.0,
                 seen_current: 0.0,
+                ac_power: [0.0; 3],
                 loops: 0,
                 phase: Phase::Connecting,
                 state: None,
@@ -202,28 +232,30 @@ impl EvLive {
     /// of charge is reached.
     pub fn charge_loop(&self, status: &ChargeLoopStatus) -> bool {
         let mut g = self.inner.lock().unwrap();
-        g.loops += 1;
         g.seen_voltage = status.present_voltage.to_f64();
         g.seen_current = status.present_current.to_f64();
-        let now = Instant::now();
-        if let Some(before) = g.updated.replace(now) {
-            let hours = now.duration_since(before).as_secs_f64() * g.time_scale / 3600.0;
-            let energy_wh = g.seen_voltage * g.seen_current * hours;
-            g.model_soc = (g.model_soc + energy_wh / CAPACITY_WH * 100.0).clamp(0.0, 100.0);
-        }
-        if g.limits.discharge_to_soc.is_some_and(|floor| g.model_soc <= f64::from(floor)) {
-            g.discharge_done = true;
-        }
-        // The shown state of charge follows the model, also where the protocol never asks for it.
-        let modelled = g.model_soc;
-        g.soc.resolve(modelled);
-        let reached = g.stop_at_target_soc && !g.discharging() && g.model_soc >= f64::from(g.limits.target_soc);
-        let stop = reached || (g.target >= Phase::Stop && !g.free_run);
-        if stop && !g.stop_asked {
-            g.stop_asked = true;
-            return true;
-        }
-        false
+        let power = g.seen_voltage * g.seen_current;
+        g.take_energy(power)
+    }
+
+    /// An AC charge loop answer arrived: the on-board charger draws (or feeds back, when
+    /// negative) the target power, which the battery takes. As for DC, true when the vehicle
+    /// should stop now.
+    pub fn ac_charge_loop(&self, status: &AcChargeLoopStatus) -> bool {
+        let mut g = self.inner.lock().unwrap();
+        let p = status.target_active_power;
+        let watts = [Some(p.l1), p.l2, p.l3].map(|v| v.map_or(0.0, iso15118_20::common_types::RationalNumber::to_f64));
+        g.ac_power = watts;
+        // Shown like a DC charge: the nominal voltage and the current the power comes to.
+        g.seen_voltage = NOMINAL_VOLTAGE;
+        g.seen_current = watts.iter().sum::<f64>() / NOMINAL_VOLTAGE;
+        g.take_energy(watts.iter().sum())
+    }
+
+    /// The active power per line the charger last asked for, which the on-board charger now
+    /// draws (watts; negative when it feeds back).
+    pub fn ac_present_power(&self) -> [f64; 3] {
+        self.inner.lock().unwrap().ac_power
     }
 
     /// Called with every state the session enters, before its frame goes out. Blocks while the

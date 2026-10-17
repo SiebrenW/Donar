@@ -100,6 +100,10 @@ pub struct Model<'w> {
     supported: HashMap<QName, bool>,
     /// String-table qname ids.
     qids: BTreeMap<QName, u8>,
+    /// The namespace of the type being resolved: a substitution group has the members that the
+    /// schema of that namespace and its imports declare, as for a processor that has only that
+    /// schema (the `AC` and `DC` schemas both extend the control modes of `CommonTypes`).
+    entry: String,
 }
 
 fn builtin(local: &str) -> Option<Scalar> {
@@ -140,6 +144,7 @@ impl<'w> Model<'w> {
             modules: modules.iter().map(|(ns, name)| (ns.to_string(), name.to_string())).collect(),
             supported: HashMap::new(),
             qids: BTreeMap::new(),
+            entry: String::new(),
         };
         for (ns, _) in modules {
             let schema = world.schema(ns)?;
@@ -228,7 +233,7 @@ impl<'w> Model<'w> {
         let mut i = 0;
         while i < all.len() {
             let parent = all[i].clone();
-            for s in self.world.schemas.values() {
+            for s in self.world.reachable(&self.entry).iter().filter_map(|n| self.world.schemas.get(n)) {
                 for e in &s.elements {
                     if e.substitution_group.as_ref() == Some(&parent) && !all.contains(&e.name) {
                         all.push(e.name.clone());
@@ -297,6 +302,7 @@ impl<'w> Model<'w> {
 
     fn resolve_complex(&mut self, q: &QName) -> Result<(), String> {
         let def = self.world.complex(q).ok_or_else(|| format!("unknown complex type {}", q.local))?.clone();
+        self.entry = q.ns.clone();
         let ctx = |e: String| format!("{}: {e}", q.local);
         // Attributes of the whole derivation chain, sorted by name, come first.
         let mut attrs: Vec<(QName, xsd::AttrDecl)> = Vec::new();

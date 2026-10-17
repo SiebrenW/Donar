@@ -36,6 +36,48 @@ pub struct AcLimits {
     pub minimum_current: RationalNumber,
 }
 
+/// A quantity per phase: line 1, and lines 2 and 3 of a three-phase connection (ISO 15118-20 AC
+/// messages carry `_L2` and `_L3` variants of every power).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Phases {
+    pub l1: RationalNumber,
+    pub l2: Option<RationalNumber>,
+    pub l3: Option<RationalNumber>,
+}
+
+impl Phases {
+    /// The same on one phase only.
+    pub const fn single(l1: RationalNumber) -> Self {
+        Self { l1, l2: None, l3: None }
+    }
+    /// The same on all three phases.
+    pub const fn three(each: RationalNumber) -> Self {
+        Self { l1: each, l2: Some(each), l3: Some(each) }
+    }
+}
+
+/// The vehicle's AC charging limits of ISO 15118-20 (`AC_CPDReqEnergyTransferMode`), per phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcPowerLimits {
+    pub maximum_charge_power: Phases,
+    pub minimum_charge_power: Phases,
+}
+
+/// What the vehicle can feed back, per phase (AC bidirectional power transfer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcDischargePowerLimits {
+    pub maximum_discharge_power: Phases,
+    pub minimum_discharge_power: Phases,
+}
+
+/// What the on-board charger draws (or feeds back) right now, reported in every AC charge loop
+/// request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcPresentPower {
+    pub active: Phases,
+    pub reactive: Phases,
+}
+
 /// What the vehicle tells the EVSE about its energy needs (Dynamic control mode).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScheduleRequest {
@@ -57,6 +99,14 @@ pub enum DcConnector {
     Extended = 2,
     Dual2 = 3,
     Dual4 = 4,
+}
+
+/// Value of the AC service parameter `Connector` (ISO 15118-20:2022 Table 205).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum AcConnector {
+    SinglePhase = 1,
+    ThreePhase = 2,
 }
 
 /// The most sub-CA certificates a contract certificate chain carries (`SubCertificates`).
@@ -127,6 +177,31 @@ pub trait Ev {
             maximum_current: RationalNumber { exponent: 0, value: 32 },
             minimum_current: RationalNumber { exponent: 0, value: 6 },
         }
+    }
+    /// Which AC connection the vehicle has (ISO 15118-20 AC); selects the `Connector` service
+    /// parameter set. A three-phase charger also serves a single-phase vehicle.
+    fn ac_connector(&self) -> AcConnector {
+        AcConnector::ThreePhase
+    }
+    /// The vehicle's AC power limits per phase (ISO 15118-20 AC), sent in
+    /// `AC_ChargeParameterDiscoveryReq` and held to in the charge loop.
+    fn ac20_limits(&self) -> AcPowerLimits {
+        let kw = |v| RationalNumber { exponent: 3, value: v };
+        AcPowerLimits { maximum_charge_power: Phases::three(kw(4)), minimum_charge_power: Phases::single(RationalNumber { exponent: 0, value: 1400 }) }
+    }
+    /// The vehicle's AC discharge limits for BPT sessions
+    /// ([`crate::session::SERVICE_ID_AC_BPT`]).
+    fn ac20_discharge_limits(&self) -> AcDischargePowerLimits {
+        AcDischargePowerLimits {
+            maximum_discharge_power: Phases::three(RationalNumber { exponent: 3, value: 4 }),
+            minimum_discharge_power: Phases::single(RationalNumber { exponent: 0, value: 500 }),
+        }
+    }
+    /// The power the on-board charger draws now, for the AC charge loop request. The default is
+    /// "nothing", for a host that does not measure.
+    fn ac_present_power(&self) -> AcPresentPower {
+        let zero = Phases::three(RationalNumber { exponent: 0, value: 0 });
+        AcPresentPower { active: zero, reactive: zero }
     }
     /// The voltage of the vehicle's battery system (read when the cable check is done and
     /// during pre-charge).

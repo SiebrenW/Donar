@@ -89,8 +89,32 @@ impl Config {
 
     /// Whether the session is a BPT one.
     pub fn bpt(&self) -> bool {
-        self.energy_service == SERVICE_ID_DC_BPT
+        matches!(self.energy_service, SERVICE_ID_DC_BPT | SERVICE_ID_AC_BPT)
     }
+
+    /// Whether the session is an AC one (no cable check, pre-charge, contactors or welding
+    /// detection; the charge loop is `AC_ChargeLoop`).
+    pub fn ac(&self) -> bool {
+        matches!(self.energy_service, SERVICE_ID_AC | SERVICE_ID_AC_BPT)
+    }
+
+    /// ISO 15118-20 AC, version 1.0, schema id 2. A parameter set of the `AC` service is
+    /// acceptable with dynamic control and the mobility needs from the EVCC (Table 205).
+    pub const AC_20: Config = Config {
+        offer: AppProtocol {
+            protocol_namespace: "urn:iso:std:iso:15118:-20:AC",
+            version_number_major: 1,
+            version_number_minor: 0,
+            schema_id: 2,
+            priority: 1,
+        },
+        energy_service: SERVICE_ID_AC,
+        ..Config::DC_20
+    };
+
+    /// AC bidirectional power transfer: the service `AC_BPT`. Its parameter sets carry the grid
+    /// code parameter `GridCodeIslandingDetectionMethod`, which the vehicle does not select on.
+    pub const AC_BPT_20: Config = Config { energy_service: SERVICE_ID_AC_BPT, ..Config::AC_20 };
 
     /// ISO 15118-20 DC, version 1.0, schema id 1, top priority.
     pub const DC_20: Config = Config {
@@ -147,3 +171,7 @@ pub(crate) fn pow10(exp: i8) -> f32 {
 pub const SERVICE_ID_DC: u16 = 2;
 /// Service id of DC bidirectional power transfer (Table 204).
 pub const SERVICE_ID_DC_BPT: u16 = 6;
+/// Service id of AC energy transfer (Table 204).
+pub const SERVICE_ID_AC: u16 = 1;
+/// Service id of AC bidirectional power transfer (Table 204).
+pub const SERVICE_ID_AC_BPT: u16 = 5;
