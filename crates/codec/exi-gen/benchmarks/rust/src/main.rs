@@ -92,7 +92,6 @@ macro_rules! run_group {
             t.encode_ns += time(|| {
                 black_box(message.encode(black_box(&mut out)).ok());
             });
-            drop(message);
             t.ok += 1;
             t.decode_ns += time(|| {
                 arena.reset();

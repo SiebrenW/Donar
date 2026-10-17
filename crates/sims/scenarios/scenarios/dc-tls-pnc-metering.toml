@@ -1,0 +1,29 @@
+name = "dc-tls-pnc-metering"
+description = "Metering confirmation (ISO 15118-20 8.3.4.3.11) over TLS 1.3 with Plug & Charge: the vehicle asks for the charger's meter reading in every charge loop answer, the charger notifies a metering confirmation after every second answer and sends receipts, the vehicle signs the SignedMeteringData (the reading, the receipt, the session id) with its contract key on the side stream, and the charger verifies the signature and that the reading is the one it sent."
+timeout_s = 40
+pki = "p521"
+
+[secc]
+kind = "evse-sim"
+tls = true
+[secc.settings.session]
+offered_authorization = ["EIM", "PnC"]
+metering_confirmation_every_loops = 2
+receipt_every_loops = 2
+[secc.settings.session.pnc]
+check_profile = true
+
+[evcc]
+kind = "evcc-sim"
+tls = true
+pnc = true
+[evcc.settings]
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+request_meter_info = true
+stop_after = 7
+
+[expect]
+secc_exit = 0
+evcc_log = ["AuthorizationSelected { service: PnC }", "session: Ended(Completed)"]
+secc_log = ["PnC authorization: Ok", "metering confirmation: OK", "session: Stopped"]

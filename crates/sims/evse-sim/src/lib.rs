@@ -10,6 +10,7 @@ mod config;
 mod evse;
 mod pnc;
 mod live;
+mod secc;
 mod net;
 
 pub use config::{CertificateChecks, Config, Din, DinEnergyTransfer, Iso2, Iso2Mode, Limits, OfferedSet, Pnc, Protocol, Settings, TlsVersions, value_name};

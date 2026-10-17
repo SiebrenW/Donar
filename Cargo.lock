@@ -325,6 +325,7 @@ dependencies = [
  "app-protocol",
  "din70121",
  "evcc-linux",
+ "evse-core",
  "exi",
  "homeplug",
  "iso15118-2",

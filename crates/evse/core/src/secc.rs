@@ -18,6 +18,7 @@ use iso15118_20::common::{
 };
 use iso15118_20::common_types::{EvseStatus, MessageHeader, MeterInfo, RationalNumber, Receipt, ResponseCode};
 use iso15118_20::dc;
+use v2gtp::PayloadType;
 
 /// The answer of a step that may take several rounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,8 +122,13 @@ pub trait Secc {
     fn parameter_sets(&self, _service_id: u16) -> &[ParameterSet<'_>] {
         &[]
     }
+    /// Offer service renegotiation in `ServiceDiscoveryRes` (V2G20-1480).
     fn service_renegotiation_supported(&self) -> bool {
         false
+    }
+    /// Agree to a `SessionStopReq(ServiceRenegotiation)` (V2G20-1643, V2G20-1955); by default when it was offered.
+    fn accept_service_renegotiation(&mut self) -> bool {
+        self.service_renegotiation_supported()
     }
 
     // ---- the service flow
@@ -152,8 +158,9 @@ pub trait Secc {
         Err(ResponseCode::FailedWrongChargeParameter)
     }
 
-    /// Whether the schedule is ready (`Ongoing` while it is being worked out).
-    fn schedule_ready(&mut self) -> Progress<()> {
+    /// Whether the schedule is ready (`Ongoing` while it is being worked out); `renegotiation` on the side
+    /// stream of a schedule renegotiation.
+    fn schedule_ready(&mut self, _renegotiation: bool) -> Progress<()> {
         Progress::Done(())
     }
     /// Scheduled control mode: the schedule tuples to offer (ids 1 to 255, V2G20-773), at most three.
@@ -219,7 +226,7 @@ pub trait Secc {
     // ---- the machine's own decisions, for the host to bend
 
     /// Called with every request before it is looked at.
-    fn intercept(&mut self, _request: &Request<'_>) -> Action {
+    fn intercept(&mut self, _payload_type: PayloadType, _request: &Request<'_>) -> Action {
         Action::Pass
     }
     /// The response code the machine is about to send, which the host may change (a fault to inject,

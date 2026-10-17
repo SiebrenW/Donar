@@ -69,6 +69,7 @@ mod run {
         dc_tls_ed448 => "dc-tls-ed448",
         dc_tls12 => "dc-tls12",
         dc_tls_pnc => "dc-tls-pnc",
+        dc_tls_pnc_metering => "dc-tls-pnc-metering",
         dc_tls_profile_violation => "dc-tls-profile-violation",
         dc_delay => "dc-delay",
         dc_din => "dc-din",

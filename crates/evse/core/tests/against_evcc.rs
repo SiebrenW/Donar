@@ -97,7 +97,6 @@ struct TestCharger {
     cable_checks: u32,
     delivering: bool,
     confirmations: u32,
-    meter_asked: u32,
     ended: Option<evse_core::secc::Ended>,
     meter_id: String,
 }
@@ -378,7 +377,8 @@ impl Ev for PnCEv {
 /// The two machines and what passes between them.
 struct Rig<'a, E: Ev> {
     vehicle: EvSession<'a, E, NoLog>,
-    charger: Session<'a, TestCharger>,
+    charger: Session<TestCharger>,
+    charger_buffers: Buffers<'a>,
     ended: Option<EndReason>,
     loops: u32,
     stop_after: u32,
@@ -410,9 +410,10 @@ impl<E: Ev> Rig<'_, E> {
         }
         if let Some(n) = step.send {
             let frames = self.vehicle.tx()[..n].to_vec();
-            self.charger.rx_space()[..frames.len()].copy_from_slice(&frames);
-            let reply = self.charger.handle(Event::Received(frames.len()));
-            let bytes = self.charger.tx()[..reply.send].to_vec();
+            let space = self.charger.rx_space(self.charger_buffers.rx);
+            space[..frames.len()].copy_from_slice(&frames);
+            let reply = self.charger.handle(Event::Received(frames.len()), &mut self.charger_buffers);
+            let bytes = self.charger_buffers.tx[..reply.send].to_vec();
             // One frame at a time, as a stream would deliver them.
             let mut at = 0;
             while at < bytes.len() {
@@ -432,9 +433,10 @@ fn run<E: Ev>(config: Config, ev: E, stop_after: u32) -> (EndReason, TestCharger
     let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
     let vehicle = EvSession::new(config, ev, NoLog, EvBuffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
     let (mut srx, mut stx, mut sarena, mut sscratch) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768], vec![0u8; 8192]);
-    let mut charger = Session::new(TestCharger::default(), Buffers { rx: &mut srx, tx: &mut stx, arena: &mut sarena, scratch: &mut sscratch });
-    charger.handle(Event::Connected { secured: true });
-    let mut rig = Rig { vehicle, charger, ended: None, loops: 0, stop_after, closed: false };
+    let mut charger_buffers = Buffers { rx: &mut srx, tx: &mut stx, arena: &mut sarena, scratch: &mut sscratch };
+    let mut charger = Session::new(TestCharger::default());
+    charger.handle(Event::Connected { secured: true }, &mut charger_buffers);
+    let mut rig = Rig { vehicle, charger, charger_buffers, ended: None, loops: 0, stop_after, closed: false };
     let start = rig.vehicle.handle(EvEvent::Start { secured: true });
     rig.process(start);
     for _ in 0..200 {

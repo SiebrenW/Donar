@@ -1,37 +1,24 @@
-//! The simulated EVSE: a sans-IO state machine from received bytes to frames to send.
+//! The simulated EVSE: a sans-IO state machine from received bytes to frames to send. ISO 15118-20 is
+//! the session machine of `evse-core` with this charger's settings and faults behind it
+//! ([`crate::secc::SimSecc`]); DIN SPEC 70121 and ISO 15118-2 are handled here.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use app_protocol::{self, ResponseCode as SapCode, SupportedAppProtocolRes};
 use exi::{Arena, EncodeError};
-use iso15118_20::common::{
-    self, AReqAuthorizationModeChoice, PnCAsResAuthorizationMode, AsResAuthorizationModeChoice, Authorization, AuthorizationRes,
-    AuthorizationSetupRes, EimAsResAuthorizationMode, Parameter, ParameterChoice, ParameterSet, SelectedService,
-    Service, ServiceDetailRes, ServiceDiscoveryRes, ServiceList, ServiceParameterList, ServiceSelectionRes,
-    SessionSetupRes,
-};
-use iso15118_20::common_types::{self, MessageHeader, Processing, RationalNumber, ResponseCode};
-use iso15118_20::ac;
-use iso15118_20::dc;
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
 use std::sync::Arc;
 
 use crate::config::{Config, Protocol};
 use crate::live::EvseLive;
-
-fn random_challenge() -> [u8; 16] {
-    let mut challenge = [0u8; 16];
-    openssl::rand::rand_bytes(&mut challenge).expect("random bytes");
-    challenge
-}
+use crate::secc::SimSecc;
 
 const DC_NAMESPACE: &str = "urn:iso:std:iso:15118:-20:DC";
 const AC_NAMESPACE: &str = "urn:iso:std:iso:15118:-20:AC";
 const DIN_NAMESPACE: &str = "urn:din:70121:2012:MsgDef";
 const ISO2_NAMESPACE: &str = "urn:iso:15118:2:2013:MsgDef";
 
-mod ac20;
 mod din;
 mod iso2;
 
@@ -76,6 +63,15 @@ pub struct Output {
     pub close: bool,
 }
 
+/// The ISO 15118-20 session machine and the memory it works in.
+struct Core {
+    session: evse_core::Session<SimSecc>,
+    rx: Vec<u8>,
+    tx: Vec<u8>,
+    arena: Vec<u8>,
+    scratch: Vec<u8>,
+}
+
 pub struct Evse {
     pub(crate) config: Config,
     state: State,
@@ -83,50 +79,19 @@ pub struct Evse {
     schema_id: u8,
     /// The protocol the vehicle and the charger agreed on.
     protocol: Protocol,
+    /// ISO 15118-20: the session machine, once the vehicle chose it.
+    core: Option<Core>,
     authorization_reqs_seen: u32,
     schedule_reqs_seen: u32,
     cable_reqs_seen: u32,
     precharge_reqs_seen: u32,
     loops_seen: u32,
-    /// A standby period is on, and how many charge loop answers it has had.
-    standby: Option<u32>,
-    /// The EV answered the pause request (with standby or a refusal was sent).
-    pause_answered: bool,
-    /// The id of this session (the configured one, or a fresh one when a resume is refused).
+    /// The id of this session.
     session_id: [u8; 8],
-    /// A service renegotiation was requested (and done) in this session.
-    renegotiation_requested: bool,
-    renegotiated: bool,
-    side_schedule_reqs_seen: u32,
-    /// A schedule renegotiation finished on the side stream.
-    side_renegotiated: bool,
     live: Option<Arc<EvseLive>>,
     log: Vec<String>,
-    /// The challenge of this session's `AuthorizationSetupRes` (V2G20-697: 128 random bits).
+    /// The challenge of this session's authorization setup (V2G20-697: 128 random bits).
     challenge: [u8; 16],
-    last_stamp: std::cell::Cell<u64>,
-    /// The limits of the vehicle's charge parameter discovery request, which its charge loop
-    /// requests have to stay within (V2G20-2198, 2199).
-    ev_announced: Option<dc::DcCpdReqEnergyTransferMode>,
-    /// The selected energy service is DC_BPT: charge parameter discovery and charge loop use the BPT variants.
-    bpt: bool,
-    /// The vehicle offered the AC schema, and the selected service is an AC one: the energy
-    /// messages are the `AC_` ones (payload type `AC_MAINSTREAM`).
-    ac: bool,
-    ac_namespace: bool,
-    /// The selected parameter set has ControlMode 1 (Scheduled): the charger offers schedule
-    /// tuples, the vehicle selects one in its power profile, and the charge loop follows it.
-    scheduled: bool,
-    /// The selected AC parameter set has the ThreePhase connector, and the vehicle gave per-line
-    /// (`_L2`, `_L3`) values in its charge parameter discovery.
-    ac_three: bool,
-    ac_asym: bool,
-    selected_tuple: u32,
-    schedule_started: Option<std::time::Instant>,
-    /// The `EVSENominalVoltage` of the selected AC parameter set, which the live measurements
-    /// show (the AC power over this voltage is the current shown).
-    ac_voltage: f64,
-    ac_announced: Option<ac20::Announced>,
     /// DIN SPEC 70121: what the vehicle announced in its charge parameter discovery.
     din_ev_announced: Option<din70121::types::DcEvChargeParameter>,
     /// ISO 15118-2: the vehicle's announced power limit, and whether this is an AC session.
@@ -143,9 +108,65 @@ pub struct Evse {
     iso2_contract: Option<(openssl::x509::X509, bool)>,
 }
 
+fn random_challenge() -> [u8; 16] {
+    let mut challenge = [0u8; 16];
+    openssl::rand::rand_bytes(&mut challenge).expect("random bytes");
+    challenge
+}
+
+impl From<evse_core::State> for State {
+    fn from(s: evse_core::State) -> State {
+        use evse_core::State as C;
+        match s {
+            C::AwaitSupportedAppProtocolReq => State::AwaitSupportedAppProtocolReq,
+            C::AwaitSessionSetupReq => State::AwaitSessionSetupReq,
+            C::AwaitAuthorizationSetupReq => State::AwaitAuthorizationSetupReq,
+            C::AwaitAuthorizationReq => State::AwaitAuthorizationReq,
+            C::AwaitServiceDiscoveryReq => State::AwaitServiceDiscoveryReq,
+            C::AwaitServiceDetailReq => State::AwaitServiceDetailReq,
+            C::AwaitServiceSelectionReq => State::AwaitServiceSelectionReq,
+            C::AwaitChargeParameterDiscoveryReq => State::AwaitChargeParameterDiscoveryReq,
+            C::AwaitScheduleExchangeReq => State::AwaitScheduleExchangeReq,
+            C::AwaitCableCheckReq => State::AwaitCableCheckReq,
+            C::AwaitPreChargeReq => State::AwaitPreChargeReq,
+            C::AwaitPowerDeliveryReq => State::AwaitPowerDeliveryReq,
+            C::ChargeLoop => State::ChargeLoop,
+            C::AwaitWeldingReq => State::AwaitWeldingReq,
+            C::AwaitSessionStopReq => State::AwaitSessionStopReq,
+            C::Stopped => State::Stopped,
+            C::Paused => State::Paused,
+            C::Closed => State::Closed,
+        }
+    }
+}
+
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, protocol: Protocol::Iso20, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge(), last_stamp: std::cell::Cell::new(0), ev_announced: None, bpt: false, ac: false, ac_namespace: false, scheduled: false, ac_three: false, ac_asym: false, selected_tuple: 0, schedule_started: None, ac_voltage: 400.0, ac_announced: None, din_ev_announced: None, iso2_ev_power: None, iso2_ac: false, iso2_phases: 1.0, iso2_renegotiating: false, iso2_renegotiation_asked: false, iso2_receipt_reading: None, iso2_contract: None }
+        Self {
+            session_id: config.session_id,
+            config,
+            state: State::AwaitSupportedAppProtocolReq,
+            rx: Vec::new(),
+            schema_id: 0,
+            protocol: Protocol::Iso20,
+            core: None,
+            authorization_reqs_seen: 0,
+            schedule_reqs_seen: 0,
+            cable_reqs_seen: 0,
+            precharge_reqs_seen: 0,
+            loops_seen: 0,
+            live: None,
+            log: Vec::new(),
+            challenge: random_challenge(),
+            din_ev_announced: None,
+            iso2_ev_power: None,
+            iso2_ac: false,
+            iso2_phases: 1.0,
+            iso2_renegotiating: false,
+            iso2_renegotiation_asked: false,
+            iso2_receipt_reading: None,
+            iso2_contract: None,
+        }
     }
 
     /// Reports the charge loop measurements to a test platform and takes its edits.
@@ -155,61 +176,17 @@ impl Evse {
     }
 
     pub fn state(&self) -> State {
-        self.state
-    }
-
-    /// The notification the next charge loop answer carries, if the config calls for one (the
-    /// same in the DC and the AC loop).
-    pub(super) fn loop_notification(&mut self) -> Option<(common_types::EvseNotification, u16)> {
-        let terminate = self.config.terminate_after_loops.is_some_and(|n| self.loops_seen >= n);
-        let notification = if terminate {
-            Some((common_types::EvseNotification::Terminate, 5))
-        } else if !self.side_renegotiated
-            && self.config.schedule_renegotiation_after_loops.is_some_and(|n| self.loops_seen >= n)
-        {
-            Some((common_types::EvseNotification::ScheduleRenegotiation, 10))
-        } else if !self.renegotiated
-            && self.config.service_renegotiation_after_loops.is_some_and(|n| self.loops_seen >= n)
-        {
-            self.renegotiation_requested = true;
-            Some((common_types::EvseNotification::ServiceRenegotiation, 10))
-        } else if let Some(rounds) = &mut self.standby {
-            *rounds += 1;
-            (*rounds > self.config.standby_loops).then_some((common_types::EvseNotification::ExitStandby, 60))
-        } else if !self.pause_answered && self.config.pause_after_loops.is_some_and(|n| self.loops_seen >= n) {
-            Some((common_types::EvseNotification::Pause, 60))
-        } else {
-            None
-        };
-        notification
+        self.core.as_ref().map_or(self.state, |c| c.session.state().into())
     }
 
     /// What the charger did since the last call, one line each: what it received, what it
     /// offered and answered, why it refused or closed.
     pub fn take_log(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.log)
-    }
-
-    /// Notes the values of a charge loop request that break V2G20-2198 or 2199 (maximums above and
-    /// minimums below what the charge parameter discovery announced); false when there were any.
-    fn check_ev_loop_limits(&mut self, m: &dc::DynamicDcClReqControlMode) -> bool {
-        let Some(a) = self.ev_announced else { return true };
-        let checks = [
-            ("V2G20-2198", "EVMaximumChargePower", m.ev_maximum_charge_power, a.ev_maximum_charge_power, true),
-            ("V2G20-2198", "EVMaximumChargeCurrent", m.ev_maximum_charge_current, a.ev_maximum_charge_current, true),
-            ("V2G20-2198", "EVMaximumVoltage", m.ev_maximum_voltage, a.ev_maximum_voltage, true),
-            ("V2G20-2199", "EVMinimumChargePower", m.ev_minimum_charge_power, a.ev_minimum_charge_power, false),
-            ("V2G20-2199", "EVMinimumVoltage", m.ev_minimum_voltage, a.ev_minimum_voltage, false),
-        ];
-        let mut fine = true;
-        for (requirement, item, sent, announced, maximum) in checks {
-            let (sent, announced) = (sent.to_f64(), announced.to_f64());
-            if if maximum { sent > announced } else { sent < announced } {
-                self.note(format!("violation: {requirement}: {item} is {sent}, the discovery announced {announced}"));
-                fine = false;
-            }
+        let mut log = std::mem::take(&mut self.log);
+        if let Some(core) = &mut self.core {
+            log.extend(std::mem::take(&mut core.session.secc_mut().log));
         }
-        fine
+        log
     }
 
     /// The limits now: a test platform's live ones, which it may change during the session.
@@ -225,9 +202,24 @@ impl Evse {
     pub fn handle(&mut self, bytes: &[u8]) -> Vec<Output> {
         // Settings changed by a test platform during the session count from this message on.
         if let Some(config) = self.live.as_ref().and_then(|l| l.take_patch()) {
+            if let Some(core) = &mut self.core {
+                core.session.secc_mut().set_config(config.clone());
+            }
             self.config = config;
         }
+        if self.core.is_some() {
+            return self.handle_core(bytes);
+        }
         self.rx.extend_from_slice(bytes);
+        if self.state == State::AwaitSupportedAppProtocolReq && self.chose_iso20() {
+            // The vehicle chose ISO 15118-20: its session machine takes over from the first frame on.
+            let mut core = Core { session: evse_core::Session::new(SimSecc::new(self.config.clone(), self.live.clone())), rx: vec![0; 1 << 16], tx: vec![0; 1 << 16], arena: vec![0; 1 << 15], scratch: vec![0; 1 << 14] };
+            let mut buffers = evse_core::Buffers { rx: &mut core.rx, tx: &mut core.tx, arena: &mut core.arena, scratch: &mut core.scratch };
+            core.session.handle(evse_core::Event::Connected { secured: false }, &mut buffers);
+            self.core = Some(core);
+            let all = std::mem::take(&mut self.rx);
+            return self.handle_core(&all);
+        }
         let mut outputs = Vec::new();
         while self.state != State::Closed {
             let (payload_type, payload, consumed) = match parse(&self.rx, 1 << 20) {
@@ -247,13 +239,75 @@ impl Evse {
         outputs
     }
 
+    /// Whether the first frame is a `SupportedAppProtocolReq` whose best protocol, among those the charger
+    /// speaks, is ISO 15118-20.
+    fn chose_iso20(&self) -> bool {
+        let Ok(Parse::Frame(f)) = parse(&self.rx, 1 << 20) else { return false };
+        if f.payload_type != PayloadType::SAP || self.config.reject_protocol {
+            return false;
+        }
+        let mut mem = vec![0u8; 8192];
+        let arena = Arena::new(&mut mem);
+        let Ok(app_protocol::Message::SupportedAppProtocolReq(req)) = app_protocol::decode(f.payload, &arena) else { return false };
+        let speaks = |p: Protocol| self.config.protocols.contains(&p);
+        let pick = req
+            .app_protocol
+            .iter()
+            .filter(|p| self.speaks(speaks, p))
+            .min_by_key(|p| p.priority);
+        pick.is_some_and(|p| p.protocol_namespace == DC_NAMESPACE || p.protocol_namespace == AC_NAMESPACE)
+    }
+
+    fn speaks(&self, speaks: impl Fn(Protocol) -> bool, p: &app_protocol::AppProtocol<'_>) -> bool {
+        (speaks(Protocol::Iso20) && (p.protocol_namespace == DC_NAMESPACE || p.protocol_namespace == AC_NAMESPACE) && p.version_number_major == 1)
+            || (speaks(Protocol::Din) && p.protocol_namespace == DIN_NAMESPACE && p.version_number_major == 2)
+            || (speaks(Protocol::Iso2) && p.protocol_namespace == ISO2_NAMESPACE && p.version_number_major == 2)
+    }
+
+    /// Feeds bytes to the ISO 15118-20 session machine.
+    fn handle_core(&mut self, bytes: &[u8]) -> Vec<Output> {
+        let core = self.core.as_mut().expect("the session machine is running");
+        let mut sent: Vec<u8> = Vec::new();
+        let mut close = false;
+        let mut rest = bytes;
+        while !rest.is_empty() && !close {
+            let space = core.session.rx_space(&mut core.rx);
+            if space.is_empty() {
+                close = true;
+                break;
+            }
+            let n = space.len().min(rest.len());
+            space[..n].copy_from_slice(&rest[..n]);
+            rest = &rest[n..];
+            let mut buffers = evse_core::Buffers { rx: &mut core.rx, tx: &mut core.tx, arena: &mut core.arena, scratch: &mut core.scratch };
+            let step = core.session.handle(evse_core::Event::Received(n), &mut buffers);
+            sent.extend_from_slice(&core.tx[..step.send]);
+            close |= step.close;
+        }
+        // What went out, for the log: each response frame with its code (and the check against Tables 224, 226).
+        let mut at = 0;
+        let mut lines = Vec::new();
+        while at + HEADER_LEN <= sent.len() {
+            let len = HEADER_LEN + u32::from_be_bytes(sent[at + 4..at + 8].try_into().expect("four octets")) as usize;
+            let frame = &sent[at..(at + len).min(sent.len())];
+            let tail = if close && at + len >= sent.len() { ", then closing" } else { "" };
+            match crate::answers::response_of(frame) {
+                Some((name, _, code)) => lines.push(format!("tx {name} {} ({} bytes{tail})", code.xml_name(), frame.len())),
+                None => lines.push(format!("tx {} bytes{tail}", frame.len())),
+            }
+            at += len;
+        }
+        core.session.secc_mut().log.extend(lines);
+        vec![Output { send: (!sent.is_empty()).then_some(sent), close }]
+    }
+
     fn close(&mut self, mut outputs: Vec<Output>) -> Vec<Output> {
         self.state = State::Closed;
         outputs.push(Output { send: None, close: true });
         outputs
     }
 
-    /// The request the charger waits for in `state`.
+    /// The request the charger waits for in `state` (DIN SPEC 70121 and ISO 15118-2).
     fn expects(&self, state: State) -> &'static str {
         if self.protocol == Protocol::Din {
             return din::expects(state);
@@ -264,28 +318,11 @@ impl Evse {
         match state {
             State::AwaitSupportedAppProtocolReq => "SupportedAppProtocolReq",
             State::AwaitSessionSetupReq => "SessionSetupReq",
-            State::AwaitAuthorizationSetupReq => "AuthorizationSetupReq",
-            State::AwaitAuthorizationReq => "AuthorizationReq",
-            State::AwaitServiceDiscoveryReq => "ServiceDiscoveryReq",
-            State::AwaitServiceDetailReq => "ServiceDetailReq",
-            State::AwaitServiceSelectionReq => "ServiceSelectionReq",
-            State::AwaitServicePaymentSelectionReq => "ServicePaymentSelectionReq",
-            State::AwaitPaymentDetailsReq => "PaymentDetailsReq",
-            State::AwaitContractAuthenticationReq => "ContractAuthenticationReq",
-            State::AwaitChargeParameterDiscoveryReq if self.ac => "AC_ChargeParameterDiscoveryReq",
-            State::AwaitChargeParameterDiscoveryReq => "DC_ChargeParameterDiscoveryReq",
-            State::AwaitScheduleExchangeReq => "ScheduleExchangeReq",
-            State::AwaitCableCheckReq => "DC_CableCheckReq",
-            State::AwaitPreChargeReq => "DC_PreChargeReq",
-            State::AwaitPowerDeliveryReq => "PowerDeliveryReq",
-            State::ChargeLoop if self.ac => "AC_ChargeLoopReq or PowerDeliveryReq",
-            State::ChargeLoop => "DC_ChargeLoopReq or PowerDeliveryReq",
-            State::AwaitWeldingReq => "DC_WeldingDetectionReq",
-            State::AwaitSessionStopReq => "SessionStopReq",
-            State::Stopped | State::Paused | State::Closed => "nothing",
+            _ => "a request",
         }
     }
 
+    /// A frame of a DIN SPEC 70121 or ISO 15118-2 session (and the first frame of any).
     fn on_frame(&mut self, payload_type: PayloadType, payload: &[u8]) -> Output {
         let before = self.state;
         self.note(format!("rx {} bytes, payload type {:#06x}, waiting for {}", payload.len(), payload_type.0, self.expects(before)));
@@ -293,32 +330,13 @@ impl Evse {
             self.note("silent: not answering");
             return Output::default();
         }
-        let mut out = self.on_frame_inner(payload_type, payload);
-        // A request that is none of what the charger waits for gets FAILED_SequenceError of the
-        // response type it asks for (V2G20-459); only what is not a request at all closes silently.
-        if out.send.is_none() && out.close && !self.config.silent && self.protocol == Protocol::Iso20 {
-            let mut mem = vec![0u8; 8192];
-            let arena = Arena::new(&mut mem);
-            let reply = crate::answers::decode_request(payload_type, payload, &arena).and_then(|r| self.failing(&r, ResponseCode::FailedSequenceError));
-            if reply.is_some() {
-                self.note(format!("a request out of sequence (state {before:?}): FAILED_SequenceError (V2G20-459)"));
-                out = Output { send: reply, close: true };
-            }
-        }
+        let out = self.on_frame_inner(payload_type, payload);
         match (&out.send, out.close) {
             (None, true) => self.note(format!("closing without an answer: the frame is not a decodable {} (state {before:?})", self.expects(before))),
             (None, false) => self.note("no answer"),
             (Some(bytes), close) => {
                 let tail = if close { ", then closing" } else { "" };
-                match crate::answers::response_of(bytes) {
-                    Some((name, message, code)) => {
-                        self.note(format!("tx {name} {} ({} bytes{tail})", code.xml_name(), bytes.len()));
-                        if !message.allows(code) {
-                            self.note(format!("violation: {} with {} is not defined (Tables 224, 226)", name, code.xml_name()));
-                        }
-                    }
-                    None => self.note(format!("tx {} bytes{tail}", bytes.len())),
-                }
+                self.note(format!("tx {} bytes{tail}", bytes.len()));
             }
         }
         if self.state != before {
@@ -332,710 +350,36 @@ impl Evse {
         let arena = Arena::new(&mut mem);
         let closed = Output { send: None, close: true };
         if self.state != State::AwaitSupportedAppProtocolReq {
-            match self.protocol {
-                Protocol::Din => return self.on_din_frame(payload_type, payload),
-                Protocol::Iso2 => return self.on_iso2_frame(payload_type, payload),
-                Protocol::Iso20 => {}
+            return match self.protocol {
+                Protocol::Din => self.on_din_frame(payload_type, payload),
+                _ => self.on_iso2_frame(payload_type, payload),
+            };
+        }
+        if payload_type != PayloadType::SAP {
+            return closed;
+        }
+        let Ok(app_protocol::Message::SupportedAppProtocolReq(req)) = app_protocol::decode(payload, &arena) else { return closed };
+        // Highest priority = lowest number among the protocols we speak.
+        let speaks = |p: Protocol| self.config.protocols.contains(&p);
+        let pick = req.app_protocol.iter().filter(|p| self.speaks(speaks, p)).min_by_key(|p| p.priority);
+        match pick.filter(|_| !self.config.reject_protocol) {
+            Some(p) => {
+                self.protocol = match p.protocol_namespace {
+                    DIN_NAMESPACE => Protocol::Din,
+                    _ => Protocol::Iso2,
+                };
+                self.note(format!("protocol {}, schema id {}", p.protocol_namespace, p.schema_id));
+                self.schema_id = p.schema_id;
+                self.state = State::AwaitSessionSetupReq;
+                let res = SupportedAppProtocolRes { response_code: SapCode::OkSuccessfulNegotiation, schema_id: Some(p.schema_id) };
+                Output { send: frame(PayloadType::SAP, |out| res.encode(out)), close: false }
+            }
+            None => {
+                let res = SupportedAppProtocolRes { response_code: SapCode::FailedNoNegotiation, schema_id: None };
+                Output { send: frame(PayloadType::SAP, |out| res.encode(out)), close: true }
             }
         }
-        if payload_type == PayloadType::SCHEDULE_RENEGOTIATION {
-            return self.on_side(payload);
-        }
-        match self.state {
-            State::AwaitSupportedAppProtocolReq if payload_type == PayloadType::SAP => {
-                let Ok(app_protocol::Message::SupportedAppProtocolReq(req)) = app_protocol::decode(payload, &arena)
-                else {
-                    return closed;
-                };
-                // Highest priority = lowest number among the protocols we speak.
-                let speaks = |p: Protocol| self.config.protocols.contains(&p);
-                let pick = req
-                    .app_protocol
-                    .iter()
-                    .filter(|p| {
-                        (speaks(Protocol::Iso20) && (p.protocol_namespace == DC_NAMESPACE || p.protocol_namespace == AC_NAMESPACE) && p.version_number_major == 1)
-                            || (speaks(Protocol::Din) && p.protocol_namespace == DIN_NAMESPACE && p.version_number_major == 2)
-                            || (speaks(Protocol::Iso2) && p.protocol_namespace == ISO2_NAMESPACE && p.version_number_major == 2)
-                    })
-                    .min_by_key(|p| p.priority);
-                match pick.filter(|_| !self.config.reject_protocol) {
-                    Some(p) => {
-                        self.protocol = match p.protocol_namespace {
-                            DIN_NAMESPACE => Protocol::Din,
-                            ISO2_NAMESPACE => Protocol::Iso2,
-                            _ => Protocol::Iso20,
-                        };
-                        self.note(format!("protocol {}, schema id {}", p.protocol_namespace, p.schema_id));
-                        self.schema_id = p.schema_id;
-                        self.ac_namespace = p.protocol_namespace == AC_NAMESPACE;
-                        self.state = State::AwaitSessionSetupReq;
-                        let res = SupportedAppProtocolRes { response_code: SapCode::OkSuccessfulNegotiation, schema_id: Some(p.schema_id) };
-                        Output { send: frame(PayloadType::SAP, |out| res.encode(out)), close: false }
-                    }
-                    None => {
-                        let res = SupportedAppProtocolRes { response_code: SapCode::FailedNoNegotiation, schema_id: None };
-                        Output { send: frame(PayloadType::SAP, |out| res.encode(out)), close: true }
-                    }
-                }
-            }
-            State::AwaitSessionSetupReq if payload_type == PayloadType::MAINSTREAM => {
-                let Ok(common::Message::SessionSetupReq(req)) = common::decode(payload, &arena) else { return closed };
-                if self.config.silent_on_setup {
-                    return Output::default();
-                }
-                let asked = req.header.session_id;
-                let mut code = self.config.setup_code;
-                let mut resumed = false;
-                if asked != [0; 8] && is_ok(code) {
-                    if asked == self.config.session_id && !self.config.forget_paused_sessions {
-                        // V2G20-2623: a resumed session; authorization carries over.
-                        code = ResponseCode::OkOldSessionJoined;
-                        resumed = true;
-                    } else {
-                        // V2G20-2547: an id we do not know is a new session, with an id of its own.
-                        code = ResponseCode::OkNewSessionEstablished;
-                        self.session_id = self.config.session_id.map(|b| !b);
-                    }
-                }
-                let ok = matches!(
-                    code,
-                    ResponseCode::Ok | ResponseCode::OkNewSessionEstablished | ResponseCode::OkOldSessionJoined
-                );
-                let res = SessionSetupRes {
-                    header: MessageHeader::new(self.session_id, self.stamp()),
-                    response_code: code,
-                    evseid: &self.config.evse_id,
-                };
-                if ok {
-                    // V2G20-1032: after a resumed session the next request is the charge
-                    // parameter discovery.
-                    self.state = if resumed { State::AwaitChargeParameterDiscoveryReq } else { State::AwaitAuthorizationSetupReq };
-                }
-                Output {
-                    send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)),
-                    close: !ok,
-                }
-            }
-            State::AwaitAuthorizationSetupReq if payload_type == PayloadType::MAINSTREAM => {
-                let Ok(common::Message::AuthorizationSetupReq(req)) = common::decode(payload, &arena) else { return closed };
-                if req.header.session_id != self.session_id {
-                    return self.unknown_session(common::Message::AuthorizationSetupReq(req));
-                }
-                if self.config.offered_authorization.is_empty() || self.config.offered_authorization.len() > 2 {
-                    return closed;
-                }
-                self.state = State::AwaitAuthorizationReq;
-                let res = AuthorizationSetupRes {
-                    header: self.header(),
-                    response_code: ResponseCode::Ok,
-                    authorization_services: &self.config.offered_authorization,
-                    certificate_installation_service: false,
-                    // V2G20-1219, 1220: the PnC element when PnC is offered, EIM's otherwise.
-                    as_res_authorization_mode: if self.config.offered_authorization.contains(&Authorization::PnC) {
-                        AsResAuthorizationModeChoice::PnC(PnCAsResAuthorizationMode { gen_challenge: self.challenge, supported_providers: None })
-                    } else {
-                        AsResAuthorizationModeChoice::Eim(EimAsResAuthorizationMode {})
-                    },
-                };
-                Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: false }
-            }
-            State::AwaitAuthorizationReq if payload_type == PayloadType::MAINSTREAM => {
-                let Ok(common::Message::AuthorizationReq(req)) = common::decode(payload, &arena) else { return closed };
-                if req.header.session_id != self.session_id {
-                    return self.unknown_session(common::Message::AuthorizationReq(req));
-                }
-                self.authorization_reqs_seen += 1;
-                let ongoing = self.config.authorization_never_finishes
-                    || self.authorization_reqs_seen <= self.config.authorization_ongoing_responses;
-                // What the selection and, for Plug & Charge, the contract come to (V2G20-2564, 2565).
-                let verdict = match (req.selected_authorization_service, &req.a_req_authorization_mode) {
-                    (Authorization::Eim, AReqAuthorizationModeChoice::Eim(_)) if self.config.offered_authorization.contains(&Authorization::Eim) => ResponseCode::Ok,
-                    (Authorization::PnC, AReqAuthorizationModeChoice::PnC(mode)) if self.config.offered_authorization.contains(&Authorization::PnC) => {
-                        let verdict = crate::pnc::verify(&self.config.pnc, self.challenge, &req.header, mode);
-                        self.note(format!("PnC authorization: {verdict:?}, challenge {}, contract chain of {} certificate(s)", if mode.gen_challenge == self.challenge { "matches" } else { "does not match" }, 1 + mode.contract_certificate_chain.sub_certificates.certificate.len()));
-                        verdict
-                    }
-                    _ => ResponseCode::WarningAuthorizationSelectionInvalid,
-                };
-                let (evse_processing, response_code) = if ongoing {
-                    (Processing::Ongoing, ResponseCode::Ok)
-                } else if is_ok(verdict) {
-                    // The knob can still refuse an authorization that was fine.
-                    (Processing::Finished, if self.config.authorization_code == ResponseCode::Ok { verdict } else { self.config.authorization_code })
-                } else {
-                    (Processing::Finished, verdict)
-                };
-                let res = AuthorizationRes { header: self.header(), response_code, evse_processing };
-                let finished_ok = !ongoing && is_ok(response_code);
-                if finished_ok {
-                    self.state = State::AwaitServiceDiscoveryReq;
-                }
-                // A warning leaves the vehicle another try (V2G20-1583); a failure ends the session.
-                Output {
-                    send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)),
-                    close: !ongoing && response_code.xml_name().starts_with("FAILED"),
-                }
-            }
-            State::AwaitServiceDiscoveryReq if payload_type == PayloadType::MAINSTREAM => {
-                let Ok(common::Message::ServiceDiscoveryReq(req)) = common::decode(payload, &arena) else { return closed };
-                if req.header.session_id != self.session_id {
-                    return self.discovery_res(ResponseCode::FailedUnknownSession);
-                }
-                self.state = State::AwaitServiceDetailReq;
-                self.discovery_res(ResponseCode::Ok)
-            }
-            State::AwaitServiceDetailReq if payload_type == PayloadType::MAINSTREAM => {
-                let Ok(common::Message::ServiceDetailReq(req)) = common::decode(payload, &arena) else { return closed };
-                if req.header.session_id != self.session_id {
-                    return self.detail_res(ResponseCode::FailedUnknownSession, req.service_id);
-                }
-                if !self.config.energy_services.contains(&req.service_id) || self.sets_for(req.service_id).is_empty() {
-                    return self.detail_res(ResponseCode::FailedServiceIdInvalid, req.service_id);
-                }
-                self.state = State::AwaitServiceSelectionReq;
-                self.detail_res(ResponseCode::Ok, req.service_id)
-            }
-            State::AwaitServiceSelectionReq if payload_type == PayloadType::MAINSTREAM => {
-                let Ok(common::Message::ServiceSelectionReq(req)) = common::decode(payload, &arena) else { return closed };
-                if req.header.session_id != self.session_id {
-                    return self.selection_res(ResponseCode::FailedUnknownSession);
-                }
-                let SelectedService { service_id, parameter_set_id } = req.selected_energy_transfer_service;
-                let valid = self.config.energy_services.contains(&service_id)
-                    && self.sets_for(service_id).iter().any(|set| set.id == parameter_set_id)
-                    // The schema the vehicle offered is that of the service it selects.
-                    && is_ac_service(service_id) == self.ac_namespace;
-                if !valid {
-                    let sets: Vec<u16> = self.sets_for(service_id).iter().map(|s| s.id).collect();
-                    self.note(format!("selected service {service_id} with parameter set {parameter_set_id}; offered services {:?}, parameter set ids {sets:?}", self.config.energy_services));
-                    return self.selection_res(ResponseCode::FailedServiceSelectionInvalid);
-                }
-                let code = self.config.selection_code;
-                self.bpt = matches!(service_id, SERVICE_ID_DC_BPT | ac20::SERVICE_ID_AC_BPT);
-                self.ac = is_ac_service(service_id);
-                self.ac_three = self.sets_for(service_id).iter().find(|set| set.id == parameter_set_id).and_then(|set| set.values.get("Connector")) == Some(&2);
-                self.scheduled = self.sets_for(service_id).iter().find(|set| set.id == parameter_set_id).and_then(|set| set.values.get("ControlMode")) == Some(&1);
-                if let Some(volts) = self.sets_for(service_id).iter().find(|set| set.id == parameter_set_id).and_then(|set| set.values.get("EVSENominalVoltage")) {
-                    self.ac_voltage = f64::from(*volts);
-                }
-                self.note(format!("service {service_id} selected, parameter set {parameter_set_id}"));
-                if matches!(code, ResponseCode::Ok) {
-                    self.state = State::AwaitChargeParameterDiscoveryReq;
-                }
-                self.selection_res(code)
-            }
-            State::AwaitChargeParameterDiscoveryReq if self.ac && payload_type == PayloadType::AC_MAINSTREAM => self.on_ac_cpd(payload, &arena, false),
-            State::AwaitChargeParameterDiscoveryReq if !self.ac && payload_type == PayloadType::DC_MAINSTREAM => {
-                let Ok(dc::Message::DcChargeParameterDiscoveryReq(req)) = dc::decode(payload, &arena) else { return closed };
-                self.ev_announced = Some(match &req.dc_cpd_req_energy_transfer_mode {
-                    dc::DcCpdReqEnergyTransferModeChoice::Base(m) => *m,
-                    dc::DcCpdReqEnergyTransferModeChoice::Bpt(m) => base_of_bpt_cpd(m),
-                });
-                let wrong_mode = matches!(req.dc_cpd_req_energy_transfer_mode, dc::DcCpdReqEnergyTransferModeChoice::Bpt(_)) != self.bpt;
-                let code = if req.header.session_id != self.session_id {
-                    ResponseCode::FailedUnknownSession
-                } else if wrong_mode {
-                    // Table 226: the mode has to be the one of the selected service.
-                    ResponseCode::FailedWrongChargeParameter
-                } else {
-                    self.config.cpd_code
-                };
-                let res = self.cpd_res(code);
-                if is_ok(code) {
-                    self.state = State::AwaitScheduleExchangeReq;
-                }
-                Output {
-                    send: frame(PayloadType::DC_MAINSTREAM, |out| res.encode(out)),
-                    close: !is_ok(code),
-                }
-            }
-            State::AwaitScheduleExchangeReq if payload_type == PayloadType::MAINSTREAM => {
-                let Ok(common::Message::ScheduleExchangeReq(req)) = common::decode(payload, &arena) else { return closed };
-                self.schedule_reqs_seen += 1;
-                let (processing, code) = if req.header.session_id != self.session_id {
-                    (Processing::Finished, ResponseCode::FailedUnknownSession)
-                } else if matches!(req.se_req_control_mode, common::SeReqControlModeChoice::Scheduled(_)) != self.scheduled {
-                    // The mode of the selected parameter set is the one to use.
-                    (Processing::Finished, ResponseCode::Failed)
-                } else if self.schedule_reqs_seen <= self.config.schedule_ongoing_responses {
-                    (Processing::Ongoing, ResponseCode::Ok)
-                } else {
-                    (Processing::Finished, self.config.schedule_code)
-                };
-                let send = self.schedule_frame(PayloadType::MAINSTREAM, processing, code);
-                let ongoing = processing == Processing::Ongoing;
-                if !ongoing && is_ok(code) {
-                    // AC has no cable check or pre-charge: the power delivery follows.
-                    self.state = if self.ac { State::AwaitPowerDeliveryReq } else { State::AwaitCableCheckReq };
-                }
-                Output { send, close: !ongoing && !is_ok(code) }
-            }
-            State::AwaitCableCheckReq if payload_type == PayloadType::DC_MAINSTREAM => {
-                let Ok(dc::Message::DcCableCheckReq(req)) = dc::decode(payload, &arena) else { return closed };
-                self.cable_reqs_seen += 1;
-                let (processing, code) = if req.header.session_id != self.session_id {
-                    (Processing::Finished, ResponseCode::FailedUnknownSession)
-                } else if self.cable_reqs_seen <= self.config.cable_check_ongoing_responses {
-                    (Processing::Ongoing, ResponseCode::Ok)
-                } else {
-                    (Processing::Finished, self.config.cable_check_code)
-                };
-                let res = dc::DcCableCheckRes { header: self.header(), response_code: code, evse_processing: processing };
-                let ongoing = processing == Processing::Ongoing;
-                if !ongoing && is_ok(code) {
-                    self.state = State::AwaitPreChargeReq;
-                }
-                Output { send: frame(PayloadType::DC_MAINSTREAM, |out| res.encode(out)), close: !ongoing && !is_ok(code) }
-            }
-            State::AwaitPreChargeReq if payload_type == PayloadType::DC_MAINSTREAM => {
-                let Ok(dc::Message::DcPreChargeReq(req)) = dc::decode(payload, &arena) else { return closed };
-                let code = if req.header.session_id != self.session_id {
-                    ResponseCode::FailedUnknownSession
-                } else {
-                    ResponseCode::Ok
-                };
-                self.precharge_reqs_seen += 1;
-                // Until "settled" the output is 100 V away from the EV's target.
-                let settled = self.precharge_reqs_seen >= self.config.precharge_requests_to_settle;
-                let target = req.ev_target_voltage;
-                let voltage = if settled {
-                    target
-                } else {
-                    RationalNumber { exponent: target.exponent, value: target.value.saturating_sub(100) }
-                };
-                let res = dc::DcPreChargeRes { header: self.header(), response_code: code, evse_present_voltage: voltage };
-                if is_ok(code) && req.ev_processing == Processing::Finished {
-                    self.state = State::AwaitPowerDeliveryReq;
-                }
-                Output { send: frame(PayloadType::DC_MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) }
-            }
-            State::AwaitPowerDeliveryReq if payload_type == PayloadType::MAINSTREAM => {
-                let Ok(common::Message::PowerDeliveryReq(req)) = common::decode(payload, &arena) else { return closed };
-                let code = if req.header.session_id != self.session_id {
-                    ResponseCode::FailedUnknownSession
-                } else if req.charge_progress != common::ChargeProgress::Start || req.ev_power_profile.is_none() {
-                    // V2G20-1546: the profile must accompany Start.
-                    ResponseCode::FailedPowerDeliveryNotApplied
-                } else if !self.selects_offered_tuple(&req) {
-                    ResponseCode::FailedScheduleSelectionInvalid
-                } else {
-                    self.config.power_delivery_code
-                };
-                let res = common::PowerDeliveryRes { header: self.header(), response_code: code, evse_status: None };
-                if is_ok(code) {
-                    self.state = State::ChargeLoop;
-                    self.schedule_started = Some(std::time::Instant::now());
-                }
-                Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) }
-            }
-            State::ChargeLoop if self.ac && payload_type == PayloadType::AC_MAINSTREAM => self.on_ac_loop(payload, &arena),
-            State::ChargeLoop if !self.ac && payload_type == PayloadType::DC_MAINSTREAM => {
-                let Ok(dc::Message::DcChargeLoopReq(req)) = dc::decode(payload, &arena) else { return closed };
-                self.loops_seen += 1;
-                let code = if req.header.session_id != self.session_id {
-                    ResponseCode::FailedUnknownSession
-                } else if !matches!(
-                    (&req.cl_req_control_mode, self.bpt),
-                    (dc::ClReqControlModeChoice::DynamicDc(_), false) | (dc::ClReqControlModeChoice::BptDynamicDc(_), true)
-                ) {
-                    // Table 226: FAILED_WrongChargeParameter is for the parameter discovery only.
-                    ResponseCode::Failed
-                } else {
-                    ResponseCode::Ok
-                };
-                let notification = self.loop_notification();
-                let rn = |value: u32| RationalNumber::from_f64(f64::from(value));
-                let l = &self.limits();
-                // A negative EVTargetEnergyRequest asks to discharge: the vehicle gives energy back,
-                // within both sides' discharge limits.
-                let discharge = match &req.cl_req_control_mode {
-                    dc::ClReqControlModeChoice::BptDynamicDc(m) if self.bpt && m.ev_target_energy_request.to_f64() < 0.0 => {
-                        Some(crate::live::Discharge { max_current: m.ev_maximum_discharge_current.to_f64(), max_power: m.ev_maximum_discharge_power.to_f64() })
-                    }
-                    _ => None,
-                };
-                let requested = match &req.cl_req_control_mode {
-                    dc::ClReqControlModeChoice::DynamicDc(m) => Some(*m),
-                    dc::ClReqControlModeChoice::BptDynamicDc(m) => Some(base_of_bpt_loop(m)),
-                    _ => None,
-                };
-                let (ev_voltage, ev_max_current, ev_max_power, ev_max_voltage) = match &requested {
-                    Some(m) => (req.ev_present_voltage.to_f64(), m.ev_maximum_charge_current.to_f64(), m.ev_maximum_charge_power.to_f64(), m.ev_maximum_voltage.to_f64()),
-                    None => (req.ev_present_voltage.to_f64(), 0.0, 0.0, 0.0),
-                };
-                let mut code = code;
-                if let Some(m) = &requested
-                    && !self.check_ev_loop_limits(m) && self.config.fail_on_limit_violation {
-                        code = ResponseCode::Failed;
-                    }
-                let (voltage, current, max_power) = match &self.live {
-                    Some(live) => live.charge_loop(ev_voltage, ev_max_current, ev_max_power, discharge),
-                    None => (ev_voltage, crate::live::modelled_current(ev_voltage, ev_max_current, ev_max_power, discharge, l), f64::from(l.max_charge_power_w)),
-                };
-                // What limited the delivery: the flags say which limit the charger has reached.
-                let limit = |achieved: f64, limit: f64| achieved != 0.0 && achieved.abs() >= limit * 0.999;
-                let (current_bound, power_bound) = match discharge {
-                    Some(d) => (d.max_current.min(f64::from(l.max_discharge_current_a)), d.max_power.min(f64::from(l.max_discharge_power_w))),
-                    None => (ev_max_current.min(f64::from(l.max_charge_current_a)), ev_max_power.min(f64::from(l.max_charge_power_w))),
-                };
-                let current_limit_achieved = limit(current, current_bound);
-                let power_limit_achieved = limit(voltage * current, power_bound);
-                let voltage_limit_achieved = limit(voltage, if ev_max_voltage > 0.0 { ev_max_voltage.min(f64::from(l.max_voltage_v)) } else { f64::from(l.max_voltage_v) });
-                let res = dc::DcChargeLoopRes {
-                    header: self.header(),
-                    response_code: code,
-                    evse_status: notification.map(|(evse_notification, notification_max_delay)| common_types::EvseStatus {
-                        notification_max_delay,
-                        evse_notification,
-                    }),
-                    meter_info: None,
-                    receipt: None,
-                    evse_present_current: RationalNumber::from_f64(current),
-                    evse_present_voltage: RationalNumber::from_f64(voltage),
-                    evse_power_limit_achieved: power_limit_achieved,
-                    evse_current_limit_achieved: current_limit_achieved,
-                    evse_voltage_limit_achieved: voltage_limit_achieved,
-                    cl_res_control_mode: if self.bpt {
-                        dc::ClResControlModeChoice::BptDynamicDc(dc::BptDynamicDcClResControlMode {
-                            departure_time: None,
-                            minimum_soc: None,
-                            target_soc: None,
-                            ack_max_delay: None,
-                            evse_maximum_charge_power: RationalNumber::from_f64(max_power),
-                            evse_minimum_charge_power: rn(l.min_charge_power_w),
-                            evse_maximum_charge_current: rn(l.max_charge_current_a),
-                            evse_maximum_voltage: rn(l.max_voltage_v),
-                            evse_maximum_discharge_power: rn(l.max_discharge_power_w),
-                            evse_minimum_discharge_power: rn(l.min_discharge_power_w),
-                            evse_maximum_discharge_current: rn(l.max_discharge_current_a),
-                            evse_minimum_voltage: rn(l.min_voltage_v),
-                        })
-                    } else {
-                        dc::ClResControlModeChoice::DynamicDc(dc::DynamicDcClResControlMode {
-                            departure_time: None,
-                            minimum_soc: None,
-                            target_soc: None,
-                            ack_max_delay: None,
-                            evse_maximum_charge_power: RationalNumber::from_f64(max_power),
-                            evse_minimum_charge_power: rn(l.min_charge_power_w),
-                            evse_maximum_charge_current: rn(l.max_charge_current_a),
-                            evse_maximum_voltage: rn(l.max_voltage_v),
-                        })
-                    },
-                };
-                Output { send: frame(PayloadType::DC_MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) }
-            }
-            State::ChargeLoop if payload_type == PayloadType::MAINSTREAM => {
-                let Ok(common::Message::PowerDeliveryReq(req)) = common::decode(payload, &arena) else { return closed };
-                let code = if req.header.session_id != self.session_id {
-                    ResponseCode::FailedUnknownSession
-                } else {
-                    match (req.charge_progress, self.standby.is_some()) {
-                        (common::ChargeProgress::Stop, _) => ResponseCode::Ok,
-                        (common::ChargeProgress::Standby, false) => {
-                            // V2G20-1385, V2G20-1387
-                            self.pause_answered = true;
-                            if self.config.standby_allowed {
-                                self.standby = Some(0);
-                                ResponseCode::Ok
-                            } else {
-                                ResponseCode::WarningStandbyNotAllowed
-                            }
-                        }
-                        // V2G20-1386: Start ends the standby period.
-                        (common::ChargeProgress::Start, true) => {
-                            self.standby = None;
-                            ResponseCode::Ok
-                        }
-                        _ => ResponseCode::FailedPowerDeliveryNotApplied,
-                    }
-                };
-                let res = common::PowerDeliveryRes { header: self.header(), response_code: code, evse_status: None };
-                if is_ok(code) && req.charge_progress == common::ChargeProgress::Stop {
-                    self.state = if self.ac { State::AwaitSessionStopReq } else { State::AwaitWeldingReq };
-                }
-                let refused = code == ResponseCode::WarningStandbyNotAllowed;
-                Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) && !refused }
-            }
-            State::AwaitWeldingReq if payload_type == PayloadType::DC_MAINSTREAM => {
-                let Ok(dc::Message::DcWeldingDetectionReq(req)) = dc::decode(payload, &arena) else { return closed };
-                let code = if req.header.session_id != self.session_id {
-                    ResponseCode::FailedUnknownSession
-                } else {
-                    self.config.welding_code
-                };
-                let res = dc::DcWeldingDetectionRes {
-                    header: self.header(),
-                    response_code: code,
-                    evse_present_voltage: RationalNumber { exponent: 0, value: 5 },
-                };
-                if is_ok(code) && req.ev_processing == Processing::Finished {
-                    self.state = State::AwaitSessionStopReq;
-                }
-                Output { send: frame(PayloadType::DC_MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) }
-            }
-            State::AwaitSessionStopReq if payload_type == PayloadType::MAINSTREAM => {
-                let Ok(common::Message::SessionStopReq(req)) = common::decode(payload, &arena) else { return closed };
-                let code = if req.header.session_id != self.session_id {
-                    ResponseCode::FailedUnknownSession
-                } else {
-                    ResponseCode::Ok
-                };
-                let renegotiation = req.charging_session == common::ChargingSession::ServiceRenegotiation;
-                let pause = req.charging_session == common::ChargingSession::Pause;
-                // V2G20-1643, V2G20-1955.
-                let code = if renegotiation && (!self.config.service_renegotiation_supported || self.config.refuse_service_renegotiation) && is_ok(code) {
-                    ResponseCode::FailedNoServiceRenegotiationSupported
-                } else {
-                    code
-                };
-                let res = common::SessionStopRes { header: self.header(), response_code: code };
-                if is_ok(code) && renegotiation {
-                    // The connection and the authorization stay; the service flow starts over.
-                    self.state = State::AwaitServiceDiscoveryReq;
-                    self.renegotiated = true;
-                    self.renegotiation_requested = false;
-                    (self.cable_reqs_seen, self.precharge_reqs_seen, self.loops_seen) = (0, 0, 0);
-                    self.standby = None;
-                    self.pause_answered = false;
-                    return Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: false };
-                }
-                if is_ok(code) {
-                    self.state = if pause { State::Paused } else { State::Stopped };
-                }
-                Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: true }
-            }
-            // The rest of the flow is added with the later slices.
-            _ => closed,
-        }
     }
-}
-
-/// Service id of DC_BPT (Table 204).
-const SERVICE_ID_DC_BPT: u16 = 6;
-
-fn is_ac_service(service_id: u16) -> bool {
-    matches!(service_id, ac20::SERVICE_ID_AC | ac20::SERVICE_ID_AC_BPT)
-}
-
-fn base_of_bpt_cpd(m: &dc::BptDcCpdReqEnergyTransferMode) -> dc::DcCpdReqEnergyTransferMode {
-    dc::DcCpdReqEnergyTransferMode {
-        ev_maximum_charge_power: m.ev_maximum_charge_power,
-        ev_minimum_charge_power: m.ev_minimum_charge_power,
-        ev_maximum_charge_current: m.ev_maximum_charge_current,
-        ev_minimum_charge_current: m.ev_minimum_charge_current,
-        ev_maximum_voltage: m.ev_maximum_voltage,
-        ev_minimum_voltage: m.ev_minimum_voltage,
-        target_soc: m.target_soc,
-    }
-}
-
-fn base_of_bpt_loop(m: &dc::BptDynamicDcClReqControlMode) -> dc::DynamicDcClReqControlMode {
-    dc::DynamicDcClReqControlMode {
-        departure_time: m.departure_time,
-        ev_target_energy_request: m.ev_target_energy_request,
-        ev_maximum_energy_request: m.ev_maximum_energy_request,
-        ev_minimum_energy_request: m.ev_minimum_energy_request,
-        ev_maximum_charge_power: m.ev_maximum_charge_power,
-        ev_minimum_charge_power: m.ev_minimum_charge_power,
-        ev_maximum_charge_current: m.ev_maximum_charge_current,
-        ev_maximum_voltage: m.ev_maximum_voltage,
-        ev_minimum_voltage: m.ev_minimum_voltage,
-    }
-}
-
-impl Evse {
-    pub(crate) fn cpd_res(&self, code: ResponseCode) -> dc::DcChargeParameterDiscoveryRes<'static> {
-        let rn = |value: u32| RationalNumber::from_f64(f64::from(value));
-        let l = &self.limits();
-        let base = dc::DcCpdResEnergyTransferMode {
-            evse_maximum_charge_power: rn(l.max_charge_power_w),
-            evse_minimum_charge_power: rn(l.min_charge_power_w),
-            evse_maximum_charge_current: rn(l.max_charge_current_a),
-            evse_minimum_charge_current: rn(l.min_charge_current_a),
-            evse_maximum_voltage: rn(l.max_voltage_v),
-            evse_minimum_voltage: rn(l.min_voltage_v),
-            evse_power_ramp_limitation: l.power_ramp_limitation_percent_per_min.map(rn),
-        };
-        let mode = if self.bpt {
-            dc::DcCpdResEnergyTransferModeChoice::Bpt(dc::BptDcCpdResEnergyTransferMode {
-                evse_maximum_charge_power: base.evse_maximum_charge_power,
-                evse_minimum_charge_power: base.evse_minimum_charge_power,
-                evse_maximum_charge_current: base.evse_maximum_charge_current,
-                evse_minimum_charge_current: base.evse_minimum_charge_current,
-                evse_maximum_voltage: base.evse_maximum_voltage,
-                evse_minimum_voltage: base.evse_minimum_voltage,
-                evse_power_ramp_limitation: base.evse_power_ramp_limitation,
-                evse_maximum_discharge_power: rn(l.max_discharge_power_w),
-                evse_minimum_discharge_power: rn(l.min_discharge_power_w),
-                evse_maximum_discharge_current: rn(l.max_discharge_current_a),
-                evse_minimum_discharge_current: rn(l.min_discharge_current_a),
-            })
-        } else {
-            dc::DcCpdResEnergyTransferModeChoice::Base(base)
-        };
-        dc::DcChargeParameterDiscoveryRes { header: self.header(), response_code: code, dc_cpd_res_energy_transfer_mode: mode }
-    }
-
-    fn schedule_res(&self, processing: Processing, code: ResponseCode) -> common::ScheduleExchangeRes<'static> {
-        common::ScheduleExchangeRes {
-            header: self.header(),
-            response_code: code,
-            evse_processing: processing,
-            go_to_pause: None,
-            se_res_control_mode: common::SeResControlModeChoice::Dynamic(common::DynamicSeResControlMode {
-                departure_time: None,
-                minimum_soc: None,
-                target_soc: None,
-                schedule: None,
-            }),
-        }
-    }
-
-    /// The schedule renegotiation side stream (V2G20-1046 ff.), answered next to the charge loop.
-    fn on_side(&mut self, payload: &[u8]) -> Output {
-        let mut mem = vec![0u8; 8192];
-        let arena = Arena::new(&mut mem);
-        let nothing = Output { send: None, close: false };
-        if self.state != State::ChargeLoop || self.config.side_stream_silent {
-            return nothing;
-        }
-        let side = PayloadType::SCHEDULE_RENEGOTIATION;
-        if self.ac && matches!(ac::decode(payload, &arena), Ok(ac::Message::AcChargeParameterDiscoveryReq(_))) {
-            return self.on_ac_cpd(payload, &arena, true);
-        }
-        if let Ok(dc::Message::DcChargeParameterDiscoveryReq(req)) = dc::decode(payload, &arena) {
-            self.ev_announced = Some(match &req.dc_cpd_req_energy_transfer_mode {
-                dc::DcCpdReqEnergyTransferModeChoice::Base(m) => *m,
-                dc::DcCpdReqEnergyTransferModeChoice::Bpt(m) => base_of_bpt_cpd(m),
-            });
-            let code = if req.header.session_id != self.session_id { ResponseCode::FailedUnknownSession } else { self.config.cpd_code };
-            self.side_schedule_reqs_seen = 0;
-            let res = self.cpd_res(code);
-            return Output { send: frame(side, |out| res.encode(out)), close: !is_ok(code) };
-        }
-        match common::decode(payload, &arena) {
-            Ok(common::Message::ScheduleExchangeReq(req)) => {
-                self.side_schedule_reqs_seen += 1;
-                let (processing, code) = if req.header.session_id != self.session_id {
-                    (Processing::Finished, ResponseCode::FailedUnknownSession)
-                } else if self.side_schedule_reqs_seen <= self.config.schedule_ongoing_responses {
-                    (Processing::Ongoing, ResponseCode::Ok)
-                } else {
-                    (Processing::Finished, self.config.schedule_code)
-                };
-                let send = self.schedule_frame(side, processing, code);
-                Output { send, close: processing != Processing::Ongoing && !is_ok(code) }
-            }
-            Ok(common::Message::PowerDeliveryReq(req)) => {
-                let code = if req.header.session_id != self.session_id {
-                    ResponseCode::FailedUnknownSession
-                } else if req.charge_progress != common::ChargeProgress::ScheduleRenegotiation || req.ev_power_profile.is_none() {
-                    ResponseCode::FailedPowerDeliveryNotApplied
-                } else if !self.selects_offered_tuple(&req) {
-                    ResponseCode::FailedScheduleSelectionInvalid
-                } else {
-                    self.side_renegotiated = true;
-                    self.schedule_started = Some(std::time::Instant::now());
-                    ResponseCode::Ok
-                };
-                let res = common::PowerDeliveryRes { header: self.header(), response_code: code, evse_status: None };
-                Output { send: frame(side, |out| res.encode(out)), close: !is_ok(code) }
-            }
-            _ => nothing,
-        }
-    }
-
-    /// The parameter sets offered for a service.
-    fn sets_for(&self, service_id: u16) -> &[crate::config::OfferedSet] {
-        if is_ac_service(service_id) { &self.config.ac_parameter_sets } else { &self.config.parameter_sets }
-    }
-
-    /// `ServiceDiscoveryRes`; a failure code closes the connection.
-    fn discovery_res(&mut self, code: ResponseCode) -> Output {
-        self.note(format!("ServiceDiscoveryReq: answering {code:?}, energy services {:?}", self.config.energy_services));
-        let list: Vec<Service> =
-            self.config.energy_services.iter().map(|&service_id| Service { service_id, free_service: false }).collect();
-        let res = ServiceDiscoveryRes {
-            header: self.header(),
-            response_code: code,
-            service_renegotiation_supported: self.config.service_renegotiation_supported,
-            energy_transfer_service_list: ServiceList { service: &list },
-            vas_list: None,
-        };
-        Output {
-            send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)),
-            close: !is_ok(code),
-        }
-    }
-
-    fn detail_res(&mut self, code: ResponseCode, service_id: u16) -> Output {
-        let offered: Vec<String> = self.sets_for(service_id).iter().map(|s| s.describe()).collect();
-        self.note(format!("ServiceDetailReq for service {service_id}: answering {code:?}, offering {}", if offered.is_empty() { "no parameter sets".to_string() } else { offered.join("; ") }));
-        let names: Vec<Vec<Parameter<'_>>> = self
-            .sets_for(service_id)
-            .iter()
-            .map(|set| {
-                // Table 207: DC_BPT adds the channel (1 unified) and the generator mode (1 grid following).
-                let bpt: &[(&str, i32)] = if service_id == SERVICE_ID_DC_BPT { &[("BPTChannel", 1), ("GeneratorMode", 1)] } else { &[] };
-                set.values.iter().map(|(name, v)| (name.as_str(), *v)).chain(bpt.iter().copied()).map(|(name, v)| Parameter { name, choice: ParameterChoice::IntValue(v) }).collect()
-            })
-            .collect();
-        let sets: Vec<ParameterSet<'_>> = self
-            .sets_for(service_id)
-            .iter()
-            .zip(&names)
-            .map(|(set, parameters)| ParameterSet { parameter_set_id: set.id, parameter: parameters })
-            .collect();
-        let res = ServiceDetailRes {
-            header: self.header(),
-            response_code: code,
-            service_id,
-            service_parameter_list: ServiceParameterList { parameter_set: &sets },
-        };
-        Output {
-            send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)),
-            close: !is_ok(code),
-        }
-    }
-
-    fn selection_res(&mut self, code: ResponseCode) -> Output {
-        self.note(format!("ServiceSelectionReq: answering {code:?}"));
-        let res = ServiceSelectionRes { header: self.header(), response_code: code };
-        Output {
-            send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)),
-            close: !is_ok(code),
-        }
-    }
-
-    pub(crate) fn header(&self) -> MessageHeader<'static> {
-        MessageHeader::new(self.session_id, self.stamp())
-    }
-
-    /// The `TimeStamp` of a message: microseconds (V2G20-1534), larger with each message
-    /// (V2G20-1537).
-    fn stamp(&self) -> u64 {
-        let t = now_micros().max(self.last_stamp.get() + 1);
-        self.last_stamp.set(t);
-        t
-    }
-
-    /// Answers a message that carries the wrong session id with `FAILED_UnknownSession` (V2G20-460),
-    /// with the response of the type it asks for.
-    fn unknown_session(&self, msg: common::Message<'_>) -> Output {
-        Output { send: self.failing(&crate::answers::Request::Common(msg), ResponseCode::FailedUnknownSession), close: true }
-    }
-}
-
-fn is_ok(code: ResponseCode) -> bool {
-    matches!(
-        code,
-        ResponseCode::Ok
-            | ResponseCode::OkCertificateExpiresSoon
-            | ResponseCode::OkNewSessionEstablished
-            | ResponseCode::OkOldSessionJoined
-            | ResponseCode::OkPowerToleranceConfirmed
-    )
 }
 
 fn now_micros() -> u64 {
@@ -1049,4 +393,3 @@ pub(crate) fn frame(payload_type: PayloadType, encode: impl FnOnce(&mut [u8]) ->
     buf.truncate(HEADER_LEN + n);
     Some(buf)
 }
-

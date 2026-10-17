@@ -8,10 +8,13 @@
 //! V2G20-460 for what comes out of turn.
 //!
 //! Host contract:
+//! The buffers ([`Buffers`]) are yours and the same for every call, so the session and its buffers can sit
+//! in one struct.
+//!
 //! 1. Accept a connection, then send [`Event::Connected`].
-//! 2. Read from the socket into [`session::Session::rx_space`], then send [`Event::Received`] with the
-//!    byte count.
-//! 3. After every call write `tx()[..send]` to the stream, apply the timer command, and close the
+//! 2. Read from the socket into [`session::Session::rx_space`] of your `rx` buffer, then send
+//!    [`Event::Received`] with the byte count.
+//! 3. After every call write `tx[..send]` (your `tx` buffer) to the stream, apply the timer command, and close the
 //!    connection when [`Step::close`] is set (after writing).
 //! 4. When the armed timer fires, send [`Event::TimerExpired`].
 #![no_std]

@@ -46,33 +46,50 @@ pub fn check_contract_chain(policy: &Pnc, ders: &[Vec<u8>]) -> Result<(X509, boo
     Ok((leaf, expires_soon))
 }
 
-/// What the checks of a PnC `AuthorizationReq` of ISO 15118-20 found.
-pub fn verify(policy: &Pnc, challenge: [u8; 16], header: &MessageHeader<'_>, mode: &PnCAReqAuthorizationMode<'_>) -> ResponseCode {
+/// What the checks of a PnC `AuthorizationReq` of ISO 15118-20 found, and the contract certificate when the
+/// chain was accepted (the signatures of the metering confirmations of the session are checked with it,
+/// V2G20-904).
+pub fn verify_contract(policy: &Pnc, challenge: [u8; 16], header: &MessageHeader<'_>, mode: &PnCAReqAuthorizationMode<'_>) -> (ResponseCode, Option<X509>) {
     let chain = &mode.contract_certificate_chain;
     let mut ders: Vec<Vec<u8>> = vec![chain.certificate.to_vec()];
     ders.extend(chain.sub_certificates.certificate.iter().map(|c| c.to_vec()));
     // The chain, against the trust anchors when there are any.
     let (leaf, expires_soon) = match check_contract_chain(policy, &ders) {
         Ok(ok) => ok,
-        Err(ChainFault::Expired) => return ResponseCode::WarningCertificateExpired,
-        Err(ChainFault::NotYetValid) => return ResponseCode::WarningCertificateNotYetValid,
-        Err(ChainFault::Invalid) => return ResponseCode::WarningCertificateValidationError,
+        Err(ChainFault::Expired) => return (ResponseCode::WarningCertificateExpired, None),
+        Err(ChainFault::NotYetValid) => return (ResponseCode::WarningCertificateNotYetValid, None),
+        Err(ChainFault::Invalid) => return (ResponseCode::WarningCertificateValidationError, None),
     };
     // V2G20-2565: the challenge of this session.
     if mode.gen_challenge != challenge {
-        return ResponseCode::WarningChallengeInvalid;
+        return (ResponseCode::WarningChallengeInvalid, None);
     }
     // V2G20-1063: signed with the contract key; V2G20-461 for a signature that does not hold.
-    let (Some(signature), Ok(key)) = (&header.signature, leaf.public_key()) else { return ResponseCode::FailedSignatureError };
+    let (Some(signature), Ok(key)) = (&header.signature, leaf.public_key()) else { return (ResponseCode::FailedSignatureError, None) };
     let mut fragment = vec![0u8; 1 << 15];
     let Ok(length) = encode_fragment(&mut fragment, iso15118_20::signature::fragment::PNC_A_REQ_AUTHORIZATION_MODE, |e| mode.encode_content(e)) else {
-        return ResponseCode::FailedSignatureError;
+        return (ResponseCode::FailedSignatureError, None);
     };
     let uri = format!("#{}", mode.id);
     if xmlsig::verify(&key, signature, &[(uri.as_str(), &fragment[..length])]).is_err() {
-        return ResponseCode::FailedSignatureError;
+        return (ResponseCode::FailedSignatureError, None);
     }
-    if expires_soon { ResponseCode::OkCertificateExpiresSoon } else { ResponseCode::Ok }
+    (if expires_soon { ResponseCode::OkCertificateExpiresSoon } else { ResponseCode::Ok }, Some(leaf))
+}
+
+/// The checks of an ISO 15118-20 `MeteringConfirmationReq` (V2G20-904): the signature in the header over the
+/// `SignedMeteringData` with the key of the contract certificate of the authorization, and the reading
+/// being the one the charger sent.
+pub fn verify_metering(contract: &X509, signature: Option<&iso15118_20::signature::Signature<'_>>, data: &iso15118_20::common::SignedMeteringData<'_>, fragment: &[u8], sent_reading: Option<u64>) -> ResponseCode {
+    let (Some(signature), Ok(key)) = (signature, contract.public_key()) else { return ResponseCode::FailedSignatureError };
+    let uri = format!("#{}", data.id);
+    if xmlsig::verify(&key, signature, &[(uri.as_str(), fragment)]).is_err() {
+        return ResponseCode::FailedMeteringSignatureNotValid;
+    }
+    if sent_reading.is_some_and(|sent| sent != data.meter_info.charged_energy_reading_wh) {
+        return ResponseCode::FailedMeteringSignatureNotValid;
+    }
+    ResponseCode::Ok
 }
 
 /// The checks of an ISO 15118-2 `MeteringReceiptReq`: the signature in the header over the element

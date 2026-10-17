@@ -475,6 +475,13 @@ pub struct Config {
     /// Parameter sets answered for the AC services (Table 205: `Connector` 1 single phase, 2 three
     /// phase, `EVSENominalVoltage`, `ControlMode`, `MobilityNeedsMode`, `Pricing`).
     pub ac_parameter_sets: Vec<OfferedSet>,
+    /// The charger's meter: its id, whether `MeterInfo` goes into every charge loop answer (V2G20-1833;
+    /// otherwise when the vehicle asks, V2G20-1081), and the notification `MeteringConfirmation`
+    /// (Plug & Charge only, V2G20-2704) with a receipt, every so many charge loop answers.
+    pub meter_id: String,
+    pub meter_info_always: bool,
+    pub metering_confirmation_every_loops: Option<u32>,
+    pub receipt_every_loops: Option<u32>,
     /// Scheduled control mode: how long one entry of an offered power schedule lasts, in seconds.
     pub schedule_entry_s: u32,
     /// Response code of the `ServiceSelectionRes` for a valid selection.
@@ -572,6 +579,10 @@ impl Default for Config {
                 .enumerate()
                 .map(|(i, (mode, connector))| OfferedSet::new(i as u16 + 1, [("Connector", connector), ("EVSENominalVoltage", 400), ("ControlMode", mode), ("MobilityNeedsMode", 1), ("Pricing", 0)]))
                 .collect(),
+            meter_id: "DE*SIM*M0001".to_string(),
+            meter_info_always: false,
+            metering_confirmation_every_loops: None,
+            receipt_every_loops: None,
             schedule_entry_s: 3600,
             selection_code: ResponseCode::Ok,
             cpd_code: ResponseCode::Ok,

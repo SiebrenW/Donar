@@ -87,11 +87,16 @@ All of it sans-IO state machines too, driven the same way:
 
 The order is SLAC, SDP, TCP, TLS, session. [`crates/sims/evcc-sim/src/main.rs`](crates/sims/evcc-sim/src/main.rs) does exactly that and is the shortest complete example; `SimulatedEv` in [`crates/sims/evcc-sim/src/lib.rs`](crates/sims/evcc-sim/src/lib.rs) is a worked `Ev`.
 
+## Building your own EVSE
+
+The charger side is the mirror image: [`crates/evse/core`](crates/evse/core) is the ISO 15118-20 session machine of the SECC (`evse_core::Session`, sans-IO and `no_std` like the vehicle's), and the charger is your implementation of [`evse_core::Secc`](crates/evse/core/src/secc.rs): what it offers (`energy_services`, `parameter_sets`, `authorization_services`), what it delivers (`dc_charge_parameters`, `dc_loop`, `ac_loop`, the contactors in `power_delivery`), what takes time (`authorize`, `cable_check`, `schedule_ready` answer with `Progress::Ongoing` and are asked again when the vehicle repeats its request), its meter (`meter_info`, `receipt`) and the verification of signatures (the machine hands the host the stream a signature covers; it contains no crypto). Every method has a default, so a start is a charger that accepts and does nothing. The host contract is in the crate docs; `crates/evse/core/tests/against_evcc.rs` is a complete example with a charger that delivers what the vehicle asks, and [`crates/sims/evse-sim`](crates/sims/evse-sim/src/secc.rs) is the full one (settings, faults, live measurements, a meter, Plug & Charge verification with OpenSSL).
+
 ## Where things are
 
 | | |
 |---|---|
 | `crates/evcc/core` | the machines: sessions, SDP, SLAC, the `Ev` trait, logging. `no_std` |
+| `crates/evse/core` | the charger's session machine (ISO 15118-20) behind the `Secc` trait. `no_std` |
 | `crates/evcc/linux` | Linux adapter: sockets, OpenSSL, raw packet sockets, the QCA modem driver, the run loop |
 | `crates/codec/*` | EXI codecs generated from the standards' schemas (`exi-gen`), V2GTP/SDP, HomePlug MMEs; checked byte for byte against EXIficient |
 | `crates/sims/evcc-sim`, `evse-sim` | a simulated vehicle and charger (with fault injection) |

@@ -61,12 +61,9 @@ fn is_failed(code: ResponseCode) -> bool {
     code.xml_name().starts_with("FAILED")
 }
 
-pub struct Session<'a, S: Secc> {
-    rx: &'a mut [u8],
+pub struct Session<S: Secc> {
+    /// Bytes of an incomplete frame the host has put into `Buffers::rx`.
     rx_len: usize,
-    tx: &'a mut [u8],
-    arena: Arena<'a>,
-    scratch: &'a mut [u8],
     m: Machine<S>,
 }
 
@@ -94,14 +91,10 @@ struct Reply {
     close: bool,
 }
 
-impl<'a, S: Secc> Session<'a, S> {
-    pub fn new(secc: S, buffers: Buffers<'a>) -> Self {
+impl<S: Secc> Session<S> {
+    pub fn new(secc: S) -> Self {
         Self {
-            rx: buffers.rx,
             rx_len: 0,
-            tx: buffers.tx,
-            arena: Arena::new(buffers.arena),
-            scratch: buffers.scratch,
             m: Machine {
                 secc,
                 state: State::AwaitSupportedAppProtocolReq,
@@ -136,18 +129,19 @@ impl<'a, S: Secc> Session<'a, S> {
         self.m.session_id
     }
 
-    /// Free space to read the next bytes from the stream into.
-    pub fn rx_space(&mut self) -> &mut [u8] {
-        &mut self.rx[self.rx_len..]
+    /// Free space of `rx` to read the next bytes from the stream into (the buffer is the host's and is
+    /// the one every call gets).
+    pub fn rx_space<'b>(&self, rx: &'b mut [u8]) -> &'b mut [u8] {
+        &mut rx[self.rx_len..]
     }
 
-    /// The frames written by the last step, valid up to [`Step::send`].
-    pub fn tx(&self) -> &[u8] {
-        self.tx
-    }
-
-    pub fn handle(&mut self, event: Event) -> Step {
-        let Self { rx, rx_len, tx, arena, scratch, m } = self;
+    /// Handles an event. The buffers are the host's, and the same ones for every call: what the machine
+    /// has not consumed of `rx` stays there; the frames of the answer are written to `tx` (up to
+    /// [`Step::send`]).
+    pub fn handle(&mut self, event: Event, buffers: &mut Buffers<'_>) -> Step {
+        let Self { rx_len, m } = self;
+        let Buffers { rx, tx, arena, scratch } = buffers;
+        let mut arena = Arena::new(arena);
         let ended = |s: State| matches!(s, State::Stopped | State::Paused | State::Closed);
         match event {
             Event::Connected { secured } => {
@@ -173,7 +167,7 @@ impl<'a, S: Secc> Session<'a, S> {
                         Ok(Parse::Frame(frame)) => {
                             arena.reset();
                             let (payload_type, payload) = (frame.payload_type, frame.payload);
-                            let reply = m.on_frame(payload_type, payload, arena, scratch, &mut tx[sent..]);
+                            let reply = m.on_frame(payload_type, payload, &arena, scratch, &mut tx[sent..]);
                             sent += reply.len;
                             close |= reply.close;
                             let consumed = frame.consumed;
@@ -274,7 +268,7 @@ impl<S: Secc> Machine<S> {
             self.goto(State::Closed);
             return Reply { len: 0, close: true };
         };
-        match self.secc.intercept(&request) {
+        match self.secc.intercept(payload_type, &request) {
             Action::Pass => {}
             Action::Silent => {
                 self.secc.note(format_args!("silent: not answering"));
@@ -855,7 +849,7 @@ impl<S: Secc> Machine<S> {
                 let renegotiation = req.charging_session == ChargingSession::ServiceRenegotiation;
                 let mut code = if self.unknown_session(req.header.session_id) { ResponseCode::FailedUnknownSession } else { ResponseCode::Ok };
                 // V2G20-1643, V2G20-1955.
-                if renegotiation && !self.secc.service_renegotiation_supported() && is_ok(code) {
+                if renegotiation && is_ok(code) && !self.secc.accept_service_renegotiation() {
                     code = ResponseCode::FailedNoServiceRenegotiationSupported;
                 }
                 let code = self.code(M::SessionStop, code);
@@ -977,7 +971,7 @@ impl<S: Secc> Machine<S> {
             // The mode of the selected parameter set is the one to use.
             (Processing::Finished, ResponseCode::Failed)
         } else {
-            match self.secc.schedule_ready() {
+            match self.secc.schedule_ready(side) {
                 Progress::Ongoing => (Processing::Ongoing, ResponseCode::Ok),
                 Progress::Done(()) => (Processing::Finished, ResponseCode::Ok),
             }
