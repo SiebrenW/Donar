@@ -18,12 +18,13 @@ mod live;
 mod settings;
 
 pub use live::{EvLive, Phase};
-pub use settings::{CertificateChecks, Connector, Limits, LogLevel, Settings, SlacValidation, Tls, TlsVersions};
+pub use settings::{CertificateChecks, Connector, Contract, Limits, LogLevel, Settings, SlacValidation, Tls, TlsVersions};
 
 pub struct SimulatedEv {
     connector: DcConnector,
     limits: Limits,
     live: Option<Arc<EvLive>>,
+    contract: Option<Arc<dyn evcc_core::ev::Contract>>,
     reads: Cell<u32>,
     /// Set by the host when the contactors are open: the inlet voltage then drops to zero.
     open: Rc<Cell<bool>>,
@@ -31,13 +32,19 @@ pub struct SimulatedEv {
 
 impl SimulatedEv {
     pub fn new(open: Rc<Cell<bool>>, connector: DcConnector) -> Self {
-        Self { connector, limits: Limits::default(), live: None, reads: Cell::new(0), open }
+        Self { connector, limits: Limits::default(), live: None, contract: None, reads: Cell::new(0), open }
     }
 
     /// A car whose limits are `limits` and whose measurements the test platform sees and sets.
     pub fn with_live(mut self, live: Arc<EvLive>) -> Self {
         self.limits = live.limits();
         self.live = Some(live);
+        self
+    }
+
+    /// A car with a contract for Plug & Charge.
+    pub fn with_contract(mut self, contract: Arc<dyn evcc_core::ev::Contract>) -> Self {
+        self.contract = Some(contract);
         self
     }
 
@@ -87,6 +94,9 @@ impl Ev for SimulatedEv {
         self.reads.set(reads + 1);
         let battery = self.live.as_ref().map_or(400.0, |l| l.battery_voltage());
         RationalNumber::from_f64(if self.open.get() { 0.0 } else if reads == 0 { battery * 0.75 } else { battery })
+    }
+    fn contract(&self) -> Option<&dyn evcc_core::ev::Contract> {
+        self.contract.as_deref()
     }
     fn present_soc(&self) -> Option<u8> {
         self.live.as_ref().map(|l| l.present_soc().round_ties_even().clamp(0.0, 100.0) as u8)
@@ -139,11 +149,12 @@ pub fn run_car(
     behaviour: Behaviour,
     log: impl LogSink,
 ) -> io::Result<Outcome> {
-    run_car_live(stream, secured, config, behaviour, log, None, Limits::default())
+    run_car_live(stream, secured, config, behaviour, log, None, Limits::default(), None)
 }
 
 /// [`run_car`] with the live state of a test platform (held at the start of each phase, with
 /// measurements to see and set) and the vehicle's limits.
+#[allow(clippy::too_many_arguments)]
 pub fn run_car_live(
     stream: &mut impl Transport,
     secured: bool,
@@ -152,12 +163,16 @@ pub fn run_car_live(
     log: impl LogSink,
     live: Option<Arc<EvLive>>,
     limits: Limits,
+    contract: Option<Arc<dyn evcc_core::ev::Contract>>,
 ) -> io::Result<Outcome> {
     let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
     let open = Rc::new(Cell::new(false));
     let mut car = SimulatedEv::new(open.clone(), behaviour.connector).with_limits(limits);
     if let Some(live) = &live {
         car = car.with_live(live.clone());
+    }
+    if let Some(contract) = contract {
+        car = car.with_contract(contract);
     }
     let mut session = Session::new(config, car, log, Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
     let (mut loops, mut renegotiated, mut rescheduled) = (0, false, false);

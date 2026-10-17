@@ -40,6 +40,34 @@ pub enum DcConnector {
     Dual4 = 4,
 }
 
+/// The most sub-CA certificates a contract certificate chain carries (`SubCertificates`).
+pub const MAX_SUB_CERTIFICATES: usize = 4;
+/// Room for the largest digest (SHAKE256 as ISO 15118-20 uses it: 64 octets).
+pub const MAX_DIGEST_LEN: usize = 64;
+/// Room for the largest signature value (ECDSA secp521r1: r and s in 66 octets each).
+pub const MAX_SIGNATURE_LEN: usize = 144;
+
+/// Plug & Charge: the vehicle's contract certificate chain and the means to sign with the
+/// contract's private key, which stays with the host (a secure element, a file). The session
+/// builds the fragments and the signature structure (ISO 15118-20 7.9, V2G20-1063) and asks for
+/// the two primitives: the digest of a fragment and the signature over the `SignedInfo`
+/// fragment.
+pub trait Contract {
+    /// The contract certificate, DER.
+    fn certificate(&self) -> &[u8];
+    /// The sub-CA certificates, DER, the issuer of the contract certificate first; `None` past
+    /// the last (at most [`MAX_SUB_CERTIFICATES`] are sent).
+    fn sub_certificate(&self, index: usize) -> Option<&[u8]>;
+    /// The `xmldsig` URI of the signature method (`iso15118_20::signature::ECDSA_SHA512`, `ED448`).
+    fn signature_algorithm(&self) -> &str;
+    /// The `xmlenc` URI of the digest method (`DIGEST_SHA512`, `DIGEST_SHAKE256`).
+    fn digest_algorithm(&self) -> &str;
+    /// The digest of `data` into `out`; its length, or `None` when it cannot be made.
+    fn digest(&self, data: &[u8], out: &mut [u8]) -> Option<usize>;
+    /// The signature over `data` into `out`; its length, or `None` when it cannot be made.
+    fn sign(&self, data: &[u8], out: &mut [u8]) -> Option<usize>;
+}
+
 pub trait Ev {
     /// EVCCID sent in `SessionSetupReq` (at most 255 characters, usually the MAC address).
     fn evcc_id(&self) -> &str;
@@ -62,6 +90,11 @@ pub trait Ev {
     fn inlet_voltage(&self) -> RationalNumber;
     /// The vehicle's energy needs for the schedule exchange.
     fn schedule_request(&self) -> ScheduleRequest;
+    /// The vehicle's contract certificate chain for Plug & Charge, if it has one. Used when
+    /// [`crate::session::Config::prefer_pnc`] is set and the charger offers PnC.
+    fn contract(&self) -> Option<&dyn Contract> {
+        None
+    }
     /// The present state of charge in percent, reported in the charge loop (`DisplayParameters`)
     /// when the vehicle knows it.
     fn present_soc(&self) -> Option<u8> {

@@ -1,0 +1,25 @@
+name = "dc-tls-pnc"
+description = "Plug & Charge over TLS 1.3 with P-521 certificates: the charger offers EIM and PnC with a challenge, the vehicle signs the AuthorizationReq with its contract key and sends the contract chain (made for the run, to the Annex B profiles), the charger checks challenge, chain, profile and signature."
+timeout_s = 40
+pki = "p521"
+
+[secc]
+kind = "evse-sim"
+tls = true
+[secc.settings.session]
+offered_authorization = ["EIM", "PnC"]
+[secc.settings.session.pnc]
+check_profile = true
+
+[evcc]
+kind = "evcc-sim"
+tls = true
+pnc = true
+[evcc.settings]
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+
+[expect]
+secc_exit = 0
+evcc_log = ["AuthorizationSelected { service: PnC }", "session: Ended(Completed)"]
+secc_log = ["PnC authorization: Ok", "session: Stopped"]

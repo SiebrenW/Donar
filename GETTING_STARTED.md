@@ -100,6 +100,7 @@ These scenarios run `evcc-sim` against an independent ISO 15118-20 charger in an
 | `crates/sims/scenarios/tests/tls.rs` | TLS 1.3 with mutual authentication, P-521 and Ed448 certificates, refusal of unknown CAs and wrong curves | no |
 | `crates/sims/scenarios/tests/sdp.rs` | SDP discovery over UDP on the IPv6 loopback | no |
 | `crates/sims/web/tests/web.rs` | The web server over HTTP: scenario list, schemas, refusal of bad scenarios; a run with its logs streamed (Linux) | the run: yes |
+| `crates/sims/scenarios/tests/pnc.rs`, `.../certificates.rs` | Plug & Charge (signed `AuthorizationReq`, contract chain, fallback to EIM) and the Annex B certificate profile and OCSP checks, with chains made to the profiles and chains that break one rule | no |
 | `crates/sims/scenarios/tests/scenarios.rs` | Every scenario file in two network namespaces: multicast SDP, SLAC on a raw packet socket (matched and too far away), TLS 1.3 with P-521 and Ed448 certificates, a delayed cable, a charger that ends the charge; plus a check that all scenario files load | **yes** (Linux only; the loading check runs everywhere) |
 
 Tests that need root are compiled only on Linux, so `cargo test --workspace` on macOS simply does not contain them.

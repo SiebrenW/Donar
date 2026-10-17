@@ -21,6 +21,7 @@
 //! [evcc]
 //! kind = "evcc-sim"
 //! tls = true
+//! pnc = false               # true: a contract certificate chain for Plug & Charge, made for the run
 //! [evcc.settings]           # evcc_sim::Settings; [evcc.settings.tls] takes only options
 //!                           # (versions, backwards_compatible), the runner makes the files
 //! slac = true
@@ -105,6 +106,10 @@ pub struct Participant {
     pub kind: Kind,
     #[serde(default)]
     pub tls: bool,
+    /// Plug & Charge: the runner makes a contract chain and key for the vehicle (and the charger
+    /// trusts its root); for the vehicle only.
+    #[serde(default)]
+    pub pnc: bool,
     /// The participant's settings file as a table (`evcc_sim::Settings`, `evse_sim::Settings`).
     #[serde(default)]
     pub settings: toml::Table,
@@ -138,6 +143,12 @@ impl Scenario {
         }
         if self.secc.kind == Kind::EvccSim {
             return bad("the charger (secc) cannot be an evcc-sim".into());
+        }
+        if self.secc.pnc {
+            return bad("`pnc = true` belongs to the vehicle; the charger's `[secc.settings.session]` says what it offers".into());
+        }
+        if self.evcc.settings.contains_key("pnc") {
+            return bad("Plug & Charge is switched on with `pnc = true` on the vehicle and the runner supplies the files".into());
         }
         // The vehicle's `tls` table may set options (`versions`, `backwards_compatible`) but not
         // name files: the runner supplies those.

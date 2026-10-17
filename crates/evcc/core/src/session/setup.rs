@@ -67,10 +67,24 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         if !is_ok(res.response_code) {
             return self.end(EndReason::Rejected(res.response_code));
         }
-        if !res.authorization_services.contains(&Authorization::Eim) {
-            self.log.record(&Record::NoAuthorization { wanted: Authorization::Eim, offered: res.authorization_services });
-            return self.end(EndReason::NoCompatibleAuthorization);
+        self.eim_offered = res.authorization_services.contains(&Authorization::Eim);
+        // Plug & Charge when asked for, offered (with its challenge, V2G20-1219) and possible.
+        let challenge = match res.as_res_authorization_mode {
+            AsResAuthorizationModeChoice::PnC(mode) => Some(mode.gen_challenge),
+            _ => None,
+        };
+        match challenge {
+            Some(challenge) if self.config.prefer_pnc && res.authorization_services.contains(&Authorization::PnC) && self.ev.contract().is_some() => {
+                self.pnc_challenge = Some(challenge);
+                self.authorization = Authorization::PnC;
+            }
+            _ if self.eim_offered => self.authorization = Authorization::Eim,
+            _ => {
+                self.log.record(&Record::NoAuthorization { wanted: Authorization::Eim, offered: res.authorization_services });
+                return self.end(EndReason::NoCompatibleAuthorization);
+            }
         }
+        self.log.record(&Record::AuthorizationSelected { service: self.authorization });
         self.send_authorization_req(State::AwaitAuthorizationRes, tx)
     }
 
@@ -78,6 +92,17 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         self.log.record(&Record::MsgRx { msg: MsgKind::AuthorizationRes });
         self.log.record(&Record::Response { msg: MsgKind::AuthorizationRes, code: res.response_code });
         self.log.record(&Record::EvseProcessing { processing: res.evse_processing });
+        // V2G20-1583: a warning about the contract; EIM is the way out when it is on offer.
+        if self.authorization == Authorization::PnC
+            && res.evse_processing == Processing::Finished
+            && self.config.pnc_fallback_to_eim
+            && self.eim_offered
+            && is_pnc_warning(res.response_code)
+        {
+            self.authorization = Authorization::Eim;
+            self.log.record(&Record::AuthorizationSelected { service: self.authorization });
+            return self.send_authorization_req(State::AwaitAuthorizationRes, tx);
+        }
         if !is_ok(res.response_code) {
             return self.end(EndReason::Rejected(res.response_code));
         }
@@ -213,14 +238,21 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         self.send_then(State::AwaitSessionSetupRes, MsgKind::SessionSetupReq, framed)
     }
     pub(super) fn send_authorization_req(&mut self, next: State, tx: &mut [u8]) -> Step {
-        // EIM is the only authorization mode implemented, so the request carries no data
-        // beyond the header; a repeat is therefore identical except for its timestamp.
-        let msg = AuthorizationReq {
-            header: self.header(),
-            selected_authorization_service: Authorization::Eim,
-            a_req_authorization_mode: AReqAuthorizationModeChoice::Eim(EimAReqAuthorizationMode {}),
+        let framed = if self.authorization == Authorization::PnC {
+            let (session_id, time_stamp, challenge) = (self.session_id, self.timestamp(), self.pnc_challenge.unwrap_or([0; 16]));
+            match self.ev.contract() {
+                Some(contract) => frame_pnc_authorization_req(contract, challenge, session_id, time_stamp, tx),
+                None => return self.end(EndReason::UnexpectedMessage),
+            }
+        } else {
+            // EIM carries no data beyond the header; a repeat is identical but for its timestamp.
+            let msg = AuthorizationReq {
+                header: self.header(),
+                selected_authorization_service: Authorization::Eim,
+                a_req_authorization_mode: AReqAuthorizationModeChoice::Eim(EimAReqAuthorizationMode {}),
+            };
+            frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out))
         };
-        let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
         if self.state == next {
             // A repeat: stay in the same state without logging a transition.
             return self.sent(MsgKind::AuthorizationReq, framed);
@@ -245,3 +277,72 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             })
             .map(|set| set.parameter_set_id)
     }}
+
+/// `Id` of the `PnC_AReqAuthorizationMode` element the signature refers to.
+const PNC_ID: &str = "id1";
+const PNC_URI: &str = "#id1";
+
+/// The warnings of V2G20-2212 to 2217 about the contract, after which V2G20-1583 lets the
+/// vehicle try something else.
+fn is_pnc_warning(code: ResponseCode) -> bool {
+    matches!(
+        code,
+        ResponseCode::WarningCertificateExpired
+            | ResponseCode::WarningCertificateNotYetValid
+            | ResponseCode::WarningCertificateRevoked
+            | ResponseCode::WarningCertificateValidationError
+            | ResponseCode::WarningChallengeInvalid
+            | ResponseCode::WarningGeneralPnCAuthorizationError
+            | ResponseCode::WarningNoCertificateAvailable
+            | ResponseCode::WarningNoContractMatchingPcidFound
+            | ResponseCode::WarningEMspUnknown
+    )
+}
+
+/// The `AuthorizationReq` for Plug & Charge, framed into `tx`: the `PnC_AReqAuthorizationMode`
+/// with the challenge and the contract chain, and in the header the signature over it with the
+/// contract key (V2G20-1063). The second half of `tx` is scratch for the two fragments that are
+/// digested and signed; the frame is built in the first.
+fn frame_pnc_authorization_req(contract: &dyn crate::ev::Contract, challenge: [u8; 16], session_id: [u8; 8], time_stamp: u64, tx: &mut [u8]) -> Result<usize, ()> {
+    use crate::ev::{MAX_DIGEST_LEN, MAX_SIGNATURE_LEN, MAX_SUB_CERTIFICATES};
+    use iso15118_20::signature::{CANONICAL_EXI, Reference, Signature, SignatureValue, SignedInfo, encode_fragment};
+    let (out, scratch) = tx.split_at_mut(tx.len() / 2);
+    let mut subs: [&[u8]; MAX_SUB_CERTIFICATES] = [&[]; MAX_SUB_CERTIFICATES];
+    let mut count = 0;
+    while count < MAX_SUB_CERTIFICATES {
+        let Some(c) = contract.sub_certificate(count) else { break };
+        subs[count] = c;
+        count += 1;
+    }
+    let mode = PnCAReqAuthorizationMode {
+        id: PNC_ID,
+        gen_challenge: challenge,
+        contract_certificate_chain: ContractCertificateChain { certificate: contract.certificate(), sub_certificates: SubCertificates { certificate: &subs[..count] } },
+    };
+    // The digest of the element's fragment, then the signature over the fragment of the SignedInfo
+    // that carries it.
+    let length = encode_fragment(scratch, iso15118_20::signature::fragment::PNC_A_REQ_AUTHORIZATION_MODE, |e| mode.encode_content(e)).map_err(|_| ())?;
+    let mut digest = [0u8; MAX_DIGEST_LEN];
+    let digest_len = contract.digest(&scratch[..length], &mut digest).ok_or(())?;
+    let references = [Reference {
+        id: None,
+        uri: Some(PNC_URI),
+        transform_algorithm: Some(CANONICAL_EXI),
+        digest_algorithm: contract.digest_algorithm(),
+        digest_value: &digest[..digest_len],
+    }];
+    let info = SignedInfo { id: None, canonicalization_algorithm: CANONICAL_EXI, signature_algorithm: contract.signature_algorithm(), reference: &references };
+    let length = info.encode_fragment(scratch).map_err(|_| ())?;
+    let mut value = [0u8; MAX_SIGNATURE_LEN];
+    let value_len = contract.sign(&scratch[..length], &mut value).ok_or(())?;
+    let msg = AuthorizationReq {
+        header: MessageHeader {
+            session_id,
+            time_stamp,
+            signature: Some(Signature { id: None, signed_info: info, signature_value: SignatureValue { id: None, value: &value[..value_len] } }),
+        },
+        selected_authorization_service: Authorization::PnC,
+        a_req_authorization_mode: AReqAuthorizationModeChoice::PnC(mode),
+    };
+    frame(out, PayloadType::MAINSTREAM, |o| msg.encode(o))
+}

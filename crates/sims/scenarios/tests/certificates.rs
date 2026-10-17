@@ -28,7 +28,7 @@ fn requirements(found: &[Violation]) -> Vec<&'static str> {
 #[test]
 fn chains_made_to_the_profiles_are_accepted() {
     for curve in [Curve::P521, Curve::Ed448] {
-        for peer in [Peer::Secc, Peer::Vehicle] {
+        for peer in [Peer::Secc, Peer::Vehicle, Peer::Contract] {
             let found = check(curve, peer, Flaw::None);
             assert!(found.is_empty(), "{curve:?} {peer:?}: {found:#?}");
         }
@@ -147,4 +147,18 @@ mod ocsp {
         let found = check_revocation(&chain, &[], &trust, super::now(), false);
         assert_eq!(super::requirements(&found), ["V2G20-2416"]);
     }
+}
+
+#[test]
+fn contract_chains_follow_their_own_profile() {
+    // The contract certificate carries an EMAID, no key purpose and revocation information.
+    let broken = [(Flaw::BadIdentifier, "V2G20-2588"), (Flaw::Expired, "V2G20-1001"), (Flaw::ExtraExtension, "V2G20-2686"), (Flaw::KeyIdMethod1, "V2G20-1852")];
+    for (flaw, requirement) in broken {
+        let found = check(Curve::P521, Peer::Contract, flaw);
+        assert!(found.iter().any(|v| v.requirement == requirement && v.depth == 0), "{flaw:?}: {found:#?}");
+    }
+    // A SECC chain is not a contract chain: its key purpose is not in the contract profile.
+    let (root, identity) = profile_pki(Curve::P521, Peer::Secc, Flaw::None);
+    let found = check_chain(&der_chain(&identity, &root.pem), Peer::Contract, now());
+    assert!(found.iter().any(|v| v.requirement == "V2G20-2686" || v.requirement == "V2G20-2588"), "{found:#?}");
 }

@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use app_protocol::{self, ResponseCode as SapCode, SupportedAppProtocolRes};
 use exi::{Arena, EncodeError};
 use iso15118_20::common::{
-    self, AsResAuthorizationModeChoice, Authorization, AuthorizationRes,
+    self, AReqAuthorizationModeChoice, PnCAsResAuthorizationMode, AsResAuthorizationModeChoice, Authorization, AuthorizationRes,
     AuthorizationSetupRes, EimAsResAuthorizationMode, Parameter, ParameterChoice, ParameterSet, SelectedService,
     Service, ServiceDetailRes, ServiceDiscoveryRes, ServiceList, ServiceParameterList, ServiceSelectionRes,
     SessionSetupRes,
@@ -18,6 +18,12 @@ use std::sync::Arc;
 
 use crate::config::Config;
 use crate::live::EvseLive;
+
+fn random_challenge() -> [u8; 16] {
+    let mut challenge = [0u8; 16];
+    openssl::rand::rand_bytes(&mut challenge).expect("random bytes");
+    challenge
+}
 
 const DC_NAMESPACE: &str = "urn:iso:std:iso:15118:-20:DC";
 
@@ -80,11 +86,13 @@ pub struct Evse {
     side_renegotiated: bool,
     live: Option<Arc<EvseLive>>,
     log: Vec<String>,
+    /// The challenge of this session's `AuthorizationSetupRes` (V2G20-697: 128 random bits).
+    challenge: [u8; 16],
 }
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new() }
+        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge() }
     }
 
     /// Reports the charge loop measurements to a test platform and takes its edits.
@@ -256,7 +264,12 @@ impl Evse {
                     response_code: ResponseCode::Ok,
                     authorization_services: &self.config.offered_authorization,
                     certificate_installation_service: false,
-                    as_res_authorization_mode: AsResAuthorizationModeChoice::Eim(EimAsResAuthorizationMode {}),
+                    // V2G20-1219, 1220: the PnC element when PnC is offered, EIM's otherwise.
+                    as_res_authorization_mode: if self.config.offered_authorization.contains(&Authorization::PnC) {
+                        AsResAuthorizationModeChoice::PnC(PnCAsResAuthorizationMode { gen_challenge: self.challenge, supported_providers: None })
+                    } else {
+                        AsResAuthorizationModeChoice::Eim(EimAsResAuthorizationMode {})
+                    },
                 };
                 Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: false }
             }
@@ -268,19 +281,33 @@ impl Evse {
                 self.authorization_reqs_seen += 1;
                 let ongoing = self.config.authorization_never_finishes
                     || self.authorization_reqs_seen <= self.config.authorization_ongoing_responses;
+                // What the selection and, for Plug & Charge, the contract come to (V2G20-2564, 2565).
+                let verdict = match (req.selected_authorization_service, &req.a_req_authorization_mode) {
+                    (Authorization::Eim, AReqAuthorizationModeChoice::Eim(_)) if self.config.offered_authorization.contains(&Authorization::Eim) => ResponseCode::Ok,
+                    (Authorization::PnC, AReqAuthorizationModeChoice::PnC(mode)) if self.config.offered_authorization.contains(&Authorization::PnC) => {
+                        let verdict = crate::pnc::verify(&self.config.pnc, self.challenge, &req.header, mode);
+                        self.note(format!("PnC authorization: {verdict:?}, challenge {}, contract chain of {} certificate(s)", if mode.gen_challenge == self.challenge { "matches" } else { "does not match" }, 1 + mode.contract_certificate_chain.sub_certificates.certificate.len()));
+                        verdict
+                    }
+                    _ => ResponseCode::WarningAuthorizationSelectionInvalid,
+                };
                 let (evse_processing, response_code) = if ongoing {
                     (Processing::Ongoing, ResponseCode::Ok)
+                } else if is_ok(verdict) {
+                    // The knob can still refuse an authorization that was fine.
+                    (Processing::Finished, if self.config.authorization_code == ResponseCode::Ok { verdict } else { self.config.authorization_code })
                 } else {
-                    (Processing::Finished, self.config.authorization_code)
+                    (Processing::Finished, verdict)
                 };
                 let res = AuthorizationRes { header: self.header(), response_code, evse_processing };
-                let finished_ok = !ongoing && matches!(response_code, ResponseCode::Ok);
+                let finished_ok = !ongoing && is_ok(response_code);
                 if finished_ok {
                     self.state = State::AwaitServiceDiscoveryReq;
                 }
+                // A warning leaves the vehicle another try (V2G20-1583); a failure ends the session.
                 Output {
                     send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)),
-                    close: !ongoing && !finished_ok,
+                    close: !ongoing && response_code.xml_name().starts_with("FAILED"),
                 }
             }
             State::AwaitServiceDiscoveryReq if payload_type == PayloadType::MAINSTREAM => {
@@ -712,7 +739,12 @@ impl Evse {
                     response_code: ResponseCode::FailedUnknownSession,
                     authorization_services: &[Authorization::Eim],
                     certificate_installation_service: false,
-                    as_res_authorization_mode: AsResAuthorizationModeChoice::Eim(EimAsResAuthorizationMode {}),
+                    // V2G20-1219, 1220: the PnC element when PnC is offered, EIM's otherwise.
+                    as_res_authorization_mode: if self.config.offered_authorization.contains(&Authorization::PnC) {
+                        AsResAuthorizationModeChoice::PnC(PnCAsResAuthorizationMode { gen_challenge: self.challenge, supported_providers: None })
+                    } else {
+                        AsResAuthorizationModeChoice::Eim(EimAsResAuthorizationMode {})
+                    },
                 };
                 frame(PayloadType::MAINSTREAM, |out| res.encode(out))
             }

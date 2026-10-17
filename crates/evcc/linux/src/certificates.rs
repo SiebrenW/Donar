@@ -30,6 +30,9 @@ pub enum Peer {
     Secc,
     /// The vehicle's chain, as the SECC sees it (tables B.13, B.14).
     Vehicle,
+    /// The contract certificate chain of Plug & Charge, as the SECC sees it (tables B.9, B.10):
+    /// eMSP root, sub-CA1, sub-CA2 and the contract certificate.
+    Contract,
 }
 
 /// One requirement a certificate does not meet.
@@ -91,6 +94,8 @@ struct Profile {
     policies: Presence,
     crl: Presence,
     aia: Presence,
+    /// SubjectInfoAccess (the operator and tariff names of a contract certificate).
+    sia: Presence,
     eku: Presence,
     key_usage: [Bit; 9],
     path_len: Option<u32>,
@@ -114,7 +119,12 @@ fn profile(peer: Peer, kind: Kind) -> Profile {
         (Peer::Vehicle, Kind::SubCa1) => ("vehicle sub-CA1", [Any, Any, Any, Zero, Any, One, One, Zero, Zero], Absent, &[], None, Optional, Optional),
         (Peer::Vehicle, Kind::SubCa2) => ("vehicle sub-CA2", [Any, Any, Any, Zero, Any, One, One, Zero, Zero], Absent, &[], None, Optional, Optional),
         (Peer::Vehicle, Kind::Leaf) => ("vehicle certificate", [One, Any, Any, Zero, Any, Zero, Zero, Zero, Zero], Optional, &[CLIENT_AUTH, SERVER_AUTH], Some(CLIENT_AUTH), Optional, Optional),
+        (Peer::Contract, Kind::SubCa1) => ("eMSP sub-CA1", [Any, Any, Any, Zero, Any, One, One, Zero, Zero], Absent, &[], None, Optional, Optional),
+        (Peer::Contract, Kind::SubCa2) => ("eMSP sub-CA2", [Any, Any, Any, Zero, Any, One, One, Zero, Zero], Absent, &[], None, Optional, Optional),
+        (Peer::Contract, Kind::Leaf) => ("contract certificate", [One, Any, Any, Zero, Any, Zero, Zero, Zero, Zero], Absent, &[], None, Optional, Optional),
     };
+    // The root of an eMSP is not the V2G root.
+    let name = if peer == Peer::Contract && kind == Kind::Root { "eMSP root CA" } else { name };
     Profile {
         name,
         kind,
@@ -123,6 +133,7 @@ fn profile(peer: Peer, kind: Kind) -> Profile {
         policies: if kind == Kind::Root { Absent } else { Optional },
         crl,
         aia,
+        sia: if peer == Peer::Contract && kind == Kind::Leaf { Optional } else { Absent },
         eku,
         key_usage: ku,
         path_len: match kind {
@@ -143,6 +154,7 @@ const OID_POLICIES: &str = "2.5.29.32";
 const OID_BASIC: &str = "2.5.29.19";
 const OID_CRL: &str = "2.5.29.31";
 const OID_AIA: &str = "1.3.6.1.5.5.7.1.1";
+const OID_SIA: &str = "1.3.6.1.5.5.7.1.11";
 const OID_OCSP: &str = "1.3.6.1.5.5.7.48.1";
 const OID_ECDSA_SHA512: &str = "1.2.840.10045.4.3.4";
 const OID_EC_PUBLIC_KEY: &str = "1.2.840.10045.2.1";
@@ -331,6 +343,7 @@ fn check_extensions(r: &mut Report, cert: &X509Certificate<'_>, p: &Profile) {
             OID_POLICIES => p.policies != Presence::Absent,
             OID_CRL => p.crl != Presence::Absent,
             OID_AIA => p.aia != Presence::Absent,
+            OID_SIA => p.sia != Presence::Absent,
             _ => false,
         };
         if !allowed {
@@ -370,6 +383,9 @@ fn check_extensions(r: &mut Report, cert: &X509Certificate<'_>, p: &Profile) {
     }
     if p.name.starts_with("vehicle") && !present(OID_CRL) && !present(OID_AIA) {
         r.add("V2G20-2599", "a vehicle certificate needs CRLDistributionPoints or AuthorityInfoAccess");
+    }
+    if (p.name.starts_with("eMSP sub") || p.name == "contract certificate") && !present(OID_CRL) && !present(OID_AIA) {
+        r.add("V2G20-2590", format!("{} needs CRLDistributionPoints or AuthorityInfoAccess", p.name));
     }
     for ext in cert.extensions() {
         match ext.parsed_extension() {
@@ -477,12 +493,13 @@ fn check_against_issuer(r: &mut Report, cert: &X509Certificate<'_>, issuer: Opti
 /// The identifier in the common name of the leaf: SECCID or EVCCID (Annex C).
 fn check_subject_id(r: &mut Report, leaf: &X509Certificate<'_>, peer: Peer) {
     let Some(cn) = leaf.subject().iter_common_name().next().and_then(|a| a.as_str().ok()) else { return };
-    let result = match peer {
-        Peer::Secc => check_secc_id(cn),
-        Peer::Vehicle => check_evcc_id(cn),
+    let (result, requirement) = match peer {
+        Peer::Secc => (check_secc_id(cn), "V2G20-2583"),
+        Peer::Vehicle => (check_evcc_id(cn), "V2G20-2597"),
+        Peer::Contract => (check_emaid(cn), "V2G20-2588"),
     };
     if let Err(message) = result {
-        r.add(if peer == Peer::Secc { "V2G20-2583" } else { "V2G20-2597" }, format!("the common name {cn:?}: {message}"));
+        r.add(requirement, format!("the common name {cn:?}: {message}"));
     }
 }
 
@@ -576,6 +593,13 @@ pub fn check_secc_id(id: &str) -> Result<(), String> {
 /// `<WMI> <S> "V" <S> <OEM's own unique ID> <S> <Check Digit>` (V2G20-2093).
 pub fn check_evcc_id(id: &str) -> Result<(), String> {
     check_id(id, &[(3, None), (1, Some('V'))], (15, 250), 20)
+}
+
+/// `<Country Code> <S> <Provider ID> <S> <Instance> <S> <Check Digit>` (C.1, IEC 63119-2): two
+/// letters, three letters or digits, nine letters or digits and the check digit of C.6. The
+/// format is read from the example of C.6, since IEC 63119-2 is not at hand.
+pub fn check_emaid(id: &str) -> Result<(), String> {
+    check_id(id, &[(2, None), (3, None)], (9, 9), 15)
 }
 
 /// The chain the TLS library verified for the peer (leaf first, root last), checked now.

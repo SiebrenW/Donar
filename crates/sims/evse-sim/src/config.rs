@@ -257,9 +257,25 @@ impl Default for Limits {
     }
 }
 
+/// How the charger treats the contract of a Plug & Charge authorization (offered with
+/// `offered_authorization = ["EIM", "PnC"]`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Pnc {
+    /// PEM trust anchors (the eMSP roots) for the contract certificate chain. The `evse-sim`
+    /// command fills it from `--pnc-trust FILE`. Without any the chain is not validated; the
+    /// challenge and the signature are always checked.
+    pub trust_pem: Option<String>,
+    /// Hold the chain to the profiles of Annex B (tables B.9, B.10) and not only to path
+    /// validation: validity and signatures.
+    pub check_profile: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    /// Plug & Charge.
+    pub pnc: Pnc,
     /// The limits offered to the vehicle.
     pub limits: Limits,
     pub evse_id: String,
@@ -353,6 +369,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            pnc: Pnc::default(),
             limits: Limits::default(),
             evse_id: "DE*SIM*E0001".into(),
             session_id: [0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18],

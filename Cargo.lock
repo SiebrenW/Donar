@@ -304,6 +304,7 @@ dependencies = [
  "exi",
  "homeplug",
  "iso15118-20",
+ "openssl",
  "schemars",
  "serde",
  "serde_json",

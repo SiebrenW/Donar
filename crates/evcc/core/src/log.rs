@@ -67,6 +67,8 @@ pub enum Record<'a> {
     SessionResumed { session_id: [u8; 8] },
     /// The `EVSEProcessing` value of an `AuthorizationRes`.
     EvseProcessing { processing: Processing },
+    /// The authorization service the vehicle selected.
+    AuthorizationSelected { service: Authorization },
     /// The energy transfer service and parameter set the EVSE accepted.
     ServiceSelected { service_id: u16, parameter_set_id: u16 },
     RxPayload { payload_type: u16, payload: &'a [u8] },
@@ -90,6 +92,7 @@ impl Record<'_> {
             | Record::StateChange { .. }
             | Record::SessionSetUp { .. }
             | Record::SessionResumed { .. }
+            | Record::AuthorizationSelected { .. }
             | Record::ServiceSelected { .. } => Level::Info,
             Record::Response { code, .. } if !crate::session::is_ok(*code) => Level::Info,
             Record::Response { .. } | Record::EvseProcessing { .. } | Record::MsgTx { .. } | Record::MsgRx { .. } => {

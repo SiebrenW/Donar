@@ -177,15 +177,21 @@ pub fn sign(key: &PKeyRef<Private>, fragments: &[(&str, &[u8])]) -> Result<Owned
         .collect::<Result<Vec<_>, ErrorStack>>()?;
     let mut owned = OwnedSignature { suite, references, value: Vec::new() };
     let to_sign = owned.with_signature(|s| fragment_of(&s.signed_info))?;
-    owned.value = match suite {
+    owned.value = sign_value(key, suite, &to_sign)?;
+    Ok(owned)
+}
+
+/// The signature value over the octets of a `SignedInfo` fragment: for ECDSA `r || s` of 132
+/// octets, for Ed448 the plain signature.
+pub fn sign_value(key: &PKeyRef<Private>, suite: Suite, signed: &[u8]) -> Result<Vec<u8>, ErrorStack> {
+    Ok(match suite {
         Suite::EcdsaP521 => {
-            let signature = EcdsaSig::sign(&hash(MessageDigest::sha512(), &to_sign)?, &*key.ec_key()?)?;
+            let signature = EcdsaSig::sign(&hash(MessageDigest::sha512(), signed)?, &*key.ec_key()?)?;
             let (r, s) = (signature.r().to_vec_padded(P521_OCTETS as i32)?, signature.s().to_vec_padded(P521_OCTETS as i32)?);
             [r, s].concat()
         }
-        Suite::Ed448 => Signer::new_without_digest(key)?.sign_oneshot_to_vec(&to_sign)?,
-    };
-    Ok(owned)
+        Suite::Ed448 => Signer::new_without_digest(key)?.sign_oneshot_to_vec(signed)?,
+    })
 }
 
 /// Verifies a signature received in a header against the fragments it should cover and the

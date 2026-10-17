@@ -63,6 +63,15 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
     let mut evcc_settings = scenario.evcc_settings();
     evcc_settings.control_pilot_file = evcc_settings.control_pilot_file.map(|p| sb.artifacts().join(p).display().to_string());
     let mut secc_args: Vec<String> = Vec::new();
+    // Plug & Charge: a contract chain and key for the vehicle, and its root for the charger.
+    let mut pnc_trust = None;
+    if scenario.evcc.pnc {
+        let curve = scenario.pki().curve().filter(|c| *c != pki::Curve::P256).unwrap_or(pki::Curve::P521);
+        let (root, identity) = crate::profile_pki::profile_pki(curve, evcc_linux::certificates::Peer::Contract, crate::profile_pki::Flaw::None);
+        let put = |name: &str, bytes: &[u8]| sb.write_artifact(&format!("pki/{name}"), bytes).map(|p| p.display().to_string());
+        evcc_settings.pnc = Some(evcc_sim::Contract { chain: put("contract-chain.pem", &identity.chain)?, key: put("contract-key.pem", &identity.key)?, key_password: None });
+        pnc_trust = Some(put("contract-trust.pem", &root.pem)?);
+    }
     // Certificates: made for the run, or the partner's own.
     let mut partner_tls = None;
     let mut secc_process = match scenario.secc.kind {
@@ -76,6 +85,9 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
             settings.control_pilot_file = settings.control_pilot_file.map(|p| sb.artifacts().join(p).display().to_string());
             let config = sb.write_artifact("secc.toml", toml::to_string(&settings).map_err(io::Error::other)?.as_bytes())?;
             secc_args.extend(["--config".into(), config.display().to_string()]);
+            if let Some(trust) = &pnc_trust {
+                secc_args.extend(["--pnc-trust".into(), trust.clone()]);
+            }
             if scenario.uses_tls() {
                 let files = generated_pki(&sb, scenario)?;
                 if scenario.secc.tls {

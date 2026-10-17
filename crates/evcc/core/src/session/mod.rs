@@ -83,6 +83,11 @@ struct Machine<E, L> {
     clock_offset: i128,
     last_timestamp: u64,
     selected: SelectedService,
+    /// The authorization service in use, and what the charger offered (for the fallback to EIM).
+    authorization: common::Authorization,
+    eim_offered: bool,
+    /// The challenge of `AuthorizationSetupRes` a Plug & Charge request answers.
+    pnc_challenge: Option<[u8; 16]>,
 }
 
 impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
@@ -115,6 +120,9 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 clock_offset: 0,
                 last_timestamp: 0,
                 selected: SelectedService { service_id: 0, parameter_set_id: 0 },
+                authorization: common::Authorization::Eim,
+                eim_offered: false,
+                pnc_challenge: None,
             },
         }
     }

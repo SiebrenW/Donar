@@ -18,6 +18,7 @@ sim-control = { path = "../control" }
 serde_json = "1"
 # For the `evse-sim` command only: the TLS profile and the packet socket of the Linux adapter.
 evcc-linux = { path = "../../evcc/linux" }
+openssl = "0.10"
 
 [[bin]]
 name = "evse-sim"

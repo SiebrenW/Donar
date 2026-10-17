@@ -62,6 +62,12 @@ pub struct Config {
     /// Answer `EVSENotification` Pause (V2G20-1850) with a pause of the session
     /// (`SessionStopReq` Pause) instead of a standby period; the standard allows either.
     pub pause_on_notification: bool,
+    /// Authorize with Plug & Charge when the charger offers it and the vehicle has a contract
+    /// ([`crate::ev::Ev::contract`]); otherwise, and by default, with EIM.
+    pub prefer_pnc: bool,
+    /// After a `WARNING` for a Plug & Charge authorization, authorize with EIM if the charger
+    /// offered it as well (V2G20-1583); otherwise the session ends with the response code.
+    pub pnc_fallback_to_eim: bool,
 }
 
 impl Config {
@@ -95,6 +101,8 @@ impl Config {
         parameter_filter: &[("ControlMode", 2), ("MobilityNeedsMode", 1)],
         resume: None,
         pause_on_notification: false,
+        prefer_pnc: false,
+        pnc_fallback_to_eim: true,
     };
 }
 

@@ -190,11 +190,19 @@ fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session:
     let log = StderrLog {
         level: settings.log.into(),
     };
+    let contract: Option<std::sync::Arc<dyn evcc_core::ev::Contract>> = match &settings.pnc {
+        Some(c) => {
+            let (chain, key) = (std::fs::read(&c.chain)?, std::fs::read(&c.key)?);
+            let loaded = evcc_linux::pnc::PemContract::new(&chain, &key, c.key_password.as_deref().map(str::as_bytes)).map_err(io::Error::other)?;
+            Some(std::sync::Arc::new(loaded))
+        }
+        None => None,
+    };
     let behaviour = Behaviour { connector: settings.connector.into(), stop_after: settings.stop_after(), renegotiate_after: settings.renegotiate_after, renegotiate_schedule_after: settings.renegotiate_schedule_after, stop_when_rescheduled: settings.stop_when_rescheduled, pause_after };
     let outcome = match &settings.tls {
         None => {
             let mut stream = tcp;
-            run_car_live(&mut stream, false, config, behaviour, log, live.clone(), settings.limits)?
+            run_car_live(&mut stream, false, config, behaviour, log, live.clone(), settings.limits, contract)?
         }
         Some(t) => {
             let (chain, key, trust) = (
@@ -219,7 +227,7 @@ fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session:
                 stream.ssl().version_str(),
                 stream.ssl().current_cipher().map_or("?", |c| c.name())
             );
-            run_car_live(&mut stream, true, config, behaviour, log, live.clone(), settings.limits)?
+            run_car_live(&mut stream, true, config, behaviour, log, live.clone(), settings.limits, contract)?
         }
     };
     eprintln!("session: {outcome:?}");

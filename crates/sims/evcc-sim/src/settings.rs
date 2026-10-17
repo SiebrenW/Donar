@@ -57,6 +57,16 @@ impl From<LogLevel> for Level {
     }
 }
 
+/// The vehicle's contract for Plug & Charge: PEM files with the contract certificate chain
+/// (the contract certificate first, then its sub-CAs; no root) and the contract's private key.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Contract {
+    pub chain: String,
+    pub key: String,
+    pub key_password: Option<String>,
+}
+
 /// What the vehicle tells the charger about its needs in `DC_ChargeParameterDiscoveryReq`,
 /// `ScheduleExchangeReq` and the charge loop. Whole units, so that settings compare and
 /// survive a round trip through files.
@@ -210,6 +220,9 @@ pub struct Settings {
     pub charge_loop_interval_ms: Option<u32>,
     /// The vehicle's needs, as sent to the charger.
     pub limits: Limits,
+    /// A contract for Plug & Charge: the vehicle uses it when the charger offers PnC, and EIM
+    /// otherwise. A scenario names none: the runner supplies the files.
+    pub pnc: Option<Contract>,
     /// State of charge (percent) at the start of the session, for the battery model.
     pub start_soc: u8,
     /// How much faster than real time the battery model runs (1: real time).
@@ -239,6 +252,7 @@ impl Default for Settings {
             poll_interval_ms: None,
             charge_loop_interval_ms: None,
             limits: Limits::default(),
+            pnc: None,
             start_soc: 20,
             time_scale: 1,
             stop_at_target_soc: false,
@@ -269,6 +283,7 @@ impl Settings {
     pub fn session(&self) -> evcc_core::session::Config {
         let mut config = evcc_core::session::Config {
             allow_unsecured: self.tls.is_none(),
+            prefer_pnc: self.pnc.is_some(),
             ..evcc_core::session::Config::DC_20
         };
         if let Some(ms) = self.poll_interval_ms {

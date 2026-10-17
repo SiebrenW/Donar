@@ -57,6 +57,7 @@ pub enum Flaw {
 
 const SECC_ID: &str = "DE-8AA-S-00003C4D557878675645330967543476-4";
 const EVCC_ID: &str = "DE8-V-AA0000453C4D58Y-2";
+const EMAID: &str = "DE-8AA-1A2B3C4D5-3";
 
 fn octet(der: &[u8]) -> Asn1OctetString {
     Asn1OctetString::new_from_bytes(der).unwrap()
@@ -264,10 +265,11 @@ pub fn profile_pki_with_ocsp(curve: Curve, peer: Peer, flaw: Flaw, ocsp: OcspFla
     let (cso, id) = match peer {
         Peer::Secc => ("Test CSO", SECC_ID),
         Peer::Vehicle => ("Test OEM", EVCC_ID),
+        Peer::Contract => ("Test eMSP", EMAID),
     };
     let id = if flaw == Flaw::BadIdentifier { "not an identifier" } else { id };
     let ca_usage = |sign: bool| [false, false, false, false, false, true, sign, false, false];
-    // Vehicle certificates need revocation information (V2G20-2599), a SECC's chain OCSP.
+    // Vehicle and contract certificates need revocation information (V2G20-2599), a SECC's chain OCSP.
     let ocsp_ca = true;
     let root = build(Spec {
         subject: name(Some("DE"), "Test V2G", "Test V2G Root", false), key: &root_key, issuer: None, serial: 1, ca: true, path_len: None,
@@ -298,11 +300,12 @@ pub fn profile_pki_with_ocsp(curve: Curve, peer: Peer, flaw: Flaw, ocsp: OcspFla
         usage: ca_usage(true), eku: None, ocsp: ocsp_ca, no_basic_ca_flag: false, not_before_days: -2000, not_after_days: 2000, flaw, root: false, leaf: false,
     }), sub2_key);
     let leaf_usage = [flaw != Flaw::LeafWithoutDigitalSignature, false, false, false, peer == Peer::Secc, false, false, false, false];
-    let eku = Some(match (peer, flaw) {
-        (Peer::Secc, Flaw::WrongKeyPurpose) => CLIENT_AUTH,
-        (Peer::Secc, _) => SERVER_AUTH,
-        (Peer::Vehicle, _) => CLIENT_AUTH,
-    });
+    let eku = match (peer, flaw) {
+        (Peer::Secc, Flaw::WrongKeyPurpose) => Some(CLIENT_AUTH),
+        (Peer::Secc, _) => Some(SERVER_AUTH),
+        (Peer::Vehicle, _) => Some(CLIENT_AUTH),
+        (Peer::Contract, _) => None,
+    };
     let leaf_ocsp = peer == Peer::Vehicle || flaw != Flaw::NoOcsp;
     issue(&mut certs, &mut keys, &|c, k, own| build(Spec {
         subject: name(Some("DE"), cso, id, flaw == Flaw::ExtraNameAttribute), key: own, issuer: Some((c, k)), serial: 4,

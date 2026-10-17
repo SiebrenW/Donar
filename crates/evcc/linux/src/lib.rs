@@ -7,6 +7,7 @@
 pub mod slac;
 pub mod certificates;
 pub mod ocsp;
+pub mod pnc;
 pub mod sdp;
 pub mod tls;
 pub mod xmlsig;
