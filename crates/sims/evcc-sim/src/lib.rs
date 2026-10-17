@@ -18,7 +18,7 @@ mod live;
 mod settings;
 
 pub use live::{Action, EvLive, Phase};
-pub use settings::{CertificateChecks, Connector, Contract, Din, Limits, LogLevel, Protocol, Settings, SlacValidation, Tls, TlsVersions};
+pub use settings::{CertificateChecks, Connector, Contract, Din, Iso2, Iso2Mode, Limits, LogLevel, Protocol, Settings, SlacValidation, Tls, TlsVersions};
 
 pub struct SimulatedEv {
     connector: DcConnector,
@@ -187,6 +187,8 @@ pub enum SessionConfig {
     Iso20(Config),
     /// DIN SPEC 70121, with the MAC address the car sends as its EVCCID.
     Din(evcc_core::din::Config, [u8; 6]),
+    /// ISO 15118-2, with the MAC address the car sends as its EVCCID.
+    Iso2(evcc_core::iso2::Config, [u8; 6]),
 }
 
 impl From<Config> for SessionConfig {
@@ -218,7 +220,7 @@ pub fn run_car_live(
     let open = Rc::new(Cell::new(false));
     let config = config.into();
     let mut car = SimulatedEv::new(open.clone(), behaviour.connector).with_limits(limits);
-    if let SessionConfig::Din(_, mac) = config {
+    if let SessionConfig::Din(_, mac) | SessionConfig::Iso2(_, mac) = config {
         car = car.with_mac(mac);
     }
     if let Some(live) = &live {
@@ -278,6 +280,10 @@ pub fn run_car_live(
         }
         SessionConfig::Din(config, _) => {
             let mut session = evcc_core::din::Session::new(config, car, log, buffers);
+            evcc_linux::run_gated(stream, &mut session, secured, &mut host, &mut gate)
+        }
+        SessionConfig::Iso2(config, _) => {
+            let mut session = evcc_core::iso2::Session::new(config, car, log, buffers);
             evcc_linux::run_gated(stream, &mut session, secured, &mut host, &mut gate)
         }
     };

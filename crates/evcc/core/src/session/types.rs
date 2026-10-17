@@ -56,6 +56,12 @@ pub enum State {
     /// DIN SPEC 70121: the host changes the control pilot to state C (before the cable check) and
     /// reports [`Event::ControlPilotChanged`].
     AwaitControlPilotC,
+    /// ISO 15118-2: `PaymentDetailsReq` is out (Plug & Charge).
+    AwaitPaymentDetailsRes,
+    /// ISO 15118-2 AC: `ChargingStatusReq` is out (the charge loop).
+    AwaitChargingStatusRes,
+    /// ISO 15118-2 AC: `MeteringReceiptReq` is out.
+    AwaitMeteringReceiptRes,
     /// DIN SPEC 70121: `CurrentDemandReq` is out (the charge loop).
     AwaitCurrentDemandRes,
     /// DIN SPEC 70121: the host changes the control pilot to state B (after the energy transfer
@@ -117,6 +123,8 @@ pub enum EndReason {
     TxBufferTooSmall,
     /// DIN SPEC 70121: the EVSE answered with a failing response code.
     RejectedDin(din70121::types::ResponseCode),
+    /// ISO 15118-2: the EVSE answered with a failing response code.
+    RejectedIso2(iso15118_2::types::ResponseCode),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

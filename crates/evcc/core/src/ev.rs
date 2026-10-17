@@ -17,6 +17,16 @@ pub struct DcLimits {
     pub target_soc: Option<u8>,
 }
 
+/// The vehicle's AC charging parameters (ISO 15118-2 `AC_EVChargeParameter`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcLimits {
+    /// `EAmount`: the energy the vehicle wants.
+    pub energy_amount: RationalNumber,
+    pub maximum_voltage: RationalNumber,
+    pub maximum_current: RationalNumber,
+    pub minimum_current: RationalNumber,
+}
+
 /// What the vehicle tells the EVSE about its energy needs (Dynamic control mode).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScheduleRequest {
@@ -86,6 +96,15 @@ pub trait Ev {
     /// The vehicle's DC limits for this session. Static facts, so a plain call; live values
     /// (present voltage, target current) will come through events once the charge loop exists.
     fn dc_limits(&self) -> DcLimits;
+    /// The vehicle's AC limits (ISO 15118-2 AC charging).
+    fn ac_limits(&self) -> AcLimits {
+        AcLimits {
+            energy_amount: RationalNumber { exponent: 3, value: 20 },
+            maximum_voltage: RationalNumber { exponent: 0, value: 400 },
+            maximum_current: RationalNumber { exponent: 0, value: 32 },
+            minimum_current: RationalNumber { exponent: 0, value: 6 },
+        }
+    }
     /// The voltage of the vehicle's battery system (read when the cable check is done and
     /// during pre-charge).
     fn battery_voltage(&self) -> RationalNumber;

@@ -9,6 +9,7 @@
 extern crate std;
 
 pub mod din;
+pub mod iso2;
 pub mod ev;
 pub mod log;
 pub mod machine;

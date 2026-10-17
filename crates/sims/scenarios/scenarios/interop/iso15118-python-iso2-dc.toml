@@ -1,0 +1,19 @@
+name = "interop-iso15118-python-iso2-dc"
+description = "The simulated vehicle against the SECC of the open-source Python iso15118 library (0.31.2): ISO 15118-2, dc, external payment, plain TCP."
+timeout_s = 60
+
+[secc]
+kind = "iso15118-python"
+protocols = "ISO_15118_2"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+protocol = "iso15118-2"
+connector = "extended"
+stop_after = 3
+[evcc.settings.iso2]
+mode = "dc"
+
+[expect]
+evcc_log = ["session: Ended(Completed)"]

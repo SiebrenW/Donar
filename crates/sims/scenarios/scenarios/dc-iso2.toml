@@ -1,0 +1,21 @@
+name = "dc-iso2"
+description = "An ISO 15118-2 dc session over plain TCP between the simulated vehicle and the simulated charger (which speaks all three protocols)."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+protocol = "iso15118-2"
+connector = "dual2"
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+[evcc.settings.iso2]
+mode = "dc"
+
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)"]
+secc_log = ["protocol urn:iso:15118:2:2013:MsgDef", "session: Stopped"]

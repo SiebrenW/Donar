@@ -27,8 +27,10 @@ fn random_challenge() -> [u8; 16] {
 
 const DC_NAMESPACE: &str = "urn:iso:std:iso:15118:-20:DC";
 const DIN_NAMESPACE: &str = "urn:din:70121:2012:MsgDef";
+const ISO2_NAMESPACE: &str = "urn:iso:15118:2:2013:MsgDef";
 
 mod din;
+mod iso2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
@@ -39,7 +41,7 @@ pub enum State {
     AwaitServiceDiscoveryReq,
     AwaitServiceDetailReq,
     AwaitServiceSelectionReq,
-    /// DIN SPEC 70121.
+    /// DIN SPEC 70121 and ISO 15118-2.
     AwaitServicePaymentSelectionReq,
     /// DIN SPEC 70121.
     AwaitContractAuthenticationReq,
@@ -103,11 +105,14 @@ pub struct Evse {
     ev_announced: Option<dc::DcCpdReqEnergyTransferMode>,
     /// DIN SPEC 70121: what the vehicle announced in its charge parameter discovery.
     din_ev_announced: Option<din70121::types::DcEvChargeParameter>,
+    /// ISO 15118-2: the vehicle's announced power limit, and whether this is an AC session.
+    iso2_ev_power: Option<f64>,
+    iso2_ac: bool,
 }
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, protocol: Protocol::Iso20, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge(), last_stamp: std::cell::Cell::new(0), ev_announced: None, din_ev_announced: None }
+        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, protocol: Protocol::Iso20, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge(), last_stamp: std::cell::Cell::new(0), ev_announced: None, din_ev_announced: None, iso2_ev_power: None, iso2_ac: false }
     }
 
     /// Reports the charge loop measurements to a test platform and takes its edits.
@@ -194,6 +199,9 @@ impl Evse {
         if self.protocol == Protocol::Din {
             return din::expects(state);
         }
+        if self.protocol == Protocol::Iso2 {
+            return iso2::expects(state);
+        }
         match state {
             State::AwaitSupportedAppProtocolReq => "SupportedAppProtocolReq",
             State::AwaitSessionSetupReq => "SessionSetupReq",
@@ -261,8 +269,12 @@ impl Evse {
         let mut mem = vec![0u8; 8192];
         let arena = Arena::new(&mut mem);
         let closed = Output { send: None, close: true };
-        if self.protocol == Protocol::Din && self.state != State::AwaitSupportedAppProtocolReq {
-            return self.on_din_frame(payload_type, payload);
+        if self.state != State::AwaitSupportedAppProtocolReq {
+            match self.protocol {
+                Protocol::Din => return self.on_din_frame(payload_type, payload),
+                Protocol::Iso2 => return self.on_iso2_frame(payload_type, payload),
+                Protocol::Iso20 => {}
+            }
         }
         if payload_type == PayloadType::SCHEDULE_RENEGOTIATION {
             return self.on_side(payload);
@@ -281,11 +293,16 @@ impl Evse {
                     .filter(|p| {
                         (speaks(Protocol::Iso20) && p.protocol_namespace == DC_NAMESPACE && p.version_number_major == 1)
                             || (speaks(Protocol::Din) && p.protocol_namespace == DIN_NAMESPACE && p.version_number_major == 2)
+                            || (speaks(Protocol::Iso2) && p.protocol_namespace == ISO2_NAMESPACE && p.version_number_major == 2)
                     })
                     .min_by_key(|p| p.priority);
                 match pick.filter(|_| !self.config.reject_protocol) {
                     Some(p) => {
-                        self.protocol = if p.protocol_namespace == DIN_NAMESPACE { Protocol::Din } else { Protocol::Iso20 };
+                        self.protocol = match p.protocol_namespace {
+                            DIN_NAMESPACE => Protocol::Din,
+                            ISO2_NAMESPACE => Protocol::Iso2,
+                            _ => Protocol::Iso20,
+                        };
                         self.note(format!("protocol {}, schema id {}", p.protocol_namespace, p.schema_id));
                         self.schema_id = p.schema_id;
                         self.state = State::AwaitSessionSetupReq;

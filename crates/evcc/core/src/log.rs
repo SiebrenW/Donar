@@ -67,6 +67,15 @@ pub enum MsgKind {
     CurrentDemandRes,
     WeldingDetectionReq,
     WeldingDetectionRes,
+    // ISO 15118-2 only.
+    PaymentDetailsReq,
+    PaymentDetailsRes,
+    AuthorizationReqIso2,
+    AuthorizationResIso2,
+    ChargingStatusReq,
+    ChargingStatusRes,
+    MeteringReceiptReq,
+    MeteringReceiptRes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +116,12 @@ pub enum Record<'a> {
     DinResponse { msg: MsgKind, code: din70121::types::ResponseCode },
     /// The charger does not offer the energy transfer the vehicle wants (DIN SPEC 70121).
     DinNoEnergyService { wanted: din70121::types::EvRequestedEnergyTransfer, offered: din70121::types::EvseSupportedEnergyTransfer },
+    /// A response code of an ISO 15118-2 charger.
+    Iso2Response { msg: MsgKind, code: iso15118_2::types::ResponseCode },
+    /// The charger does not offer the energy transfer mode the vehicle wants (ISO 15118-2).
+    Iso2NoEnergyMode { wanted: iso15118_2::types::EnergyTransferMode, offered: &'a [iso15118_2::types::EnergyTransferMode] },
+    /// The charger offers no payment option the vehicle can use (ISO 15118-2).
+    Iso2NoPayment { wanted: iso15118_2::types::PaymentOption, offered: &'a [iso15118_2::types::PaymentOption] },
     /// The charger offers no payment option the vehicle can use: DIN SPEC 70121 has only
     /// `ExternalPayment` (V2G-DC-252).
     DinNoPayment { offered: &'a [din70121::types::PaymentOption] },
@@ -124,7 +139,9 @@ impl Record<'_> {
             Record::Response { code, .. } if !crate::session::is_ok(*code) => Level::Info,
             Record::DinResponse { code, .. } if !crate::din::is_ok(*code) => Level::Info,
             Record::DinResponse { .. } => Level::Debug,
-            Record::DinNoEnergyService { .. } | Record::DinNoPayment { .. } => Level::Error,
+            Record::Iso2Response { code, .. } if !crate::iso2::is_ok(*code) => Level::Info,
+            Record::Iso2Response { .. } => Level::Debug,
+            Record::DinNoEnergyService { .. } | Record::DinNoPayment { .. } | Record::Iso2NoEnergyMode { .. } | Record::Iso2NoPayment { .. } => Level::Error,
             Record::Response { .. } | Record::EvseProcessing { .. } | Record::MsgTx { .. } | Record::MsgRx { .. } => {
                 Level::Debug
             }

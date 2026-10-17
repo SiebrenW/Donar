@@ -1,0 +1,243 @@
+//! Drives the ISO 15118-2 session machine against the simulated charger in memory: no sockets
+//! and no clock, the timers a step asks for are ignored.
+
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+use evcc_core::iso2::{Config, Mode, Session};
+use evcc_core::ev::{DcConnector, DcLimits, Ev, ScheduleRequest};
+use evcc_core::log::{LogSink, Record};
+use evcc_core::session::{Buffers, ControlPilot, EndReason, Event, Notice, State};
+use evcc_core::{Timer, TimerCmd};
+use evse_sim::{Config as EvseConfig, Evse};
+use iso15118_20::common_types::RationalNumber;
+
+fn rn(exponent: i8, value: i16) -> RationalNumber {
+    RationalNumber { exponent, value }
+}
+
+struct TestEv {
+    connector: DcConnector,
+    reads: Cell<u32>,
+}
+
+impl TestEv {
+    fn new(connector: DcConnector) -> Self {
+        Self { connector, reads: Cell::new(0) }
+    }
+}
+
+impl Ev for TestEv {
+    fn evcc_id(&self) -> &str {
+        "WMIV1234567890ABCDEX"
+    }
+    fn evcc_mac(&self) -> [u8; 6] {
+        [0x00, 0x24, 0x12, 0xE2, 0xB4, 0x90]
+    }
+    fn now_micros(&self) -> u64 {
+        0
+    }
+    fn dc_connector(&self) -> DcConnector {
+        self.connector
+    }
+    fn dc_limits(&self) -> DcLimits {
+        DcLimits {
+            maximum_charge_power: rn(3, 100),
+            minimum_charge_power: rn(0, 100),
+            maximum_charge_current: rn(0, 200),
+            minimum_charge_current: rn(0, 1),
+            maximum_voltage: rn(0, 450),
+            minimum_voltage: rn(0, 200),
+            target_soc: Some(80),
+        }
+    }
+    fn battery_voltage(&self) -> RationalNumber {
+        rn(0, 400)
+    }
+    /// The first reading is below the battery voltage, the later ones match it.
+    fn inlet_voltage(&self) -> RationalNumber {
+        let n = self.reads.get();
+        self.reads.set(n + 1);
+        rn(0, if n == 0 { 300 } else { 400 })
+    }
+    fn schedule_request(&self) -> ScheduleRequest {
+        ScheduleRequest { departure_time: 3600, minimum_soc: None, target_soc: Some(80), target_energy: rn(3, 40), maximum_energy: rn(3, 60), minimum_energy: rn(0, 0) }
+    }
+    fn present_soc(&self) -> Option<u8> {
+        Some(30)
+    }
+}
+
+/// What the vehicle sent, by name, in order.
+type Sent = Rc<RefCell<Vec<String>>>;
+
+struct Log(Sent);
+
+impl LogSink for Log {
+    fn record(&mut self, r: &Record<'_>) {
+        if let Record::MsgTx { msg } = r {
+            self.0.borrow_mut().push(format!("{msg:?}"));
+        }
+    }
+}
+
+struct Run {
+    end: EndReason,
+    states: Vec<State>,
+    notices: Vec<Notice>,
+    /// The charger's own log.
+    log: Vec<String>,
+    /// The messages the vehicle sent.
+    sent: Vec<String>,
+}
+
+enum Input {
+    Event(Event),
+    Bytes(Vec<u8>),
+}
+
+/// A session between the vehicle and the charger; after `stop_after` charge loop answers the
+/// vehicle asks to stop. Returns once the machine ended.
+fn run(connector: DcConnector, evse: EvseConfig, config: Config, stop_after: Option<u32>) -> Run {
+    let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
+    let sent: Sent = Rc::default();
+    let mut session = Session::new(config, TestEv::new(connector), Log(sent.clone()), Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
+    let mut evse = Evse::new(evse);
+    let (mut states, mut notices) = (Vec::new(), Vec::new());
+    let mut loops = 0;
+    let mut queue = std::collections::VecDeque::from([Input::Event(Event::Start { secured: false })]);
+    let mut guard = 0;
+    while let Some(input) = queue.pop_front() {
+        guard += 1;
+        assert!(guard < 500, "the session does not end: {states:?}");
+        let step = match input {
+            Input::Event(e) => session.handle(e),
+            Input::Bytes(bytes) => {
+                session.rx_space()[..bytes.len()].copy_from_slice(&bytes);
+                session.handle(Event::Received(bytes.len()))
+            }
+        };
+        states.push(session.state());
+        if let Some(reason) = step.end {
+            let sent = sent.borrow().clone();
+            return Run { end: reason, states, notices, log: evse.take_log(), sent };
+        }
+        if let Some(n) = step.send {
+            let frame = session.tx()[..n].to_vec();
+            for out in evse.handle(&frame) {
+                if let Some(bytes) = out.send {
+                    queue.push_back(Input::Bytes(bytes));
+                }
+            }
+        }
+        if let Some(notice) = step.notice {
+            notices.push(notice);
+            let reply = match notice {
+                Notice::CloseContactors => Some(Event::ContactorsClosed),
+                Notice::StopEnergyTransfer { .. } => Some(Event::EnergyTransferStopped),
+                Notice::OpenContactors => Some(Event::ContactorsOpened),
+                Notice::ControlPilot(_) => Some(Event::ControlPilotChanged),
+                Notice::ChargeLoop(_) => {
+                    loops += 1;
+                    (Some(loops) == stop_after).then_some(Event::StopRequested)
+                }
+                _ => None,
+            };
+            if let Some(e) = reply {
+                queue.push_front(Input::Event(e));
+            }
+        }
+        // A pause before the next request: it is over at once.
+        if step.timers.iter().any(|c| matches!(c, TimerCmd::Arm { timer: Timer::Poll, .. })) {
+            queue.push_back(Input::Event(Event::TimerExpired(Timer::Poll)));
+        }
+    }
+    panic!("nothing left to do: {states:?}\n{:?}", evse.take_log());
+}
+
+const DC: [&str; 15] = [
+    "SupportedAppProtocolReq", "SessionSetupReq", "ServiceDiscoveryReq", "ServicePaymentSelectionReq", "AuthorizationReqIso2",
+    "ChargeParameterDiscoveryReq", "CableCheckReq", "PreChargeReq", "PreChargeReq", "PowerDeliveryReq",
+    "CurrentDemandReq", "CurrentDemandReq", "CurrentDemandReq", "PowerDeliveryReq", "WeldingDetectionReq",
+];
+
+fn iso2() -> Config {
+    Config::ISO2_DC
+}
+
+#[test]
+fn a_dc_session_runs_to_its_end() {
+    let r = run(DcConnector::Dual2, EvseConfig::default(), iso2(), Some(3));
+    assert_eq!(r.end, EndReason::Completed, "{:?}\n{:?}\n{:?}", r.states, r.log, r.notices);
+    assert_eq!(r.sent[..15], DC, "{:?}", r.log);
+    assert_eq!(r.sent.last().map(String::as_str), Some("SessionStopReq"));
+    let pilots: Vec<_> = r.notices.iter().filter_map(|n| if let Notice::ControlPilot(p) = n { Some(*p) } else { None }).collect();
+    assert_eq!(pilots, [ControlPilot::C, ControlPilot::B]);
+    assert!(!r.log.iter().any(|l| l.contains("violation") || l.contains("out of sequence")), "{:?}", r.log);
+}
+
+#[test]
+fn an_ac_session_runs_without_cable_check_and_welding_detection() {
+    for mode in [Mode::AcSinglePhase, Mode::AcThreePhase] {
+        let r = run(DcConnector::Core, EvseConfig::default(), Config { mode, ..iso2() }, Some(3));
+        assert_eq!(r.end, EndReason::Completed, "{mode:?}: {:?}\n{:?}", r.states, r.log);
+        let sent: Vec<&str> = r.sent.iter().map(String::as_str).collect();
+        assert_eq!(
+            sent,
+            ["SupportedAppProtocolReq", "SessionSetupReq", "ServiceDiscoveryReq", "ServicePaymentSelectionReq", "AuthorizationReqIso2", "ChargeParameterDiscoveryReq", "PowerDeliveryReq", "ChargingStatusReq", "ChargingStatusReq", "ChargingStatusReq", "PowerDeliveryReq", "SessionStopReq"],
+            "{:?}", r.log
+        );
+        assert!(!r.log.iter().any(|l| l.contains("violation") || l.contains("out of sequence")), "{:?}", r.log);
+    }
+}
+
+#[test]
+fn the_charger_ends_the_charge() {
+    let evse = EvseConfig { iso2: evse_sim::Iso2 { shutdown_after_loops: Some(2), ..Default::default() }, ..Default::default() };
+    let r = run(DcConnector::Dual2, evse.clone(), iso2(), None);
+    assert_eq!(r.end, EndReason::Completed, "{:?}", r.log);
+    let r = run(DcConnector::Core, evse, Config::ac(true), None);
+    assert_eq!(r.end, EndReason::Completed, "{:?}", r.log);
+}
+
+#[test]
+fn ongoing_responses_are_repeated() {
+    let evse = EvseConfig {
+        authorization_ongoing_responses: 2,
+        cable_check_ongoing_responses: 3,
+        iso2: evse_sim::Iso2 { cpd_ongoing_responses: 1, ..Default::default() },
+        ..Default::default()
+    };
+    let r = run(DcConnector::Dual2, evse, iso2(), Some(1));
+    assert_eq!(r.end, EndReason::Completed, "{:?}", r.log);
+    let count = |name: &str| r.sent.iter().filter(|m| *m == name).count();
+    assert_eq!((count("AuthorizationReqIso2"), count("ChargeParameterDiscoveryReq"), count("CableCheckReq")), (3, 2, 4));
+}
+
+#[test]
+fn a_mode_the_charger_does_not_offer_ends_the_session() {
+    let evse = EvseConfig { iso2: evse_sim::Iso2 { modes: vec![evse_sim::Iso2Mode::DcExtended], ..Default::default() }, ..Default::default() };
+    assert_eq!(run(DcConnector::Dual2, evse.clone(), iso2(), None).end, EndReason::NoCompatibleService);
+    assert_eq!(run(DcConnector::Core, evse, Config::ac(false), None).end, EndReason::NoCompatibleService);
+}
+
+#[test]
+fn a_failing_response_ends_the_session() {
+    use iso15118_2::types::ResponseCode as Code;
+    let evse = EvseConfig { cpd_code: iso15118_20::common_types::ResponseCode::FailedWrongChargeParameter, ..Default::default() };
+    let r = run(DcConnector::Dual2, evse, iso2(), None);
+    assert_eq!(r.end, EndReason::RejectedIso2(Code::FailedWrongChargeParameter), "{:?}", r.log);
+}
+
+#[test]
+fn a_vehicle_that_wants_a_contract_the_charger_does_not_offer_ends_the_session() {
+    // Plug & Charge needs a contract in the vehicle; without one external payment is used.
+    let r = run(DcConnector::Dual2, EvseConfig::default(), Config { prefer_contract: true, ..iso2() }, Some(1));
+    assert_eq!(r.end, EndReason::Completed, "{:?}", r.log);
+}
+
+#[test]
+fn a_charger_without_iso2_refuses_the_protocol() {
+    let evse = EvseConfig { protocols: vec![evse_sim::Protocol::Iso20, evse_sim::Protocol::Din], ..Default::default() };
+    assert_eq!(run(DcConnector::Dual2, evse, iso2(), None).end, EndReason::NoCommonProtocol);
+}

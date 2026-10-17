@@ -12,7 +12,7 @@ mod pnc;
 mod live;
 mod net;
 
-pub use config::{CertificateChecks, Config, Din, DinEnergyTransfer, Limits, OfferedSet, Pnc, Protocol, Settings, TlsVersions, value_name};
+pub use config::{CertificateChecks, Config, Din, DinEnergyTransfer, Iso2, Iso2Mode, Limits, OfferedSet, Pnc, Protocol, Settings, TlsVersions, value_name};
 pub use live::EvseLive;
 pub use evse::{Evse, Output, State};
 pub use net::{answer_discovery, serve, serve_live, serve_one};

@@ -15,6 +15,40 @@ pub enum Protocol {
     /// DIN SPEC 70121 (DC, external payment).
     #[serde(rename = "din70121")]
     Din,
+    /// ISO 15118-2 (DC and AC).
+    #[serde(rename = "iso15118-2")]
+    Iso2,
+}
+
+/// What the simulated car charges with under ISO 15118-2.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Iso2Mode {
+    /// DC; the inlet (`connector`) decides between `DC_core`, `DC_extended` and `DC_combo_core`.
+    #[default]
+    Dc,
+    /// AC, single phase.
+    Ac1,
+    /// AC, three phases.
+    Ac3,
+}
+
+/// The knobs of the ISO 15118-2 side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Iso2 {
+    pub mode: Iso2Mode,
+    /// The MAC address of the EVCC, its EVCCID.
+    pub mac_address: [u8; 6],
+    pub send_charging_profile: bool,
+    pub welding_detection: bool,
+    pub enforce_cpd_limits: bool,
+}
+
+impl Default for Iso2 {
+    fn default() -> Self {
+        Self { mode: Iso2Mode::Dc, mac_address: [0x02, 0x00, 0x5E, 0x00, 0x53, 0x02], send_charging_profile: true, welding_detection: true, enforce_cpd_limits: true }
+    }
 }
 
 /// The knobs of the DIN SPEC 70121 side.
@@ -220,6 +254,8 @@ pub struct Settings {
     pub protocol: Protocol,
     /// DIN SPEC 70121.
     pub din: Din,
+    /// ISO 15118-2.
+    pub iso2: Iso2,
     /// Run SLAC on the interface before looking for a charger.
     pub slac: bool,
     /// `TT_matching_repetition` (default 10 s): how long SLAC keeps trying.
@@ -275,6 +311,7 @@ impl Default for Settings {
         Self {
             protocol: Protocol::Iso20,
             din: Din::default(),
+            iso2: Iso2::default(),
             slac: false,
             slac_repetition_ms: None,
             slac_validation: SlacValidation::Never,
@@ -318,6 +355,29 @@ impl Settings {
 
     pub fn stop_after(&self) -> Option<u32> {
         (self.stop_after > 0).then_some(self.stop_after)
+    }
+
+    /// The ISO 15118-2 session configuration these settings call for.
+    pub fn iso2_session(&self) -> evcc_core::iso2::Config {
+        let mut config = evcc_core::iso2::Config {
+            mode: match self.iso2.mode {
+                Iso2Mode::Dc => evcc_core::iso2::Mode::Dc,
+                Iso2Mode::Ac1 => evcc_core::iso2::Mode::AcSinglePhase,
+                Iso2Mode::Ac3 => evcc_core::iso2::Mode::AcThreePhase,
+            },
+            welding_detection: self.iso2.welding_detection,
+            send_charging_profile: self.iso2.send_charging_profile,
+            enforce_cpd_limits: self.iso2.enforce_cpd_limits,
+            prefer_contract: self.pnc.is_some(),
+            ..evcc_core::iso2::Config::ISO2_DC
+        };
+        if let Some(ms) = self.poll_interval_ms {
+            config.poll_interval_ms = ms;
+        }
+        if let Some(ms) = self.charge_loop_interval_ms {
+            config.charge_loop_interval_ms = ms;
+        }
+        config
     }
 
     /// The DIN SPEC 70121 session configuration these settings call for.

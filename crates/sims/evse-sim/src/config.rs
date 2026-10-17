@@ -281,6 +281,59 @@ pub enum Protocol {
     /// DIN SPEC 70121 (DC, external payment).
     #[serde(rename = "din70121")]
     Din,
+    /// ISO 15118-2 (DC and AC).
+    #[serde(rename = "iso15118-2")]
+    Iso2,
+}
+
+/// An energy transfer mode of ISO 15118-2 the charger offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum Iso2Mode {
+    #[serde(rename = "AC_single_phase_core")]
+    AcSinglePhaseCore,
+    #[serde(rename = "AC_three_phase_core")]
+    AcThreePhaseCore,
+    #[serde(rename = "DC_core")]
+    DcCore,
+    #[serde(rename = "DC_extended")]
+    DcExtended,
+    #[serde(rename = "DC_combo_core")]
+    DcComboCore,
+}
+
+/// The knobs of the ISO 15118-2 side (the other knobs of [`Config`] apply as well: `limits` for DC,
+/// `setup_code`, `authorization_*`, `selection_code`, `cpd_code`, `cable_check_*`,
+/// `precharge_requests_to_settle`, `power_delivery_code`, `welding_code`, `silent`, `session_id`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Iso2 {
+    /// The energy transfer modes of `ServiceDiscoveryRes`.
+    pub modes: Vec<Iso2Mode>,
+    pub evse_id: String,
+    /// Also offer the payment option `Contract` (Plug & Charge).
+    pub offer_contract_payment: bool,
+    /// How many `ChargeParameterDiscoveryRes` carry `Ongoing` before one says `Finished`.
+    pub cpd_ongoing_responses: u32,
+    /// After this many `CurrentDemandRes` or `ChargingStatusRes` the charger asks the vehicle to stop
+    /// (`EVSE_Shutdown` for DC, the notification `StopCharging` for AC).
+    pub shutdown_after_loops: Option<u32>,
+    /// AC: `EVSENominalVoltage` (V) and `EVSEMaxCurrent` (A).
+    pub ac_nominal_voltage_v: u32,
+    pub ac_max_current_a: u32,
+}
+
+impl Default for Iso2 {
+    fn default() -> Self {
+        Self {
+            modes: vec![Iso2Mode::AcSinglePhaseCore, Iso2Mode::AcThreePhaseCore, Iso2Mode::DcCore, Iso2Mode::DcExtended, Iso2Mode::DcComboCore],
+            evse_id: "DE*ABC*E1234".into(),
+            offer_contract_payment: false,
+            cpd_ongoing_responses: 0,
+            shutdown_after_loops: None,
+            ac_nominal_voltage_v: 230,
+            ac_max_current_a: 32,
+        }
+    }
 }
 
 /// The energy transfer type of DIN SPEC 70121 the charger offers.
@@ -327,6 +380,8 @@ pub struct Config {
     pub protocols: Vec<Protocol>,
     /// DIN SPEC 70121.
     pub din: Din,
+    /// ISO 15118-2.
+    pub iso2: Iso2,
     /// Plug & Charge.
     pub pnc: Pnc,
     /// Answer a charge loop request whose limits break V2G20-2198 or 2199 with `FAILED`; without
@@ -428,8 +483,9 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            protocols: vec![Protocol::Iso20, Protocol::Din],
+            protocols: vec![Protocol::Iso20, Protocol::Din, Protocol::Iso2],
             din: Din::default(),
+            iso2: Iso2::default(),
             pnc: Pnc::default(),
             silent: false,
             fail_on_limit_violation: false,

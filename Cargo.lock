@@ -254,6 +254,7 @@ dependencies = [
  "evse-sim",
  "exi",
  "homeplug",
+ "iso15118-2",
  "iso15118-20",
  "v2gtp",
 ]
@@ -314,6 +315,7 @@ dependencies = [
  "evcc-linux",
  "exi",
  "homeplug",
+ "iso15118-2",
  "iso15118-20",
  "openssl",
  "schemars",
