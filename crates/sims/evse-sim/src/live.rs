@@ -12,6 +12,9 @@ use crate::config::{Config, Limits};
 struct Inner {
     /// For the next session.
     next: Config,
+    /// The limits of the session in progress; the charger offers and reports these, and they can
+    /// be changed while it runs.
+    limits: Limits,
     /// The session in progress (or the last one).
     used: Option<Config>,
     voltage: Metric,
@@ -33,6 +36,7 @@ impl EvseLive {
     pub fn new(config: Config) -> Arc<EvseLive> {
         Arc::new(EvseLive {
             inner: Mutex::new(Inner {
+                limits: config.limits,
                 next: config,
                 used: None,
                 voltage: Metric::new(400.0),
@@ -52,7 +56,13 @@ impl EvseLive {
         let mut g = self.inner.lock().unwrap();
         g.sessions += 1;
         g.used = Some(g.next.clone());
+        g.limits = g.next.limits;
         g.next.clone()
+    }
+
+    /// The limits now.
+    pub fn limits(&self) -> Limits {
+        self.inner.lock().unwrap().limits
     }
 
     pub fn set_state(&self, state: impl std::fmt::Debug) {
@@ -62,13 +72,14 @@ impl EvseLive {
     /// The values of a charge loop answer to a request with these values: present voltage and
     /// current, and the maximum power. Modelled: the voltage the vehicle reports, the current
     /// both sides' limits allow, the configured power limit.
-    pub fn charge_loop(&self, ev_voltage: f64, ev_max_current: f64, ev_max_power: f64, limits: &Limits) -> (f64, f64, f64) {
+    pub fn charge_loop(&self, ev_voltage: f64, ev_max_current: f64, ev_max_power: f64) -> (f64, f64, f64) {
         let mut g = self.inner.lock().unwrap();
+        let limits = g.limits;
         g.ev_voltage = ev_voltage;
         g.ev_max_current = ev_max_current;
         g.ev_max_power = ev_max_power;
         let voltage = g.voltage.resolve(ev_voltage);
-        let current = g.current.resolve(modelled_current(voltage, ev_max_current, ev_max_power, limits));
+        let current = g.current.resolve(modelled_current(voltage, ev_max_current, ev_max_power, &limits));
         let power = g.max_power.resolve(f64::from(limits.max_charge_power_w));
         (voltage, current, power)
     }
@@ -86,7 +97,7 @@ impl Endpoint for EvseLive {
         json!({
             "state": g.state,
             "sessions": g.sessions,
-            "limits": g.used.as_ref().map(|c| c.limits),
+            "limits": g.used.as_ref().map(|_| g.limits),
             "measurements": { "voltage": g.voltage, "current": g.current, "max_power": g.max_power },
             "ev_reports": { "voltage": g.ev_voltage, "max_current": g.ev_max_current, "max_power": g.ev_max_power },
         })
@@ -99,6 +110,15 @@ impl Endpoint for EvseLive {
             Some("config") => {
                 let session = cmd.get("session").cloned().ok_or("session: missing")?;
                 g.next = serde_json::from_value(session).map_err(|e| format!("session: {e}"))?;
+                Ok(())
+            }
+            // The limits of the session in progress, from the next message on.
+            Some("limits") => {
+                let key = cmd.get("key").and_then(Value::as_str).ok_or("key: a limit name")?;
+                let mut limits = serde_json::to_value(g.limits).map_err(|e| e.to_string())?;
+                let slot = limits.get_mut(key).ok_or_else(|| format!("no such limit: {key}"))?;
+                *slot = cmd.get("value").cloned().unwrap_or(Value::Null);
+                g.limits = serde_json::from_value(limits).map_err(|e| format!("{key}: {e}"))?;
                 Ok(())
             }
             Some("measure") => {

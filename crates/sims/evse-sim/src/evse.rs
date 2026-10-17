@@ -111,6 +111,11 @@ impl Evse {
         std::mem::take(&mut self.log)
     }
 
+    /// The limits now: a test platform's live ones, which it may change during the session.
+    fn limits(&self) -> crate::config::Limits {
+        self.live.as_ref().map_or(self.config.limits, |l| l.limits())
+    }
+
     fn note(&mut self, line: impl Into<String>) {
         self.log.push(line.into());
     }
@@ -469,13 +474,13 @@ impl Evse {
                     None
                 };
                 let rn = |value: u32| RationalNumber::from_f64(f64::from(value));
-                let l = &self.config.limits;
+                let l = &self.limits();
                 let (ev_voltage, ev_max_current, ev_max_power) = match &req.cl_req_control_mode {
                     dc::ClReqControlModeChoice::DynamicDc(m) => (req.ev_present_voltage.to_f64(), m.ev_maximum_charge_current.to_f64(), m.ev_maximum_charge_power.to_f64()),
                     _ => (req.ev_present_voltage.to_f64(), 0.0, 0.0),
                 };
                 let (voltage, current, max_power) = match &self.live {
-                    Some(live) => live.charge_loop(ev_voltage, ev_max_current, ev_max_power, l),
+                    Some(live) => live.charge_loop(ev_voltage, ev_max_current, ev_max_power),
                     None => (ev_voltage, crate::live::modelled_current(ev_voltage, ev_max_current, ev_max_power, l), f64::from(l.max_charge_power_w)),
                 };
                 let res = dc::DcChargeLoopRes {
@@ -594,7 +599,7 @@ impl Evse {
 impl Evse {
     fn cpd_res(&self, code: ResponseCode) -> dc::DcChargeParameterDiscoveryRes<'static> {
         let rn = |value: u32| RationalNumber::from_f64(f64::from(value));
-        let l = &self.config.limits;
+        let l = &self.limits();
         dc::DcChargeParameterDiscoveryRes {
             header: self.header(),
             response_code: code,

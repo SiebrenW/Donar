@@ -48,6 +48,12 @@ impl SimulatedEv {
         self
     }
 
+    /// The limits now: the live ones of a test platform (which it may change during the
+    /// session), otherwise those the car was made with.
+    fn limits(&self) -> Limits {
+        self.live.as_ref().map_or(self.limits, |l| l.limits())
+    }
+
     pub fn with_limits(mut self, limits: Limits) -> Self {
         self.limits = limits;
         self
@@ -63,7 +69,7 @@ impl Ev for SimulatedEv {
         "WMIV1234567890ABCDEX"
     }
     fn schedule_request(&self) -> ScheduleRequest {
-        let l = &self.limits;
+        let l = &self.limits();
         ScheduleRequest {
             departure_time: l.departure_time_s.max(1),
             minimum_soc: l.min_soc,
@@ -74,7 +80,7 @@ impl Ev for SimulatedEv {
         }
     }
     fn dc_limits(&self) -> DcLimits {
-        let l = &self.limits;
+        let l = &self.limits();
         DcLimits {
             maximum_charge_power: rn(l.max_charge_power_w),
             minimum_charge_power: rn(l.min_charge_power_w),

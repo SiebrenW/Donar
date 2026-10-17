@@ -77,6 +77,9 @@ struct Inner {
     held: bool,
     /// The phase to run to; the vehicle holds at its start.
     target: Phase,
+    /// Whether to go on in `target` (its messages, repeated ones included, keep flowing) or to
+    /// hold before it.
+    stay: bool,
     real_timers: bool,
     stop_asked: bool,
     closed: bool,
@@ -86,6 +89,14 @@ struct Inner {
 pub struct EvLive {
     inner: Mutex<Inner>,
     changed: Condvar,
+}
+
+impl Inner {
+    /// Whether entering `phase` is a place to hold: beyond the target, or at it when the
+    /// vehicle is to hold before it.
+    fn holds_at(&self, phase: Phase) -> bool {
+        phase > self.target || (phase == self.target && !self.stay)
+    }
 }
 
 impl EvLive {
@@ -107,6 +118,7 @@ impl EvLive {
                 state: None,
                 held: false,
                 target: Phase::Setup,
+                stay: false,
                 real_timers: false,
                 stop_asked: false,
                 closed: false,
@@ -164,11 +176,11 @@ impl EvLive {
             return false;
         }
         g.phase = phase;
-        if phase < g.target || g.closed {
+        if !g.holds_at(phase) || g.closed {
             return false;
         }
         g.held = true;
-        while g.phase >= g.target && !g.closed {
+        while g.holds_at(g.phase) && !g.closed {
             g = self.changed.wait(g).unwrap();
         }
         g.held = false;
@@ -196,6 +208,7 @@ impl Endpoint for EvLive {
             "phase": g.phase,
             "held": g.held,
             "target": g.target,
+            "stay": g.stay,
             "state": g.state.map(|s| format!("{s:?}")),
             "real_timers": g.real_timers,
             "limits": g.limits,
@@ -216,8 +229,20 @@ impl Endpoint for EvLive {
                     return Err("nothing before the session to advance to".into());
                 }
                 g.target = to;
+                g.stay = cmd.get("stay").and_then(Value::as_bool).unwrap_or(false);
             }
-            Some("stop") => g.target = Phase::Stop,
+            Some("stop") => {
+                g.target = Phase::Stop;
+                g.stay = false;
+            }
+            // The vehicle's limits, from the next message on (the charge loop carries them).
+            Some("limits") => {
+                let key = cmd.get("key").and_then(Value::as_str).ok_or("key: a limit name")?;
+                let mut limits = serde_json::to_value(g.limits).map_err(|e| e.to_string())?;
+                let slot = limits.get_mut(key).ok_or_else(|| format!("no such limit: {key}"))?;
+                *slot = cmd.get("value").cloned().unwrap_or(Value::Null);
+                g.limits = serde_json::from_value(limits).map_err(|e| format!("{key}: {e}"))?;
+            }
             Some("real_timers") => g.real_timers = cmd.get("on").and_then(Value::as_bool).ok_or("on: a boolean")?,
             Some("measure") => {
                 let metric = match cmd.get("key").and_then(Value::as_str) {
@@ -280,6 +305,33 @@ mod tests {
         assert_eq!(live.present_soc(), 55.0);
         assert!(live.command(json!({ "cmd": "measure", "key": "nope" })).is_err());
         assert!(live.command(json!({ "cmd": "advance", "to": "connecting" })).is_err());
+    }
+
+    #[test]
+    fn staying_in_a_phase_passes_its_entry_and_holds_at_the_next() {
+        let live = EvLive::new(Limits::default(), 20, 1, false);
+        live.command(json!({ "cmd": "advance", "to": "setup", "stay": true })).unwrap();
+        assert!(!live.gate(State::AwaitSupportedAppProtocolRes), "the entry of the phase we stay in is not held");
+        let other = live.clone();
+        let held = std::thread::spawn(move || other.gate(State::AwaitAuthorizationSetupRes));
+        let started = Instant::now();
+        while !live.snapshot()["held"].as_bool().unwrap() {
+            assert!(started.elapsed().as_secs() < 5, "never held");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(live.snapshot()["phase"], "authorization");
+        live.command(json!({ "cmd": "advance", "to": "authorization", "stay": true })).unwrap();
+        assert!(held.join().unwrap());
+    }
+
+    #[test]
+    fn limits_can_be_changed_while_the_session_runs() {
+        let live = EvLive::new(Limits::default(), 20, 1, false);
+        live.command(json!({ "cmd": "limits", "key": "max_charge_current_a", "value": 55 })).unwrap();
+        assert_eq!(live.limits().max_charge_current_a, 55);
+        assert!(live.command(json!({ "cmd": "limits", "key": "no_such", "value": 1 })).is_err());
+        assert!(live.command(json!({ "cmd": "limits", "key": "max_charge_current_a", "value": "high" })).is_err());
+        assert_eq!(live.limits().max_charge_current_a, 55);
     }
 
     #[test]

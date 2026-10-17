@@ -77,9 +77,10 @@
   table.values th { text-align: left; font-weight: 500; color: var(--muted); font-size: .75rem; padding: 0 .3rem .2rem 0; }
   table.values td { padding: .12rem .3rem .12rem 0; vertical-align: middle; }
   table.values td.name { font-family: ui-monospace, monospace; font-size: .78rem; overflow-wrap: anywhere; }
-  table.values td.used { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  table.values td.used.pending { color: var(--warn); }
-  table.values input[type=number] { width: 7.5rem; }
+  table.values td.used input { color: var(--muted); font-variant-numeric: tabular-nums; }
+  table.values td.used input:not(:disabled) { color: var(--text); }
+  table.values td.used input.pending { outline: 1px solid var(--warn); }
+  table.values input[type=number] { width: 7rem; }
   .chips { display: flex; gap: .5rem; flex-wrap: wrap; font-size: .8rem; color: var(--muted); }
   .chips b { color: var(--text); font-weight: 600; }
   .note { color: var(--muted); font-size: .8rem; margin: .3rem 0 0; }
@@ -404,8 +405,12 @@ function limitsTable(title, root, owner, state, defaults, usedKey) {
       input.classList.toggle("set", input.value !== "");
       updateUsed();
     };
-    const used = $("td", { className: "used", id: `used-${usedKey}-${name}` });
-    table.append($("tr", {}, $("td", { className: "name", textContent: name }), $("td", {}, input), used));
+    // The limit in use: editable while a session runs, effective from the next message on.
+    const used = $("input", { type: "number", step: "any", id: `used-${usedKey}-${name}`, disabled: true, title: "the limit in use; change it while the session runs" });
+    used.onchange = () => {
+      if (used.value !== "") simCmd(usedKey, { cmd: "limits", key: name, value: Number(used.value) });
+    };
+    table.append($("tr", {}, $("td", { className: "name", textContent: name }), $("td", {}, input), $("td", { className: "used" }, used)));
   }
   return $("div", { className: "panel" }, $("h3", { textContent: title }), table);
 }
@@ -417,7 +422,8 @@ function updateUsed() {
     for (const el of document.querySelectorAll(`[id^="used-${key}-"]`)) {
       const name = el.id.slice(`used-${key}-`.length);
       const u = used?.[name];
-      el.textContent = fmt(u);
+      el.disabled = used == null || !sim.view.running;
+      if (document.activeElement !== el) el.value = u == null ? "" : u;
       const next = getPath(state, ["limits", name]) ?? getPath(defaults, ["limits", name]);
       el.classList.toggle("pending", used != null && (next ?? null) !== (u ?? null));
     }
@@ -457,8 +463,10 @@ function buildSim() {
   for (const [id, name] of PHASES) stepper.append($("span", { id: `phase-${id}`, textContent: name }));
   const target = $("select", { id: "advance-to" });
   for (const [id, name] of PHASES.slice(1)) target.append($("option", { value: id, textContent: id === "ended" ? "Ended (run to the end)" : name }));
-  const advance = $("button", { id: "advance", textContent: "Advance ▶" });
+  const advance = $("button", { id: "advance", textContent: "Step to ▶", title: "run up to the start of the phase and hold before its first message" });
   advance.onclick = () => simCmd("ev", { cmd: "advance", to: target.value });
+  const stay = $("button", { id: "stay", textContent: "Run in ▶", title: "run into the phase and stay in it: its messages, repeated ones too, keep flowing until you move on" });
+  stay.onclick = () => simCmd("ev", { cmd: "advance", to: target.value, stay: true });
   const next = $("button", { id: "next-session", textContent: "New session" });
   next.onclick = () => simPost("/api/sim/session", { evcc: sim.evcc, secc: sim.secc });
   const stop = $("button", { id: "stop", className: "quiet", textContent: "Stop charging" });
@@ -489,7 +497,7 @@ function buildSim() {
       $("label", {}, "PKI", pki), open, close, $("span", { id: "sim-status", className: "note" })),
     $("div", { className: "panel" }, stepper,
       $("div", { className: "row", style: "margin-top:.6rem" },
-        $("label", {}, "Advance to", target), advance, stop, next,
+        $("label", {}, "Go to", target), advance, stay, stop, next,
         $("label", { className: "inline", title: "off: the time spent held does not count against the protocol timeouts" }, real, "real timers while held"),
         $("span", { id: "sim-held", className: "note" }))),
     $("div", { id: "sim-msg", className: "error" }),
@@ -519,10 +527,11 @@ function applyView() {
   $id("next-session").disabled = !v.open || v.running;
   const live = v.running && !!ev;
   $id("advance").disabled = !live;
+  $id("stay").disabled = !live;
   $id("stop").disabled = !live;
   $id("advance-to").disabled = !live;
-  $id("sim-held").textContent = !ev ? "" : ev.held ? `held before ${phaseName(ev.phase)}` : v.running ? `running to ${phaseName(ev.target)}` : "";
-  if (ev && document.activeElement !== $id("advance-to") && ev.held) {
+  $id("sim-held").textContent = !ev ? "" : ev.held ? `held before ${phaseName(ev.phase)}` : !v.running ? "" : ev.stay && ev.phase === ev.target ? `staying in ${phaseName(ev.phase)}` : `running, ${ev.stay ? "into" : "up to"} ${phaseName(ev.target)}`;
+  if (ev && document.activeElement !== $id("advance-to") && (ev.held || ev.stay)) {
     // The natural next step: one phase on.
     $id("advance-to").value = PHASES[Math.min(cur + 1, PHASES.length - 1)][0];
   }

@@ -192,4 +192,39 @@ mod simulation {
         post(&server, "/api/sim/close", json!({}));
         wait(&server, "the simulation to close", |v| v["open"] == false);
     }
+
+    /// Staying in the charge loop: the messages keep flowing and the limits of both sides change
+    /// from the next message on.
+    #[test]
+    fn stays_in_the_charge_loop_and_changes_limits_live() {
+        let server = start();
+        post(&server, "/api/sim/open", json!({}));
+        wait(&server, "the simulation to open", |v| v["open"] == true && v["evse"].is_object());
+        let vehicle = json!({ "charge_loop_interval_ms": 30, "poll_interval_ms": 10, "stop_after": 0, "time_scale": 1, "stop_at_target_soc": false });
+        post(&server, "/api/sim/session", json!({ "evcc": vehicle, "secc": {} }));
+        wait(&server, "the hold before setup", held_at("setup"));
+        post(&server, "/api/sim/cmd", json!({ "target": "ev", "cmd": { "cmd": "advance", "to": "charge_loop", "stay": true } }));
+        // Into the charge loop and staying: not held, the loop runs.
+        let v = wait(&server, "the charge loop to run", |v| v["ev"]["phase"] == "charge_loop" && v["ev"]["held"] == false && v["ev"]["loops"].as_u64().unwrap_or(0) >= 3);
+        assert_eq!(v["ev"]["stay"], true, "{v}");
+        let current = v["ev"]["evse_reports"]["current"].as_f64().unwrap();
+        assert!(current > 10.0, "{v}");
+        // The charger lowers its current limit: the vehicle sees less.
+        post(&server, "/api/sim/cmd", json!({ "target": "evse", "cmd": { "cmd": "limits", "key": "max_charge_current_a", "value": 10 } }));
+        let v = wait(&server, "the lower current limit", |v| v["ev"]["evse_reports"]["current"].as_f64() == Some(10.0));
+        assert_eq!(v["evse"]["limits"]["max_charge_current_a"], 10, "{v}");
+        // The vehicle lowers what it asks for: the charger sees it, and the current follows.
+        post(&server, "/api/sim/cmd", json!({ "target": "ev", "cmd": { "cmd": "limits", "key": "max_charge_current_a", "value": 4 } }));
+        let v = wait(&server, "the vehicle's lower limit", |v| v["evse"]["ev_reports"]["max_current"].as_f64() == Some(4.0) && v["ev"]["evse_reports"]["current"].as_f64() == Some(4.0));
+        assert_eq!(v["ev"]["limits"]["max_charge_current_a"], 4, "{v}");
+        // Still in the charge loop: not held, still going.
+        let loops = v["ev"]["loops"].as_u64().unwrap();
+        wait(&server, "more loops", |v| v["ev"]["loops"].as_u64().unwrap() > loops + 2 && v["ev"]["held"] == false);
+        // Advancing to the stop ends it.
+        post(&server, "/api/sim/cmd", json!({ "target": "ev", "cmd": { "cmd": "advance", "to": "ended" } }));
+        let v = wait(&server, "the session to end", |v| v["running"] == false);
+        assert_eq!(v["exit_code"], 0, "{v}");
+        post(&server, "/api/sim/close", json!({}));
+        wait(&server, "the simulation to close", |v| v["open"] == false);
+    }
 }
