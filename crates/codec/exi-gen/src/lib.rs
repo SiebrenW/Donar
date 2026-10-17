@@ -31,6 +31,8 @@ pub struct Group {
     /// `(namespace, element)` of the document root when the messages are parts of one element
     /// (`V2G_Message`) instead of each being a root.
     pub document: Option<(&'static str, &'static str)>,
+    /// False when the EXI stream has `valuePartitionCapacity` 0 (DIN SPEC 70121).
+    pub value_table: bool,
 }
 
 pub const NS_COMMON_TYPES: &str = "urn:iso:std:iso:15118:-20:CommonTypes";
@@ -45,10 +47,11 @@ pub const ISO20: Group = Group {
     modules: &[(NS_COMMON_TYPES, "common_types"), (NS_COMMON, "common"), (NS_DC, "dc"), (xsd::XMLDSIG, "xmldsig")],
     fragment: &["V2G_CI_CommonMessages.xsd", "V2G_CI_CommonTypes.xsd", "xmldsig-core-schema.xsd"],
     document: None,
+    value_table: true,
 };
 
 pub const APP_PROTOCOL: Group =
-    Group { name: "app-protocol", dir: "iso15118-20", files: &["V2G_CI_AppProtocol.xsd"], modules: &[(NS_APP_PROTOCOL, "app_protocol")], fragment: &[], document: None };
+    Group { name: "app-protocol", dir: "iso15118-20", files: &["V2G_CI_AppProtocol.xsd"], modules: &[(NS_APP_PROTOCOL, "app_protocol")], fragment: &[], document: None, value_table: true };
 
 pub const NS_DIN_TYPES: &str = "urn:din:70121:2012:MsgDataTypes";
 pub const NS_DIN_BODY: &str = "urn:din:70121:2012:MsgBody";
@@ -62,6 +65,7 @@ pub const DIN70121: Group = Group {
     modules: &[(NS_DIN_TYPES, "types"), (NS_DIN_BODY, "body"), (NS_DIN_DEF, "def"), (NS_DIN_HEADER, "header"), (xsd::XMLDSIG, "xmldsig")],
     fragment: &[],
     document: Some((NS_DIN_DEF, "V2G_Message")),
+    value_table: false,
 };
 
 pub const GROUPS: &[&Group] = &[&ISO20, &APP_PROTOCOL, &DIN70121];
@@ -82,6 +86,7 @@ pub fn generate(group: &Group, schema_dir: &Path, out_dir: &Path) -> Result<(), 
             em.document = Some((dns.to_string(), droot.to_string()));
             em.grammar_ns = group.modules.iter().map(|(n, _)| n.to_string()).collect();
         }
+        em.value_table = group.value_table;
         let code = em.emit_module()?;
         std::fs::write(out_dir.join(format!("{module}.rs")), code).map_err(|e| e.to_string())?;
         modrs.push_str(&format!("pub mod {module};\n"));

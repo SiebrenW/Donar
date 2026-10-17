@@ -40,6 +40,8 @@ pub struct Emitter<'a, 'w> {
     /// The namespaces whose global elements make up the document grammar (default: this one's
     /// imports); for a document root, every namespace of the group.
     pub grammar_ns: Vec<String>,
+    /// The stream keeps a table of string values (false: `valuePartitionCapacity` 0).
+    pub value_table: bool,
 }
 
 fn upper_snake(s: &str) -> String {
@@ -48,7 +50,7 @@ fn upper_snake(s: &str) -> String {
 
 impl<'a, 'w> Emitter<'a, 'w> {
     pub fn new(model: &'a mut Model<'w>, ns: &str) -> Self {
-        Self { model, ns: ns.to_string(), out: String::new(), enums: BTreeMap::new(), lt_memo: BTreeMap::new(), document: None, grammar_ns: Vec::new() }
+        Self { model, ns: ns.to_string(), out: String::new(), enums: BTreeMap::new(), lt_memo: BTreeMap::new(), document: None, grammar_ns: Vec::new(), value_table: true }
     }
 
     fn path(&self, q: &QName) -> String {
@@ -666,9 +668,10 @@ impl<'a, 'w> Emitter<'a, 'w> {
         if let Some((dns, droot)) = self.document.clone().filter(|(dns, _)| *dns == self.ns) {
             let index = roots.iter().position(|q| q.ns == dns && q.local == droot).ok_or_else(|| format!("document root {droot} not found"))?;
             let tname = names::type_name(&droot);
+            let table = if self.value_table { "new" } else { "without_values" };
             let _ = writeln!(
                 tail,
-                "impl<'a> {tname}<'a> {{\n    /// Encodes the message as a complete EXI stream (document root `{droot}`).\n    pub fn encode(&self, out: &mut [u8]) -> Result<usize, ::exi::EncodeError> {{\n        let mut t = ::exi::strings::Table::new();\n        let mut e = {E}::new(out, &mut t)?;\n        e.root({index}, {root_bits})?;\n        self.encode_content(&mut e)?;\n        e.finish()\n    }}\n\n    /// Decodes a complete EXI stream holding one message.\n    pub fn decode(buf: &[u8], arena: &'a ::exi::Arena<'_>) -> Result<Self, ::exi::DecodeError> {{\n        let mut t = ::exi::strings::Table::new();\n        let mut d = {D}::new(buf, arena, &mut t)?;\n        if d.bits({root_bits})? != {index} {{\n            return Err(::exi::DecodeError::Unsupported(\"not a {droot} document\"));\n        }}\n        Self::decode_content(&mut d)\n    }}\n}}"
+                "impl<'a> {tname}<'a> {{\n    /// Encodes the message as a complete EXI stream (document root `{droot}`).\n    pub fn encode(&self, out: &mut [u8]) -> Result<usize, ::exi::EncodeError> {{\n        let mut t = ::exi::strings::Table::{table}();\n        let mut e = {E}::new(out, &mut t)?;\n        e.root({index}, {root_bits})?;\n        self.encode_content(&mut e)?;\n        e.finish()\n    }}\n\n    /// Decodes a complete EXI stream holding one message.\n    pub fn decode(buf: &[u8], arena: &'a ::exi::Arena<'_>) -> Result<Self, ::exi::DecodeError> {{\n        let mut t = ::exi::strings::Table::{table}();\n        let mut d = {D}::new(buf, arena, &mut t)?;\n        if d.bits({root_bits})? != {index} {{\n            return Err(::exi::DecodeError::Unsupported(\"not a {droot} document\"));\n        }}\n        Self::decode_content(&mut d)\n    }}\n}}"
             );
         }
 

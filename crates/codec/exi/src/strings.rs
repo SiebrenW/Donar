@@ -20,6 +20,9 @@ pub struct Table<'s> {
     /// have a handful of strings, so filling 64 entries up front was a quarter of the time.
     entries: [MaybeUninit<(u8, &'s str)>; CAPACITY],
     len: usize,
+    /// False for `valuePartitionCapacity = 0` (DIN SPEC 70121): values are never added, so every
+    /// string is a literal.
+    keep: bool,
 }
 
 impl Clone for Table<'_> {
@@ -28,6 +31,7 @@ impl Clone for Table<'_> {
         let mut copy = Self::new();
         copy.entries[..self.len].copy_from_slice(&self.entries[..self.len]);
         copy.len = self.len;
+        copy.keep = self.keep;
         copy
     }
 }
@@ -43,7 +47,12 @@ impl<'s> Table<'s> {
         // SAFETY: an array of `MaybeUninit` needs no initialization (the documented way to make
         // one; the repeat expression `[MaybeUninit::uninit(); N]` compiles to a memset).
         let entries = unsafe { MaybeUninit::<[MaybeUninit<(u8, &'s str)>; CAPACITY]>::uninit().assume_init() };
-        Self { entries, len: 0 }
+        Self { entries, len: 0, keep: true }
+    }
+
+    /// A table for an EXI stream with `valuePartitionCapacity` 0: nothing is ever stored.
+    pub fn without_values() -> Self {
+        Self { keep: false, ..Self::new() }
     }
 
     fn used(&self) -> &[(u8, &'s str)] {
@@ -75,6 +84,9 @@ impl<'s> Table<'s> {
     }
 
     pub fn push(&mut self, q: u8, value: &'s str) -> bool {
+        if !self.keep {
+            return true;
+        }
         if self.len == CAPACITY {
             return false;
         }

@@ -46,7 +46,7 @@ fn every_vector_round_trips() {
         .filter(|n| n.starts_with("din_"))
         .collect();
     names.sort();
-    assert!(names.len() >= 40, "run `cargo xtask vectors`");
+    assert!(names.len() >= 41, "run `cargo xtask vectors`");
     let mut failures = Vec::new();
     for name in &names {
         let want = vector(name);

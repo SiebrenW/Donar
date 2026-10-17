@@ -105,3 +105,4 @@ din_session_stop_req din-spec/all.xsd
 din_session_stop_res din-spec/all.xsd
 din_session_stop_res_unknown din-spec/all.xsd
 din_notification din-spec/all.xsd
+din_service_discovery_res_repeated_strings din-spec/all.xsd
