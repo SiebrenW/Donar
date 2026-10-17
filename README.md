@@ -97,4 +97,6 @@ The order is SLAC, SDP, TCP, TLS, session. [`crates/sims/evcc-sim/src/main.rs`](
 | `crates/sims/evcc-sim`, `evse-sim` | a simulated vehicle and charger (with fault injection) |
 | `crates/sims/scenarios`, `web` | scenario runner in network namespaces, with interop runs against the Python `iso15118` library, and a web page to step through sessions |
 
+How the codec compares with EXIficient, OpenV2G and libcbv2g (round trip, speed, memory, code size): [crates/codec/exi-gen/benchmarks](crates/codec/exi-gen/benchmarks/RESULTS.md).
+
 Test it against something: `cargo xtask linux-test` (everything), `cargo xtask interop` (the Python library as charger), `cargo xtask web` (the web page).

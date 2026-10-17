@@ -333,6 +333,16 @@ name = "exi"
 version = "0.1.0"
 
 [[package]]
+name = "exi-bench"
+version = "0.1.0"
+dependencies = [
+ "din70121",
+ "exi",
+ "iso15118-2",
+ "iso15118-20",
+]
+
+[[package]]
 name = "exi-gen"
 version = "0.1.0"
 dependencies = [

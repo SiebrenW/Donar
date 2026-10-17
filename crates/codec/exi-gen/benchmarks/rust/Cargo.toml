@@ -1,0 +1,18 @@
+[package]
+name = "exi-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Round-trips the reference documents through the generated codecs and times it; the counterpart of ../c and ../java."
+
+[features]
+din = ["dep:din70121"]
+iso2 = ["dep:iso15118-2"]
+iso20 = ["dep:iso15118-20"]
+default = ["din", "iso2", "iso20"]
+
+[dependencies]
+exi = { path = "../../../exi" }
+din70121 = { path = "../../../din70121", optional = true }
+iso15118-2 = { path = "../../../iso15118-2", optional = true }
+iso15118-20 = { path = "../../../iso15118-20", optional = true }
