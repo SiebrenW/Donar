@@ -41,7 +41,7 @@ impl Evse {
     /// The meter reading of this loop answer when it asks for a receipt (a contract session).
     fn iso2_receipt_due(&mut self) -> Option<u64> {
         let every = self.config.iso2.receipt_every_loops?;
-        if self.iso2_contract.is_none() || every == 0 || self.loops_seen % every != 0 {
+        if self.iso2_contract.is_none() || every == 0 || !self.loops_seen.is_multiple_of(every) {
             return None;
         }
         let reading = u64::from(self.loops_seen) * 100;
