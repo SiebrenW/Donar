@@ -84,6 +84,7 @@ Starts `evcc-web` in the Linux container and publishes it on localhost. Pick a s
 ```sh
 cargo xtask interop                       # all scenarios in scenarios/interop/
 cargo xtask interop iso15118-python-tls   # one of them: TLS 1.3 with mutual authentication
+cargo xtask interop iso15118-python-din   # DIN SPEC 70121 against the same library
 ```
 
 These scenarios run `evcc-sim` against an independent ISO 15118-20 charger in another namespace: the open-source [`iso15118`](https://pypi.org/project/iso15118/) Python library, installed in the container. Output is `PASS` or `FAIL` with both logs. The partner offers only the `Extended` inlet, so its scenarios set `connector = "extended"`; its test certificates are secp256r1 (the ISO 15118-2 profile), so the runner switches the vehicle's `backwards_compatible` on for them.
