@@ -157,6 +157,14 @@ pub struct Limits {
     pub target_energy_wh: u32,
     pub max_energy_wh: u32,
     pub min_energy_wh: u32,
+    /// What the car can give back in a BPT session (`bpt = true`).
+    pub max_discharge_power_w: u32,
+    pub min_discharge_power_w: u32,
+    pub max_discharge_current_a: u32,
+    pub min_discharge_current_a: u32,
+    /// In a BPT session: discharge (a negative `EVTargetEnergyRequest`) until the battery is at
+    /// this state of charge (percent), then charge to `target_soc`. Needs the battery model.
+    pub discharge_to_soc: Option<u8>,
 }
 
 impl Default for Limits {
@@ -174,6 +182,11 @@ impl Default for Limits {
             target_energy_wh: 40_000,
             max_energy_wh: 60_000,
             min_energy_wh: 0,
+            max_discharge_power_w: 11_000,
+            min_discharge_power_w: 100,
+            max_discharge_current_a: 30,
+            min_discharge_current_a: 1,
+            discharge_to_soc: None,
         }
     }
 }

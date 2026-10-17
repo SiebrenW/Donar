@@ -356,8 +356,8 @@ impl Evse {
                 let ev_max_current = req.ev_target_current.to_f64();
                 let ev_max_power = req.ev_maximum_power_limit.map_or(f64::from(l.max_charge_power_w), |p| p.to_f64());
                 let (voltage, current, max_power) = match &self.live {
-                    Some(live) => live.charge_loop(ev_voltage, ev_max_current, ev_max_power),
-                    None => (ev_voltage, crate::live::modelled_current(ev_voltage, ev_max_current, ev_max_power, l), f64::from(l.max_charge_power_w)),
+                    Some(live) => live.charge_loop(ev_voltage, ev_max_current, ev_max_power, None),
+                    None => (ev_voltage, crate::live::modelled_current(ev_voltage, ev_max_current, ev_max_power, None, l), f64::from(l.max_charge_power_w)),
                 };
                 let limit = |achieved: f64, limit: f64| current > 0.0 && achieved >= limit * 0.999;
                 let shutdown = self.config.din.shutdown_after_loops.is_some_and(|n| self.loops_seen >= n);

@@ -118,21 +118,34 @@ impl EvseLive {
     /// The values of a charge loop answer to a request with these values: present voltage and
     /// current, and the maximum power. Modelled: the voltage the vehicle reports, the current
     /// both sides' limits allow, the configured power limit.
-    pub fn charge_loop(&self, ev_voltage: f64, ev_max_current: f64, ev_max_power: f64) -> (f64, f64, f64) {
+    pub fn charge_loop(&self, ev_voltage: f64, ev_max_current: f64, ev_max_power: f64, discharge: Option<Discharge>) -> (f64, f64, f64) {
         let mut g = self.inner.lock().unwrap();
         let limits = g.limits;
         g.ev_voltage = ev_voltage;
         g.ev_max_current = ev_max_current;
         g.ev_max_power = ev_max_power;
         let voltage = g.voltage.resolve(ev_voltage);
-        let current = g.current.resolve(modelled_current(voltage, ev_max_current, ev_max_power, &limits));
+        let current = g.current.resolve(modelled_current(voltage, ev_max_current, ev_max_power, discharge, &limits));
         let power = g.max_power.resolve(f64::from(limits.max_charge_power_w));
         (voltage, current, power)
     }
 }
 
-/// The current both sides' limits allow at `voltage`.
-pub(crate) fn modelled_current(voltage: f64, ev_max_current: f64, ev_max_power: f64, limits: &Limits) -> f64 {
+/// What the vehicle allows for a discharge in a BPT charge loop request.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Discharge {
+    pub max_current: f64,
+    pub max_power: f64,
+}
+
+/// The current both sides' limits allow at `voltage`; negative for a discharge (the vehicle
+/// gives energy back).
+pub(crate) fn modelled_current(voltage: f64, ev_max_current: f64, ev_max_power: f64, discharge: Option<Discharge>, limits: &Limits) -> f64 {
+    if let Some(d) = discharge {
+        let power = d.max_power.min(f64::from(limits.max_discharge_power_w));
+        let current = d.max_current.min(f64::from(limits.max_discharge_current_a)).min(power / voltage.max(1.0)).max(0.0);
+        return if current < f64::from(limits.min_discharge_current_a) { 0.0 } else { -current };
+    }
     let power = ev_max_power.min(f64::from(limits.max_charge_power_w));
     let current = ev_max_current.min(f64::from(limits.max_charge_current_a)).min(power / voltage.max(1.0)).max(0.0);
     // Below its minimum current (8.3.5.5.2) the charger cannot deliver with the expected
@@ -209,11 +222,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_discharge_is_a_negative_current_within_both_sides_limits() {
+        let limits = Limits::default(); // 11 kW and 30 A at most
+        let ask = |max_current, max_power| modelled_current(400.0, 0.0, 0.0, Some(Discharge { max_current, max_power }), &limits);
+        // 11 kW at 400 V is 27.5 A: the power limit binds before the 30 A.
+        assert_eq!(ask(50.0, 20_000.0), -27.5);
+        // The vehicle's own limit binds.
+        assert_eq!(ask(10.0, 20_000.0), -10.0);
+        // Below the minimum discharge current nothing flows.
+        assert_eq!(ask(0.5, 20_000.0), 0.0);
+    }
+
+    #[test]
     fn nothing_is_delivered_outside_the_charge_loop() {
         let live = EvseLive::new(Config::default());
         live.begin_session();
         live.set_state("ChargeLoop");
-        let (v, i, p) = live.charge_loop(400.0, 100.0, 50_000.0);
+        let (v, i, p) = live.charge_loop(400.0, 100.0, 50_000.0, None);
         assert_eq!((v, i, p), (400.0, 100.0, 150_000.0));
         let effective = |live: &EvseLive| {
             let s = live.snapshot();
@@ -228,7 +253,7 @@ mod tests {
         assert_eq!(effective(&live), [0.0, 0.0, 0.0]);
         // The next session starts from nothing too, whatever the last values were.
         live.set_state("ChargeLoop");
-        live.charge_loop(400.0, 100.0, 50_000.0);
+        live.charge_loop(400.0, 100.0, 50_000.0, None);
         live.begin_session();
         assert_eq!(effective(&live), [0.0, 0.0, 0.0]);
     }

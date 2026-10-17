@@ -594,6 +594,14 @@ impl Evse {
                 };
                 let rn = |value: u32| RationalNumber::from_f64(f64::from(value));
                 let l = &self.limits();
+                // A negative EVTargetEnergyRequest asks to discharge: the vehicle gives energy back,
+                // within both sides' discharge limits.
+                let discharge = match &req.cl_req_control_mode {
+                    dc::ClReqControlModeChoice::BptDynamicDc(m) if self.bpt && m.ev_target_energy_request.to_f64() < 0.0 => {
+                        Some(crate::live::Discharge { max_current: m.ev_maximum_discharge_current.to_f64(), max_power: m.ev_maximum_discharge_power.to_f64() })
+                    }
+                    _ => None,
+                };
                 let requested = match &req.cl_req_control_mode {
                     dc::ClReqControlModeChoice::DynamicDc(m) => Some(*m),
                     dc::ClReqControlModeChoice::BptDynamicDc(m) => Some(base_of_bpt_loop(m)),
@@ -609,13 +617,17 @@ impl Evse {
                         code = ResponseCode::Failed;
                     }
                 let (voltage, current, max_power) = match &self.live {
-                    Some(live) => live.charge_loop(ev_voltage, ev_max_current, ev_max_power),
-                    None => (ev_voltage, crate::live::modelled_current(ev_voltage, ev_max_current, ev_max_power, l), f64::from(l.max_charge_power_w)),
+                    Some(live) => live.charge_loop(ev_voltage, ev_max_current, ev_max_power, discharge),
+                    None => (ev_voltage, crate::live::modelled_current(ev_voltage, ev_max_current, ev_max_power, discharge, l), f64::from(l.max_charge_power_w)),
                 };
                 // What limited the delivery: the flags say which limit the charger has reached.
-                let limit = |achieved: f64, limit: f64| current > 0.0 && achieved >= limit * 0.999;
-                let current_limit_achieved = limit(current, ev_max_current.min(f64::from(l.max_charge_current_a)));
-                let power_limit_achieved = limit(voltage * current, ev_max_power.min(f64::from(l.max_charge_power_w)));
+                let limit = |achieved: f64, limit: f64| achieved != 0.0 && achieved.abs() >= limit * 0.999;
+                let (current_bound, power_bound) = match discharge {
+                    Some(d) => (d.max_current.min(f64::from(l.max_discharge_current_a)), d.max_power.min(f64::from(l.max_discharge_power_w))),
+                    None => (ev_max_current.min(f64::from(l.max_charge_current_a)), ev_max_power.min(f64::from(l.max_charge_power_w))),
+                };
+                let current_limit_achieved = limit(current, current_bound);
+                let power_limit_achieved = limit(voltage * current, power_bound);
                 let voltage_limit_achieved = limit(voltage, if ev_max_voltage > 0.0 { ev_max_voltage.min(f64::from(l.max_voltage_v)) } else { f64::from(l.max_voltage_v) });
                 let res = dc::DcChargeLoopRes {
                     header: self.header(),

@@ -65,6 +65,8 @@ struct Inner {
     soc: Metric,
     /// The state of charge of the battery model, percent.
     model_soc: f64,
+    /// The discharge down to `limits.discharge_to_soc` is over.
+    discharge_done: bool,
     updated: Option<Instant>,
     time_scale: f64,
     stop_at_target_soc: bool,
@@ -102,6 +104,10 @@ pub struct EvLive {
 }
 
 impl Inner {
+    fn discharging(&self) -> bool {
+        self.limits.discharge_to_soc.is_some() && !self.discharge_done
+    }
+
     /// Whether entering `phase` is a place to hold: beyond the target, or at it when the
     /// vehicle is to hold before it.
     fn holds_at(&self, phase: Phase) -> bool {
@@ -118,6 +124,7 @@ impl EvLive {
                 voltage: Metric::new(NOMINAL_VOLTAGE),
                 soc: Metric::new(f64::from(start_soc)),
                 model_soc: f64::from(start_soc),
+                discharge_done: false,
                 updated: None,
                 time_scale: f64::from(time_scale.max(1)),
                 stop_at_target_soc,
@@ -177,6 +184,11 @@ impl EvLive {
         g.soc.resolve(modelled)
     }
 
+    /// Whether the vehicle is in the discharge part of its session (`limits.discharge_to_soc`).
+    pub fn discharging(&self) -> bool {
+        self.inner.lock().unwrap().discharging()
+    }
+
     /// The vehicle's limits of this session.
     pub fn limits(&self) -> Limits {
         self.inner.lock().unwrap().limits
@@ -194,9 +206,12 @@ impl EvLive {
         if let Some(before) = g.updated.replace(now) {
             let hours = now.duration_since(before).as_secs_f64() * g.time_scale / 3600.0;
             let energy_wh = g.seen_voltage * g.seen_current * hours;
-            g.model_soc = (g.model_soc + energy_wh / CAPACITY_WH * 100.0).min(100.0);
+            g.model_soc = (g.model_soc + energy_wh / CAPACITY_WH * 100.0).clamp(0.0, 100.0);
         }
-        let reached = g.stop_at_target_soc && g.model_soc >= f64::from(g.limits.target_soc);
+        if g.limits.discharge_to_soc.is_some_and(|floor| g.model_soc <= f64::from(floor)) {
+            g.discharge_done = true;
+        }
+        let reached = g.stop_at_target_soc && !g.discharging() && g.model_soc >= f64::from(g.limits.target_soc);
         let stop = reached || g.target >= Phase::Stop;
         if stop && !g.stop_asked {
             g.stop_asked = true;
@@ -285,6 +300,9 @@ impl Endpoint for EvLive {
                 let slot = limits.get_mut(key).ok_or_else(|| format!("no such limit: {key}"))?;
                 *slot = cmd.get("value").cloned().unwrap_or(Value::Null);
                 g.limits = serde_json::from_value(limits).map_err(|e| format!("{key}: {e}"))?;
+                if key == "discharge_to_soc" {
+                    g.discharge_done = false;
+                }
             }
             // Something to do in the charge loop, once.
             Some("event") => {

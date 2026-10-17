@@ -89,7 +89,14 @@ impl Ev for SimulatedEv {
             Some(live) => {
                 let soc = live.present_soc();
                 let needed = |percent: f64| RationalNumber::from_f64(((percent - soc).max(0.0) / 100.0 * live::CAPACITY_WH).round());
-                (needed(f64::from(l.target_soc)), needed(100.0), needed(f64::from(l.min_soc.unwrap_or(0))))
+                match l.discharge_to_soc.filter(|_| live.discharging()) {
+                    // Discharging: a negative target is the energy to give back (a BPT session).
+                    Some(floor) => {
+                        let give = RationalNumber::from_f64((-(soc - f64::from(floor)).max(0.0) / 100.0 * live::CAPACITY_WH).round());
+                        (give, needed(100.0), give)
+                    }
+                    None => (needed(f64::from(l.target_soc)), needed(100.0), needed(f64::from(l.min_soc.unwrap_or(0)))),
+                }
             }
             None => (rn(l.target_energy_wh), rn(l.max_energy_wh), rn(l.min_energy_wh)),
         };
@@ -100,6 +107,15 @@ impl Ev for SimulatedEv {
             target_energy: target,
             maximum_energy: maximum,
             minimum_energy: minimum,
+        }
+    }
+    fn dc_discharge_limits(&self) -> evcc_core::ev::DischargeLimits {
+        let l = &self.limits();
+        evcc_core::ev::DischargeLimits {
+            maximum_discharge_power: rn(l.max_discharge_power_w),
+            minimum_discharge_power: rn(l.min_discharge_power_w),
+            maximum_discharge_current: rn(l.max_discharge_current_a),
+            minimum_discharge_current: rn(l.min_discharge_current_a),
         }
     }
     fn dc_limits(&self) -> DcLimits {
