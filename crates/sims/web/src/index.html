@@ -51,7 +51,8 @@
   label.inline { display: flex; gap: .4rem; align-items: center; }
   .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
   .three { display: grid; grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); gap: 1rem; align-items: start; }
-  @media (max-width: 1100px) { .columns { grid-template-columns: 1fr; } }
+  .columns.wide { grid-template-columns: 3fr 2fr; }
+  @media (max-width: 1100px) { .columns, .columns.wide { grid-template-columns: 1fr; } }
   fieldset, .panel { border: 1px solid var(--line); border-radius: var(--radius); padding: .7rem .9rem; background: var(--panel); margin: 0; min-width: 0; box-shadow: var(--shadow); }
   fieldset fieldset { margin: .4rem 0; box-shadow: none; }
   legend, .panel h3 { font-weight: 600; font-size: .95rem; margin: 0 0 .4rem; }
@@ -152,7 +153,7 @@
   .legend b { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 3rem; display: inline-block; }
   .swatch { width: .7rem; height: .7rem; border-radius: 50%; display: inline-block; opacity: .35; }
   .legend label.on .swatch { opacity: 1; }
-  .timeline { display: grid; grid-template-columns: 3fr 2fr; gap: .6rem; margin-top: .4rem; }
+  .timeline { display: grid; grid-template-columns: 2fr 1fr; gap: .6rem; margin-top: .4rem; }
   .tl-scroll { max-height: 18rem; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
   .tl-scroll thead th { position: sticky; top: 0; background: var(--panel); }
   .tl-scroll tbody tr { cursor: pointer; }
@@ -968,7 +969,7 @@ function buildSim() {
     sessionPanel,
     $("div", { className: "three" }, evTable, evseTable),
     buildGraph(),
-    $("div", { className: "columns" }, buildTimeline(), buildFaults()),
+    $("div", { className: "columns wide" }, buildTimeline(), buildFaults()),
     $("div", { className: "panel" },
       more("More vehicle settings", schemas.evcc.schema, schemas.evcc.schema, sim.evcc, schemas.evcc.defaults, simOmitEv, "more-vehicle"),
       more("More charger settings", seccRoot, seccSchema, sim.secc, schemas.secc.defaults.session, simOmitSecc, "more-charger"),
