@@ -29,7 +29,7 @@ pub(super) fn larger(a: RationalNumber, b: RationalNumber) -> RationalNumber {
 
 /// Combines two per-phase quantities phase by phase with `pick`; a phase only one of them has is
 /// left out (the request may not go beyond what was announced).
-fn phases_with(a: Phases, b: Phases, pick: fn(RationalNumber, RationalNumber) -> RationalNumber) -> Phases {
+pub(super) fn phases_with(a: Phases, b: Phases, pick: fn(RationalNumber, RationalNumber) -> RationalNumber) -> Phases {
     let both = |x: Option<RationalNumber>, y: Option<RationalNumber>| match (x, y) {
         (Some(x), Some(y)) => Some(pick(x, y)),
         _ => None,

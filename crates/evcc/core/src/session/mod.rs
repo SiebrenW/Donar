@@ -33,6 +33,7 @@ mod config;
 mod limits;
 mod parameters;
 mod renegotiation;
+mod schedule;
 mod setup;
 mod shutdown;
 mod types;
@@ -98,7 +99,10 @@ struct Machine<E, L> {
     /// Scheduled control mode: the schedule tuple the vehicle selected, and the power of its
     /// first entry (what the vehicle draws when the charger names no target).
     selected_tuple: u32,
-    scheduled_power: Option<crate::ev::Phases>,
+    schedule: schedule::Schedule,
+    /// The connector of the selected AC parameter set is ThreePhase (V2G20-1815 to 1818: the
+    /// phase specific elements are used, or not, accordingly).
+    ac_three_phase: bool,
     tolerance_offered: bool,
     /// The same for an AC session.
     ev_announced_ac: Option<crate::ev::AcPowerLimits>,
@@ -145,7 +149,8 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 ev_announced_discharge: None,
                 evse_announced: None,
                 selected_tuple: 0,
-                scheduled_power: None,
+                schedule: schedule::Schedule::NONE,
+                ac_three_phase: false,
                 tolerance_offered: false,
                 ev_announced_ac: None,
                 ev_announced_ac_discharge: None,
@@ -399,6 +404,10 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         let t = t.max(self.last_timestamp.saturating_add(1));
         self.last_timestamp = t;
         t
+    }
+    /// SECC time, microseconds (the time stamps of the messages are in it, V2G20-1534).
+    fn secc_now(&self) -> u64 {
+        u64::try_from((i128::from(self.ev.now_micros()) + self.clock_offset).max(0)).unwrap_or(u64::MAX)
     }
     fn header(&mut self) -> MessageHeader<'static> {
         MessageHeader::new(self.session_id, self.timestamp())

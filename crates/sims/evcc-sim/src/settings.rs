@@ -285,6 +285,9 @@ pub struct Settings {
     /// ISO 15118-20 AC: Scheduled control mode (select one of the charger's schedules, follow it)
     /// instead of Dynamic.
     pub scheduled: bool,
+    /// Scheduled mode: state `PowerToleranceAcceptance` also when the charger offered no tolerance
+    /// (V2G20-1866 asks for it only with one; the Python library insists on it).
+    pub state_tolerance_always: bool,
     /// ISO 15118-20: charge with the AC service (offering the AC schema) instead of DC.
     pub ac: bool,
     /// DIN SPEC 70121.
@@ -351,6 +354,7 @@ impl Default for Settings {
             bpt: false,
             ac: false,
             scheduled: false,
+            state_tolerance_always: false,
             din: Din::default(),
             iso2: Iso2::default(),
             slac: false,
@@ -451,7 +455,7 @@ impl Settings {
             (true, true) => evcc_core::session::Config::AC_BPT_20,
         };
         let base = if self.ac && self.scheduled { base.scheduled() } else { base };
-        let mut config = evcc_core::session::Config { allow_unsecured: self.tls.is_none(), prefer_pnc: self.pnc.is_some(), ..base };
+        let mut config = evcc_core::session::Config { allow_unsecured: self.tls.is_none(), prefer_pnc: self.pnc.is_some(), state_tolerance_always: self.state_tolerance_always, ..base };
         if let Some(ms) = self.poll_interval_ms {
             config.poll_interval_ms = ms;
         }

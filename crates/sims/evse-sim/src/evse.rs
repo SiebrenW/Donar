@@ -117,6 +117,10 @@ pub struct Evse {
     /// The selected parameter set has ControlMode 1 (Scheduled): the charger offers schedule
     /// tuples, the vehicle selects one in its power profile, and the charge loop follows it.
     scheduled: bool,
+    /// The selected AC parameter set has the ThreePhase connector, and the vehicle gave per-line
+    /// (`_L2`, `_L3`) values in its charge parameter discovery.
+    ac_three: bool,
+    ac_asym: bool,
     selected_tuple: u32,
     schedule_started: Option<std::time::Instant>,
     /// The `EVSENominalVoltage` of the selected AC parameter set, which the live measurements
@@ -141,7 +145,7 @@ pub struct Evse {
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, protocol: Protocol::Iso20, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge(), last_stamp: std::cell::Cell::new(0), ev_announced: None, bpt: false, ac: false, ac_namespace: false, scheduled: false, selected_tuple: 0, schedule_started: None, ac_voltage: 400.0, ac_announced: None, din_ev_announced: None, iso2_ev_power: None, iso2_ac: false, iso2_phases: 1.0, iso2_renegotiating: false, iso2_renegotiation_asked: false, iso2_receipt_reading: None, iso2_contract: None }
+        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, protocol: Protocol::Iso20, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge(), last_stamp: std::cell::Cell::new(0), ev_announced: None, bpt: false, ac: false, ac_namespace: false, scheduled: false, ac_three: false, ac_asym: false, selected_tuple: 0, schedule_started: None, ac_voltage: 400.0, ac_announced: None, din_ev_announced: None, iso2_ev_power: None, iso2_ac: false, iso2_phases: 1.0, iso2_renegotiating: false, iso2_renegotiation_asked: false, iso2_receipt_reading: None, iso2_contract: None }
     }
 
     /// Reports the charge loop measurements to a test platform and takes its edits.
@@ -509,6 +513,7 @@ impl Evse {
                 let code = self.config.selection_code;
                 self.bpt = matches!(service_id, SERVICE_ID_DC_BPT | ac20::SERVICE_ID_AC_BPT);
                 self.ac = is_ac_service(service_id);
+                self.ac_three = self.sets_for(service_id).iter().find(|set| set.id == parameter_set_id).and_then(|set| set.values.get("Connector")) == Some(&2);
                 self.scheduled = self.sets_for(service_id).iter().find(|set| set.id == parameter_set_id).and_then(|set| set.values.get("ControlMode")) == Some(&1);
                 if let Some(volts) = self.sets_for(service_id).iter().find(|set| set.id == parameter_set_id).and_then(|set| set.values.get("EVSENominalVoltage")) {
                     self.ac_voltage = f64::from(*volts);

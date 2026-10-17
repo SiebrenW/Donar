@@ -689,3 +689,30 @@ fn a_dynamic_car_and_a_charger_offering_only_scheduled_sets_do_not_match() {
     assert_eq!(outcome, Outcome::Ended(EndReason::NoCompatibleParameterSet));
     drop(server);
 }
+
+fn run_ac_with_limits(addr: std::net::SocketAddr, config: Config, limits: evcc_sim::Limits) -> (Outcome, common::Recording) {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    let recording = common::Recording::default();
+    let behaviour = evcc_sim::Behaviour { stop_after: Some(3), ..CAR };
+    let outcome = evcc_sim::run_car_live(&mut stream, false, config, behaviour, recording.clone(), None, limits, None).unwrap();
+    (outcome, recording)
+}
+
+#[test]
+fn a_single_phase_car_charges_on_a_three_phase_and_on_a_single_phase_set() {
+    // The single-phase car marks the lines it does not use with zero (V2G20-1822); the charger
+    // answers with phase specific values only because the car gave some (V2G20-1209).
+    let (addr, server) = start(evse_sim::Config::default());
+    let single = evcc_sim::Limits { ac_phases: 1, ..Default::default() };
+    let (outcome, log) = run_ac_with_limits(addr, fast_ac(), single);
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    assert_eq!(log.count("MsgTx { msg: AcChargeLoopReq }"), 3);
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+    // On a single-phase connector the car uses the base elements only.
+    let one_phase_set = OfferedSet::new(1, [("Connector", 1), ("EVSENominalVoltage", 230), ("ControlMode", 2), ("MobilityNeedsMode", 1), ("Pricing", 0)]);
+    let (addr, server) = start(evse_sim::Config { ac_parameter_sets: vec![one_phase_set], ..Default::default() });
+    let single = evcc_sim::Limits { ac_phases: 1, ..Default::default() };
+    let (outcome, _) = run_ac_with_limits(addr, fast_ac(), single);
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+}

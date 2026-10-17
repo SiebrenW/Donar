@@ -9,7 +9,7 @@ use v2gtp::PayloadType;
 use super::{Machine, frame};
 use super::config::*;
 use super::types::*;
-use crate::ev::Ev;
+use crate::ev::{AcDischargePowerLimits, AcPowerLimits, AcPresentPower, Ev, Phases};
 use crate::log::{LogSink, MsgKind, Record};
 use crate::{Timer, TimerCmd, Timers};
 
@@ -267,7 +267,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     fn send_ac_charge_loop_req(&mut self, tx: &mut [u8]) -> Step {
         let r = self.ev.schedule_request();
         let l = self.loop_ac_limits();
+        let l = AcPowerLimits { maximum_charge_power: self.lines(l.maximum_charge_power), minimum_charge_power: self.lines(l.minimum_charge_power) };
         let p = self.ev.ac_present_power();
+        let p = AcPresentPower { active: self.lines(p.active), reactive: self.lines(p.reactive) };
         let control_mode = if self.config.scheduled {
             // The charger's schedule sets the power; the vehicle reports its energy needs, what it
             // can take and what it draws.
@@ -290,6 +292,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             };
             if self.config.bpt() {
                 let d = self.loop_ac_discharge_limits();
+                let d = AcDischargePowerLimits { maximum_discharge_power: self.lines(d.maximum_discharge_power), minimum_discharge_power: self.lines(d.minimum_discharge_power) };
                 ac::ClReqControlModeChoice::BptScheduledAc(ac::BptScheduledAcClReqControlMode {
                     ev_target_energy_request: scheduled.ev_target_energy_request,
                     ev_maximum_energy_request: scheduled.ev_maximum_energy_request,
@@ -318,6 +321,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             }
         } else if self.config.bpt() {
             let d = self.loop_ac_discharge_limits();
+            let d = AcDischargePowerLimits { maximum_discharge_power: self.lines(d.maximum_discharge_power), minimum_discharge_power: self.lines(d.minimum_discharge_power) };
             ac::ClReqControlModeChoice::BptDynamicAc(ac::BptDynamicAcClReqControlMode {
                 departure_time: None,
                 ev_target_energy_request: r.target_energy,
@@ -383,14 +387,17 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
         // The mode we asked for, with the BPT variant in a BPT session. In Scheduled mode the target
         // power is optional: without one the vehicle follows the schedule it selected.
+        // Without a target (V2G20-1826: the charger names one only for the grid code) the vehicle
+        // follows its schedule.
+        let followed = self.schedule.power_at(self.secc_now());
         let scheduled_mode = |m: ac::ScheduledAcClResControlMode| ac::DynamicAcClResControlMode {
             departure_time: None,
             minimum_soc: None,
             target_soc: None,
             ack_max_delay: None,
-            evse_target_active_power: m.evse_target_active_power.or(self.scheduled_power.map(|p| p.l1)).unwrap_or(iso15118_20::common_types::RationalNumber { exponent: 0, value: 0 }),
-            evse_target_active_power_l2: m.evse_target_active_power_l2.or(self.scheduled_power.and_then(|p| p.l2)),
-            evse_target_active_power_l3: m.evse_target_active_power_l3.or(self.scheduled_power.and_then(|p| p.l3)),
+            evse_target_active_power: m.evse_target_active_power.or(followed.map(|p| p.l1)).unwrap_or(iso15118_20::common_types::RationalNumber { exponent: 0, value: 0 }),
+            evse_target_active_power_l2: m.evse_target_active_power_l2.or(followed.and_then(|p| p.l2)),
+            evse_target_active_power_l3: m.evse_target_active_power_l3.or(followed.and_then(|p| p.l3)),
             evse_target_reactive_power: m.evse_target_reactive_power,
             evse_target_reactive_power_l2: m.evse_target_reactive_power_l2,
             evse_target_reactive_power_l3: m.evse_target_reactive_power_l3,
@@ -510,7 +517,26 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         // Rounded up, at least a second, at most until departure.
         let whole = seconds as u32;
         let duration = (if (whole as f32) < seconds { whole + 1 } else { whole }).clamp(1, r.departure_time.max(1));
-        let entries = [common::PowerScheduleEntry { duration, power, power_l2, power_l3 }];
+        let own = self.lines(Phases { l1: power, l2: power_l2, l3: power_l3 });
+        let mut entries = [common::PowerScheduleEntry { duration, power: own.l1, power_l2: own.l2, power_l3: own.l3 }; super::schedule::MAX_ENTRIES];
+        let mut count = 1;
+        if self.config.scheduled && !self.schedule.is_empty() {
+            // The profile stays within the schedule (V2G20-1559) from now on, and within what the
+            // vehicle takes; a standby or stop is a period of zero power (V2G20-1068, 1839).
+            let zero = iso15118_20::common_types::RationalNumber { exponent: 0, value: 0 };
+            let mut left = [(0u32, Phases::single(zero)); super::schedule::MAX_ENTRIES];
+            count = self.schedule.remaining(self.secc_now(), &mut left);
+            let ceiling = if self.config.ac() { self.ev_announced_ac.unwrap_or_else(|| self.ev.ac20_limits()).maximum_charge_power } else { Phases::single(power) };
+            for (slot, (duration, allowed)) in entries.iter_mut().zip(&left[..count]) {
+                let p = if matches!(progress, common::ChargeProgress::Standby | common::ChargeProgress::Stop) {
+                    Phases { l1: zero, l2: allowed.l2.map(|_| zero), l3: allowed.l3.map(|_| zero) }
+                } else {
+                    super::limits::phases_with(*allowed, ceiling, super::limits::smaller)
+                };
+                let p = self.lines(p);
+                *slot = common::PowerScheduleEntry { duration: *duration, power: p.l1, power_l2: p.l2, power_l3: p.l3 };
+            }
+        }
         let time_anchor = self.timestamp();
         let msg = common::PowerDeliveryReq {
             header: self.header(),
@@ -519,19 +545,41 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             ev_power_profile: Some(common::EvPowerProfile {
                 time_anchor,
                 evppt_control_mode: if self.config.scheduled {
-                    common::EvpptControlModeChoice::Scheduled(common::ScheduledEvpptControlMode { selected_schedule_tuple_id: self.selected_tuple,
-                        // Stated always (the Python library insists on it): the tolerance of the schedule is
-                        // accepted when it has one.
-                        power_tolerance_acceptance: Some(if self.tolerance_offered { common::PowerToleranceAcceptance::PowerToleranceConfirmed } else { common::PowerToleranceAcceptance::PowerToleranceNotConfirmed }),
+                    common::EvpptControlModeChoice::Scheduled(common::ScheduledEvpptControlMode {
+                        selected_schedule_tuple_id: self.selected_tuple,
+                        // V2G20-1866: always when the charger offered a tolerance with the schedule;
+                        // otherwise it is left out (the Python library insists on it: `Config::state_tolerance_always`).
+                        power_tolerance_acceptance: if self.tolerance_offered {
+                            Some(common::PowerToleranceAcceptance::PowerToleranceConfirmed)
+                        } else if self.config.state_tolerance_always {
+                            Some(common::PowerToleranceAcceptance::PowerToleranceNotConfirmed)
+                        } else {
+                            None
+                        },
                     })
                 } else {
                     common::EvpptControlModeChoice::Dynamic(common::DynamicEvpptControlMode {})
                 },
-                ev_power_profile_entries: common::EvPowerProfileEntryList { ev_power_profile_entry: &entries },
+                ev_power_profile_entries: common::EvPowerProfileEntryList { ev_power_profile_entry: &entries[..count] },
             }),
             // A BPT session says which channel the power flows on at the start (unified channel:
             // charging; discharging follows from the charge loop's setpoints).
             bpt_channel_selection: (self.config.bpt() && !self.config.ac() && progress == common::ChargeProgress::Start).then_some(common::ChannelSelection::Charge),
         };
         frame(tx, payload_type, |out| msg.encode(out))
-    }}
+    }
+
+    /// A power per line as the connector of the session wants it (V2G20-1815 to 1818, 1822): on a
+    /// single-phase connector only the base element; on a three-phase one a single-phase vehicle marks
+    /// its unused lines with zero. A three-phase vehicle without `_L2`, `_L3` values gives the sum.
+    pub(super) fn lines(&self, p: Phases) -> Phases {
+        let zero = iso15118_20::common_types::RationalNumber { exponent: 0, value: 0 };
+        if !self.ac_three_phase {
+            Phases { l2: None, l3: None, ..p }
+        } else if self.ev.ac_connector() == crate::ev::AcConnector::SinglePhase {
+            Phases { l1: p.l1, l2: Some(p.l2.unwrap_or(zero)), l3: Some(p.l3.unwrap_or(zero)) }
+        } else {
+            p
+        }
+    }
+}

@@ -12,6 +12,7 @@ kind = "evcc-sim"
 ac = true
 bpt = true
 scheduled = true
+state_tolerance_always = true   # the library requires the element (V2G20-1866: only with a tolerance)
 
 [expect]
 evcc_log = ["session: Ended(Completed)"]

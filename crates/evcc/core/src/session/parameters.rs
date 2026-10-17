@@ -75,7 +75,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 let Some(first) = m.schedule_tuple.first() else { return false };
                 self.selected_tuple = first.schedule_tuple_id;
                 self.tolerance_offered = first.charging_schedule.power_schedule.power_tolerance.is_some();
-                self.scheduled_power = first.charging_schedule.power_schedule.power_schedule_entries.power_schedule_entry.first().map(|e| crate::ev::Phases { l1: e.power, l2: e.power_l2, l3: e.power_l3 });
+                self.schedule = super::schedule::Schedule::of(first, self.secc_now());
                 true
             }
             _ => false,

@@ -9,7 +9,7 @@ use v2gtp::PayloadType;
 
 use super::{Machine, frame, is_ok};
 use super::types::*;
-use crate::ev::Ev;
+use crate::ev::{AcDischargePowerLimits, AcPowerLimits, Ev};
 use crate::log::{LogSink, MsgKind, Record};
 use crate::{Timer, TimerCmd};
 
@@ -172,6 +172,10 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         };
         let selected = SelectedService { service_id: res.service_id, parameter_set_id };
         self.selected = selected;
+        // The connector of the chosen AC set decides how phase specific values are written.
+        self.ac_three_phase = res.service_parameter_list.parameter_set.iter().find(|s| s.parameter_set_id == parameter_set_id).is_some_and(|set| {
+            set.parameter.iter().any(|p| p.name == "Connector" && matches!(p.choice, ParameterChoice::ByteValue(2) | ParameterChoice::ShortValue(2) | ParameterChoice::IntValue(2)))
+        });
         let msg = ServiceSelectionReq {
             header: self.header(),
             selected_energy_transfer_service: selected,
@@ -245,9 +249,11 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
 
     fn frame_ac_charge_parameter_discovery_req(&mut self, payload_type: PayloadType, tx: &mut [u8]) -> Result<usize, ()> {
         let l = self.ev.ac20_limits();
+        let l = AcPowerLimits { maximum_charge_power: self.lines(l.maximum_charge_power), minimum_charge_power: self.lines(l.minimum_charge_power) };
         self.ev_announced_ac = Some(l);
         let mode = if self.config.bpt() {
             let d = self.ev.ac20_discharge_limits();
+            let d = AcDischargePowerLimits { maximum_discharge_power: self.lines(d.maximum_discharge_power), minimum_discharge_power: self.lines(d.minimum_discharge_power) };
             self.ev_announced_ac_discharge = Some(d);
             ac::AcCpdReqEnergyTransferModeChoice::Bpt(ac::BptAcCpdReqEnergyTransferMode {
                 ev_maximum_charge_power: l.maximum_charge_power.l1,

@@ -79,6 +79,9 @@ pub struct Config {
     /// (the first) and follows it in the charge loop. For the AC services only; the DC charge loop
     /// is Dynamic.
     pub scheduled: bool,
+    /// Scheduled mode: state `PowerToleranceAcceptance` also when the charger offered no tolerance
+    /// (V2G20-1866 asks for it only with one; the Python library requires it always).
+    pub state_tolerance_always: bool,
 }
 
 impl Config {
@@ -155,6 +158,7 @@ impl Config {
         pnc_fallback_to_eim: true,
         enforce_cpd_limits: true,
         scheduled: false,
+        state_tolerance_always: false,
     };
 
     /// The same session in Scheduled control mode (ISO 15118-20:2022 Table 205: `ControlMode` 1

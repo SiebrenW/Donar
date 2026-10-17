@@ -21,10 +21,6 @@ const TUPLES: [u32; 2] = [1, 2];
 /// A power per line, in watts; a line the charger or the vehicle does not use is `None`.
 type Lines = [Option<f64>; 3];
 
-fn lines(a: RationalNumber, b: Option<RationalNumber>, c: Option<RationalNumber>) -> Lines {
-    [Some(a.to_f64()), b.map(RationalNumber::to_f64), c.map(RationalNumber::to_f64)]
-}
-
 fn rational(x: Option<f64>) -> Option<RationalNumber> {
     x.map(RationalNumber::from_f64)
 }
@@ -38,14 +34,37 @@ pub(super) struct Announced {
 }
 
 impl Evse {
-    fn ac_lines_offered(&self) -> usize {
-        if self.limits().ac_phases >= 3 { 3 } else { 1 }
+    /// The lines of the session: three when the selected parameter set has the ThreePhase connector
+    /// and the charger has them.
+    pub(super) fn ac_lines_offered(&self) -> usize {
+        if self.ac_three && self.limits().ac_phases >= 3 { 3 } else { 1 }
     }
 
-    /// A per-line limit for the lines the charger has.
+    /// Whether the charger answers with the sum of the lines in the base elements: on three lines
+    /// for a vehicle that gave no `_L2`, `_L3` values (V2G20-1817, 1209).
+    fn sum_mode(&self, asymmetric: bool) -> bool {
+        self.ac_lines_offered() == 3 && !asymmetric
+    }
+
+    /// A value of the vehicle per line: with `_L2` and `_L3` as they are, on three lines without them
+    /// the base is the sum, spread evenly (V2G20-1817).
+    fn in_lines(&self, base: RationalNumber, l2: Option<RationalNumber>, l3: Option<RationalNumber>) -> Lines {
+        if self.ac_lines_offered() == 3 && l2.is_none() && l3.is_none() {
+            [Some(base.to_f64() / 3.0); 3]
+        } else {
+            [Some(base.to_f64()), l2.map(RationalNumber::to_f64), l3.map(RationalNumber::to_f64)]
+        }
+    }
+
+    /// A per-line limit of the charger as it goes into a message to this vehicle.
     fn per_line(&self, watts: u32) -> (RationalNumber, Option<RationalNumber>, Option<RationalNumber>) {
-        let w = RationalNumber::from_f64(f64::from(watts));
-        (w, (self.ac_lines_offered() == 3).then_some(w), (self.ac_lines_offered() == 3).then_some(w))
+        let w = f64::from(watts);
+        if self.sum_mode(self.ac_asym) {
+            (RationalNumber::from_f64(w * 3.0), None, None)
+        } else {
+            let each = RationalNumber::from_f64(w);
+            (each, (self.ac_lines_offered() == 3).then_some(each), (self.ac_lines_offered() == 3).then_some(each))
+        }
     }
 
     pub(crate) fn ac_cpd_res(&self, code: ResponseCode) -> ac::AcChargeParameterDiscoveryRes<'static> {
@@ -96,16 +115,19 @@ impl Evse {
     }
 
     fn note_ac_announced(&mut self, mode: &ac::AcCpdReqEnergyTransferModeChoice) {
-        let (max_charge, min_charge) = match mode {
+        let (max, min) = match mode {
             ac::AcCpdReqEnergyTransferModeChoice::Base(m) => (
-                lines(m.ev_maximum_charge_power, m.ev_maximum_charge_power_l2, m.ev_maximum_charge_power_l3),
-                lines(m.ev_minimum_charge_power, m.ev_minimum_charge_power_l2, m.ev_minimum_charge_power_l3),
+                (m.ev_maximum_charge_power, m.ev_maximum_charge_power_l2, m.ev_maximum_charge_power_l3),
+                (m.ev_minimum_charge_power, m.ev_minimum_charge_power_l2, m.ev_minimum_charge_power_l3),
             ),
             ac::AcCpdReqEnergyTransferModeChoice::Bpt(m) => (
-                lines(m.ev_maximum_charge_power, m.ev_maximum_charge_power_l2, m.ev_maximum_charge_power_l3),
-                lines(m.ev_minimum_charge_power, m.ev_minimum_charge_power_l2, m.ev_minimum_charge_power_l3),
+                (m.ev_maximum_charge_power, m.ev_maximum_charge_power_l2, m.ev_maximum_charge_power_l3),
+                (m.ev_minimum_charge_power, m.ev_minimum_charge_power_l2, m.ev_minimum_charge_power_l3),
             ),
         };
+        // Per-line values announced by a vehicle that gave `_L2` or `_L3` (V2G20-1821); otherwise sums.
+        self.ac_asym = max.1.is_some() || max.2.is_some();
+        let (max_charge, min_charge) = (self.in_lines(max.0, max.1, max.2), self.in_lines(min.0, min.1, min.2));
         self.ac_announced = Some(Announced { max_charge, min_charge });
     }
 
@@ -183,39 +205,43 @@ impl Evse {
         let (target_energy, ev_max, ev_min, ev_discharge_max) = match &req.cl_req_control_mode {
             ac::ClReqControlModeChoice::DynamicAc(m) => (
                 m.ev_target_energy_request.to_f64(),
-                lines(m.ev_maximum_charge_power, m.ev_maximum_charge_power_l2, m.ev_maximum_charge_power_l3),
-                lines(m.ev_minimum_charge_power, m.ev_minimum_charge_power_l2, m.ev_minimum_charge_power_l3),
+                self.in_lines(m.ev_maximum_charge_power, m.ev_maximum_charge_power_l2, m.ev_maximum_charge_power_l3),
+                self.in_lines(m.ev_minimum_charge_power, m.ev_minimum_charge_power_l2, m.ev_minimum_charge_power_l3),
                 [None; 3],
             ),
             ac::ClReqControlModeChoice::BptDynamicAc(m) => (
                 m.ev_target_energy_request.to_f64(),
-                lines(m.ev_maximum_charge_power, m.ev_maximum_charge_power_l2, m.ev_maximum_charge_power_l3),
-                lines(m.ev_minimum_charge_power, m.ev_minimum_charge_power_l2, m.ev_minimum_charge_power_l3),
-                lines(m.ev_maximum_discharge_power, m.ev_maximum_discharge_power_l2, m.ev_maximum_discharge_power_l3),
+                self.in_lines(m.ev_maximum_charge_power, m.ev_maximum_charge_power_l2, m.ev_maximum_charge_power_l3),
+                self.in_lines(m.ev_minimum_charge_power, m.ev_minimum_charge_power_l2, m.ev_minimum_charge_power_l3),
+                self.in_lines(m.ev_maximum_discharge_power, m.ev_maximum_discharge_power_l2, m.ev_maximum_discharge_power_l3),
             ),
             // Scheduled: what the vehicle left out it does not limit; no target energy is a charge.
             ac::ClReqControlModeChoice::ScheduledAc(m) => (
                 m.ev_target_energy_request.map_or(1.0, RationalNumber::to_f64),
-                [m.ev_maximum_charge_power.map(RationalNumber::to_f64), m.ev_maximum_charge_power_l2.map(RationalNumber::to_f64), m.ev_maximum_charge_power_l3.map(RationalNumber::to_f64)],
-                [m.ev_minimum_charge_power.map(RationalNumber::to_f64), m.ev_minimum_charge_power_l2.map(RationalNumber::to_f64), m.ev_minimum_charge_power_l3.map(RationalNumber::to_f64)],
+                m.ev_maximum_charge_power.map_or([None; 3], |b| self.in_lines(b, m.ev_maximum_charge_power_l2, m.ev_maximum_charge_power_l3)),
+                m.ev_minimum_charge_power.map_or([None; 3], |b| self.in_lines(b, m.ev_minimum_charge_power_l2, m.ev_minimum_charge_power_l3)),
                 [None; 3],
             ),
             ac::ClReqControlModeChoice::BptScheduledAc(m) => (
                 m.ev_target_energy_request.map_or(1.0, RationalNumber::to_f64),
-                [m.ev_maximum_charge_power.map(RationalNumber::to_f64), m.ev_maximum_charge_power_l2.map(RationalNumber::to_f64), m.ev_maximum_charge_power_l3.map(RationalNumber::to_f64)],
-                [m.ev_minimum_charge_power.map(RationalNumber::to_f64), m.ev_minimum_charge_power_l2.map(RationalNumber::to_f64), m.ev_minimum_charge_power_l3.map(RationalNumber::to_f64)],
-                [m.ev_maximum_discharge_power.map(RationalNumber::to_f64), m.ev_maximum_discharge_power_l2.map(RationalNumber::to_f64), m.ev_maximum_discharge_power_l3.map(RationalNumber::to_f64)],
+                m.ev_maximum_charge_power.map_or([None; 3], |b| self.in_lines(b, m.ev_maximum_charge_power_l2, m.ev_maximum_charge_power_l3)),
+                m.ev_minimum_charge_power.map_or([None; 3], |b| self.in_lines(b, m.ev_minimum_charge_power_l2, m.ev_minimum_charge_power_l3)),
+                m.ev_maximum_discharge_power.map_or([None; 3], |b| self.in_lines(b, m.ev_maximum_discharge_power_l2, m.ev_maximum_discharge_power_l3)),
             ),
         };
         if !self.check_ac_loop_limits(ev_max, ev_min) && self.config.fail_on_limit_violation {
             code = ResponseCode::Failed;
         }
         // The lines the vehicle says it draws on (Scheduled mode may leave its limits out).
-        let present_lines: [bool; 3] = match &req.cl_req_control_mode {
+        let raw_lines: [bool; 3] = match &req.cl_req_control_mode {
             ac::ClReqControlModeChoice::ScheduledAc(m) => [true, m.ev_present_active_power_l2.is_some(), m.ev_present_active_power_l3.is_some()],
             ac::ClReqControlModeChoice::BptScheduledAc(m) => [true, m.ev_present_active_power_l2.is_some(), m.ev_present_active_power_l3.is_some()],
-            _ => [true; 3],
+            ac::ClReqControlModeChoice::DynamicAc(m) => [true, m.ev_present_active_power_l2.is_some(), m.ev_present_active_power_l3.is_some()],
+            ac::ClReqControlModeChoice::BptDynamicAc(m) => [true, m.ev_present_active_power_l2.is_some(), m.ev_present_active_power_l3.is_some()],
         };
+        // A vehicle without `_L2`, `_L3` values on three lines is symmetric: sums, no phase elements in the answer (V2G20-1209).
+        let sum_mode = self.sum_mode(raw_lines[1] || raw_lines[2]);
+        let present_lines = if sum_mode { [true; 3] } else { raw_lines };
         let discharging = self.bpt && target_energy < 0.0;
         let offered = self.ac_lines_offered();
         let mut target: Lines = [None; 3];
@@ -255,7 +281,15 @@ impl Evse {
                 *t = total_now / used;
             }
         }
+        let overridden = (total_now - total).abs() > 1e-6;
         let present = target;
+        // The answer in sums for a symmetric vehicle.
+        let (target, present) = if sum_mode {
+            let sum = |t: Lines| [Some(t.iter().flatten().sum::<f64>()), None, None];
+            (sum(target), sum(present))
+        } else {
+            (target, present)
+        };
         let status = notification.map(|(evse_notification, notification_max_delay)| common_types::EvseStatus { notification_max_delay, evse_notification });
         let mode = ac::DynamicAcClResControlMode {
             departure_time: None,
@@ -280,10 +314,12 @@ impl Evse {
             receipt: None,
             evse_target_frequency: None,
             cl_res_control_mode: if self.scheduled {
+                // V2G20-1826: a target only where something overrides the schedule (a hand-set current).
+                let ad_hoc = overridden;
                 let scheduled = ac::ScheduledAcClResControlMode {
-                    evse_target_active_power: Some(RationalNumber::from_f64(target[0].unwrap_or(0.0))),
-                    evse_target_active_power_l2: rational(target[1]),
-                    evse_target_active_power_l3: rational(target[2]),
+                    evse_target_active_power: ad_hoc.then(|| RationalNumber::from_f64(target[0].unwrap_or(0.0))),
+                    evse_target_active_power_l2: if ad_hoc { rational(target[1]) } else { None },
+                    evse_target_active_power_l3: if ad_hoc { rational(target[2]) } else { None },
                     evse_target_reactive_power: None,
                     evse_target_reactive_power_l2: None,
                     evse_target_reactive_power_l3: None,
@@ -362,9 +398,16 @@ impl Evse {
             let res = self.schedule_res(processing, code);
             return frame(payload_type, |out| res.encode(out));
         }
-        let offered_lines = self.ac_lines_offered();
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        let per_line = |watts: f64| (RationalNumber::from_f64(watts), (offered_lines == 3).then(|| RationalNumber::from_f64(watts)), (offered_lines == 3).then(|| RationalNumber::from_f64(watts)));
+        // `TimeAnchor` in microseconds of SECC time (Annex J examples; 8.3.5.3.x says milliseconds in one place).
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_micros() as u64);
+        let per_line = |watts: f64| {
+            if self.sum_mode(self.ac_asym) {
+                (RationalNumber::from_f64(watts * 3.0), None, None)
+            } else {
+                let each = RationalNumber::from_f64(watts);
+                (each, (self.ac_lines_offered() == 3).then_some(each), (self.ac_lines_offered() == 3).then_some(each))
+            }
+        };
         let build = |tuple: u32, discharging: bool| -> Vec<PowerScheduleEntry> {
             self.schedule_entries(tuple, discharging)
                 .into_iter()
