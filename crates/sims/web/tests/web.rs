@@ -24,7 +24,9 @@ fn target_dir() -> PathBuf {
 
 fn start() -> Server {
     let scenarios = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scenarios/scenarios");
-    let work = target_dir().join("web-test");
+    // One work directory per server: the tests run side by side, and a server clears its own.
+    static SERVERS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let work = target_dir().join("web-test").join(format!("{}-{}", std::process::id(), SERVERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     let (program, mut args) = (env!("CARGO_BIN_EXE_evcc-web").to_string(), Vec::<String>::new());
     // The test may run as root (the Linux runner); the server, like a person, does not, and
     // everything it makes must not need root to remove.
