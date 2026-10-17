@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
 <title>evcc-rs scenarios</title>
 <style>
   :root {
@@ -486,7 +487,7 @@ const SIGNALS = [
   { id: "evse.state", label: "charger state", unit: "", step: true, get: v => v.evse?.state ? EVSE_STATES.indexOf(v.evse.state) : undefined, name: i => EVSE_STATES[i] },
   { id: "ev.loops", label: "charge loop rounds", unit: "", get: v => v.ev?.loops },
 ];
-SIGNALS.forEach((s, i) => { s.hue = (i * 47) % 360; s.on = !!s.on; });
+SIGNALS.forEach((s, i) => { s.hue = ((i * 7) % 16) * 22.5; s.alt = i % 2; s.on = !!s.on; });
 const graph = { samples: [], window: 120, paused: false, hover: null };
 
 function sampleSignals() {
@@ -497,7 +498,7 @@ function sampleSignals() {
 
 function seriesColor(s) {
   const dark = document.documentElement.dataset.theme === "dark" || (!document.documentElement.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
-  return `hsl(${s.hue} 65% ${dark ? 66 : 42}%)`;
+  return `hsl(${s.hue} 70% ${(dark ? 66 : 42) + (s.alt ? (dark ? -10 : 12) : 0)}%)`;
 }
 
 function drawGraph() {
@@ -522,8 +523,10 @@ function drawGraph() {
   for (let i = 0; i <= 4; i++) {
     const gx = pad.l + i * (w - pad.l - pad.r) / 4;
     g.beginPath(); g.moveTo(gx, pad.t); g.lineTo(gx, h - pad.b); g.stroke();
-    g.fillText(i === 4 ? "now" : `-${Math.round(span * (4 - i) / 4000)} s`, gx + 2, h - 5);
+    g.textAlign = i === 4 ? "right" : "left";
+    g.fillText(i === 4 ? "now" : `-${Math.round(span * (4 - i) / 4000)} s`, i === 4 ? gx - 2 : gx + 2, h - 5);
   }
+  g.textAlign = "left";
   const range = SIGNALS.map((s, i) => {
     const values = visible.map(p => p.v[i]).filter(v => v != null);
     if (!values.length) return null;
