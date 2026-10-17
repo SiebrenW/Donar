@@ -5,15 +5,21 @@
 
 #[cfg(target_os = "linux")]
 pub mod slac;
+#[cfg(feature = "tls")]
 pub mod certificates;
+#[cfg(feature = "tls")]
 pub mod ocsp;
+#[cfg(feature = "tls")]
 pub mod pnc;
 pub mod sdp;
+#[cfg(feature = "tls")]
 pub mod tls;
+#[cfg(feature = "tls")]
 pub mod xmlsig;
 
 use std::io::{self, ErrorKind, Read, Write};
 use std::net::TcpStream;
+#[cfg(feature = "tls")]
 use openssl::ssl::SslStream;
 use std::time::{Duration, Instant};
 
@@ -32,6 +38,7 @@ impl Transport for TcpStream {
     }
 }
 
+#[cfg(feature = "tls")]
 impl Transport for SslStream<TcpStream> {
     fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
         self.get_ref().set_read_timeout(timeout)

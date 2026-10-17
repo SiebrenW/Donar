@@ -20,6 +20,8 @@ use crate::Deadlines;
 pub struct PacketSocket {
     fd: OwnedFd,
     mac: Mac,
+    /// The socket sees every protocol (see [`PacketSocket::open_any`]): other frames are skipped.
+    filter: bool,
 }
 
 fn check(rc: libc::c_int) -> io::Result<libc::c_int> {
@@ -28,8 +30,20 @@ fn check(rc: libc::c_int) -> io::Result<libc::c_int> {
 
 impl PacketSocket {
     pub fn open(interface: &str) -> io::Result<Self> {
+        Self::open_with(interface, false)
+    }
+
+    /// Like [`PacketSocket::open`] for an interface that is a port of a bridge (a board whose
+    /// powerline modem is bridged to its Ethernet port): the kernel hands a frame addressed to
+    /// the host to the bridge, and a socket bound to the HomePlug protocol never sees it. This
+    /// one is bound to all protocols and skips the others.
+    pub fn open_any(interface: &str) -> io::Result<Self> {
+        Self::open_with(interface, true)
+    }
+
+    fn open_with(interface: &str, any: bool) -> io::Result<Self> {
         let ifindex = crate::sdp::interface_index(interface)?;
-        let protocol = ETHERTYPE.to_be();
+        let protocol = if any { (libc::ETH_P_ALL as u16).to_be() } else { ETHERTYPE.to_be() };
         // SAFETY: plain system calls with valid arguments; the descriptor is owned right away.
         let fd = unsafe {
             let fd = check(libc::socket(libc::AF_PACKET, libc::SOCK_RAW | libc::SOCK_CLOEXEC, i32::from(protocol)))?;
@@ -53,7 +67,7 @@ impl PacketSocket {
             return Err(io::Error::new(ErrorKind::InvalidData, "interface has no Ethernet address"));
         }
         let mac: Mac = bound.sll_addr[..6].try_into().unwrap();
-        Ok(Self { fd, mac })
+        Ok(Self { fd, mac, filter: any })
     }
 
     /// The interface's hardware address.
@@ -91,6 +105,9 @@ impl PacketSocket {
                 return Err(e);
             }
             if from.sll_pkttype == libc::PACKET_OUTGOING {
+                continue;
+            }
+            if self.filter && (n < 14 || buf[12..14] != ETHERTYPE.to_be_bytes()) {
                 continue;
             }
             return Ok(Some(n as usize));
@@ -234,5 +251,87 @@ pub fn run_with_pilot(
                 }
             }
         };
+    }
+}
+
+
+/// A Qualcomm QCA7000 family modem (QCA7000, QCA7005, QCA7020) behind a network interface of the
+/// host, such as the `qcaspi` driver's: the modem takes its network key from a standard
+/// CM_SET_KEY.REQ sent to the local device address, and reports its software version to a vendor
+/// message ([`homeplug::modem`]).
+///
+/// The link check does not ask the modem: it reports the link as up a settle time after the key
+/// was set (the modem needs a moment to form the network with the charger's; the discovery that
+/// follows repeats its requests, so a link that is up a little later only costs a repeat).
+pub struct QcaModem {
+    socket: PacketSocket,
+    settle: Duration,
+    reply_timeout: Duration,
+    keyed_at: Option<Instant>,
+}
+
+impl QcaModem {
+    /// The default settle time after the key.
+    pub const SETTLE: Duration = Duration::from_millis(1500);
+
+    pub fn open(interface: &str) -> io::Result<Self> {
+        Ok(Self::new(PacketSocket::open_any(interface)?))
+    }
+
+    pub fn new(socket: PacketSocket) -> Self {
+        Self { socket, settle: Self::SETTLE, reply_timeout: Duration::from_millis(1000), keyed_at: None }
+    }
+
+    pub fn with_settle(mut self, settle: Duration) -> Self {
+        self.settle = settle;
+        self
+    }
+
+    /// The software version of the modem, such as `MAC-QCA7005-3.3.0.31-00-20231004-CS`; an error
+    /// when no modem answers.
+    pub fn version(&self) -> io::Result<String> {
+        let mut out = [0u8; homeplug::modem::FRAME_MAX];
+        let n = homeplug::modem::sw_ver_req(self.socket.mac(), &mut out).ok_or_else(|| io::Error::from(ErrorKind::InvalidInput))?;
+        self.socket.send(&out[..n])?;
+        let frame = self.wait_for(|f| homeplug::modem::parse_sw_ver_cnf(f).map(|v| (v.status, v.version.to_string())))?;
+        match frame {
+            (0, version) => Ok(version),
+            (status, _) => Err(io::Error::other(format!("the modem answered the version request with status {status}"))),
+        }
+    }
+
+    /// Frames until `parse` accepts one or the reply timeout passes.
+    fn wait_for<T>(&self, parse: impl Fn(&[u8]) -> Option<T>) -> io::Result<T> {
+        let deadline = Instant::now() + self.reply_timeout;
+        let mut buf = [0u8; 2048];
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(io::Error::new(ErrorKind::TimedOut, "the modem did not answer"));
+            }
+            if let Some(n) = self.socket.recv(&mut buf, Some(left))?
+                && let Some(found) = parse(&buf[..n])
+            {
+                return Ok(found);
+            }
+        }
+    }
+}
+
+impl Modem for QcaModem {
+    fn set_key(&mut self, nid: [u8; 7], nmk: [u8; 16]) -> io::Result<()> {
+        let mut out = [0u8; homeplug::modem::FRAME_MAX];
+        let n = homeplug::modem::set_key_req(self.socket.mac(), nid, nmk, &mut out).ok_or_else(|| io::Error::from(ErrorKind::InvalidInput))?;
+        self.socket.send(&out[..n])?;
+        let result = self.wait_for(homeplug::modem::parse_set_key_cnf)?;
+        if result != 0 {
+            return Err(io::Error::other(format!("the modem refused the key (result {result})")));
+        }
+        self.keyed_at = Some(Instant::now());
+        Ok(())
+    }
+
+    fn link_up(&mut self) -> io::Result<bool> {
+        Ok(self.keyed_at.is_some_and(|at| at.elapsed() >= self.settle))
     }
 }

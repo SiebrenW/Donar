@@ -275,6 +275,9 @@ pub struct Settings {
     pub iso2: Iso2,
     /// Run SLAC on the interface before looking for a charger.
     pub slac: bool,
+    /// Configure a Qualcomm QCA7000 family modem on the interface with the charger's key once SLAC
+    /// has matched (CM_SET_KEY); without it the interface is taken as the link already.
+    pub qca_modem: bool,
     /// `TT_matching_repetition` (default 10 s): how long SLAC keeps trying.
     pub slac_repetition_ms: Option<u32>,
     /// When SLAC validates the charger by control pilot toggles; the toggles are written to
@@ -333,6 +336,7 @@ impl Default for Settings {
             slac: false,
             slac_repetition_ms: None,
             slac_validation: SlacValidation::Never,
+            qca_modem: false,
             slac_toggles: 0,
             control_pilot_file: None,
             tls: None,

@@ -243,19 +243,24 @@ fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session:
 fn run_slac(interface: &str, settings: &Settings) -> io::Result<bool> {
     use evcc_core::slac::Outcome as SlacOutcome;
     let socket = evcc_linux::slac::PacketSocket::open(interface)?;
-    let run_id = std::array::from_fn(|i| (std::process::id() as u8).wrapping_add((i as u8).wrapping_mul(37)));
-    let outcome = match &settings.control_pilot_file {
-        Some(path) => evcc_linux::slac::run_with_pilot(
-            &socket,
-            settings.slac_config(),
-            run_id,
-            &mut evcc_linux::slac::NoModem,
-            &mut evcc_sim::FilePilot(path.into()),
-        )?,
-        None => evcc_linux::slac::run(&socket, settings.slac_config(), run_id, &mut evcc_linux::slac::NoModem)?,
+    let outcome = if settings.qca_modem {
+        let mut modem = evcc_linux::slac::QcaModem::open(interface)?;
+        eprintln!("modem: {}", modem.version()?);
+        slac_with(&socket, settings, &mut modem)?
+    } else {
+        slac_with(&socket, settings, &mut evcc_linux::slac::NoModem)?
     };
     eprintln!("slac: {outcome:?}");
     Ok(matches!(outcome, SlacOutcome::Matched { .. }))
+}
+
+#[cfg(target_os = "linux")]
+fn slac_with(socket: &evcc_linux::slac::PacketSocket, settings: &Settings, modem: &mut impl evcc_linux::slac::Modem) -> io::Result<evcc_core::slac::Outcome> {
+    let run_id = std::array::from_fn(|i| (std::process::id() as u8).wrapping_add((i as u8).wrapping_mul(37)));
+    match &settings.control_pilot_file {
+        Some(path) => evcc_linux::slac::run_with_pilot(socket, settings.slac_config(), run_id, modem, &mut evcc_sim::FilePilot(path.into())),
+        None => evcc_linux::slac::run(socket, settings.slac_config(), run_id, modem),
+    }
 }
 
 #[cfg(not(target_os = "linux"))]

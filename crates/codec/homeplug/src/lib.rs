@@ -10,6 +10,8 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod modem;
+
 pub type Mac = [u8; 6];
 
 pub const BROADCAST: Mac = [0xFF; 6];

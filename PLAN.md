@@ -350,3 +350,11 @@ Done, vehicle (`evcc_core::iso2`) and charger (`evse-sim`):
 - **Metering receipt:** a contract session answers `ReceiptRequired` with a `MeteringReceiptReq` copying the meter info and signed with the contract key (P-256, SHA-256, canonical EXI fragment of the element); the charger checks signature and reading. Scenario `ac3-iso2-pnc-receipt`. The Python SECC did not ask for a receipt in its Plug & Charge run, so this is only tested against our own charger.
 
 Not done: certificate installation and update (the messages are in the codec; the crypto is left to the implementer's side, as decided), sales tariffs in the vehicle.
+
+## SLAC modem: QCA7000 family (2026-10-17)
+
+Done: `homeplug::modem` (CM_SET_KEY.REQ/.CNF, the vendor version request/answer, `network_id`), `evcc_linux::slac::QcaModem` (a `Modem` for a QCA7000/QCA7005/QCA7020 behind a network interface, e.g. the `qcaspi` driver's; the local device address `00:B0:52:00:00:01`), `PacketSocket::open_any` (an interface that is a bridge port: a socket bound to the HomePlug protocol never sees frames addressed to the host there, found on the board), the `tls` feature of `evcc-linux` (default; without it the crate builds without OpenSSL, which is what cross-compiling for a small board needs), the example `plc_probe`, the setting `qca_modem` of `evcc-sim`. Tests: the frames against captures from the board, the driver against a fake modem on a veth cable (`scenarios/tests/modem.rs`).
+
+Checked on a Heliox EVAChargeSE board (QCA7005, firmware MAC-QCA7005-3.3.0.31-00-20231004-CS, `qcaspi`, the interface bridged): `plc_probe eth1`, cross-compiled for `armv5te-unknown-linux-musleabi`, reads the version from the modem. Not checked on hardware: `CM_SET_KEY` (it changes the modem's key until its reset, so it needs the owner's go-ahead), the NID derivation against what a modem reports, a link between two modems; the link check after the key is a settle time (the modem's network info message was not decoded).
+
+The board is an EVSE side modem (PIB `hlx-secc`); a real SLAC run needs a second PLC node for the vehicle side.

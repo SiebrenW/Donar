@@ -6,7 +6,6 @@
 use homeplug::{BROADCAST, Frame, GROUPS, Mac, Message, RunId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -76,18 +75,9 @@ pub struct Evse {
     counting: Option<(Mac, u32)>,
 }
 
-/// The network ID for a key (HomePlug Green PHY 4.4.3.1): PBKDF1 with SHA-256 and five
-/// iterations, no salt, security level 0. The octet layout follows the common
-/// implementations (first seven octets of the digest, the last one shifted right by four
-/// bits); it has not been checked against a modem.
+/// The network ID for a key ([`homeplug::modem::network_id`]).
 pub fn nid(nmk: &[u8; 16]) -> [u8; 7] {
-    let mut digest = Sha256::digest(nmk);
-    for _ in 1..5 {
-        digest = Sha256::digest(digest);
-    }
-    let mut nid: [u8; 7] = digest[..7].try_into().unwrap();
-    nid[6] >>= 4;
-    nid
+    homeplug::modem::network_id(nmk)
 }
 
 impl Evse {

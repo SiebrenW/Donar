@@ -3,3 +3,6 @@ name = "homeplug"
 version.workspace = true
 edition.workspace = true
 publish = false
+
+[dependencies]
+sha2 = { version = "0.10", default-features = false }
