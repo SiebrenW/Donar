@@ -29,6 +29,20 @@ crates/codec/exi-gen/benchmarks/run.sh                           # needs a JDK a
 - **A failure is a statement about this corpus**, not about every stream a stack sees: the libraries are used productively with the documents their users send. The failing documents are listed so that you can check whether your stack sends such documents.
 - **Not compared**: robustness against malformed input, streaming, EXI features beyond the schema-informed profile ISO 15118 uses, encoding speed from the application's own data model (each library has its own).
 
+## What the first run showed, and what it led to
+
+The first run had this crate behind OpenV2G on decoding (173 against 96 ns for DIN). A profile (`sample` on `rust/src/bin/spin.rs`, which decodes the DIN corpus in a loop) found:
+
+| cost | cause | change | effect on DIN decode |
+|---|---|---|---|
+| a quarter to a third of the time in `memmove` | a message is a few bytes, so most bit reads were within eight bytes of the end of the buffer and took a path that copied the tail with a variable-length `copy_from_slice`; the writer's flush and the string table's clone did the same | read and write those octets one by one (`bits.rs`, `strings.rs`) | 215 to 136 ns (the spin loop) |
+| event codes worked out for every event | the width of an event code and the productions after the current element were derived from the whole slot table each time | the widths and the following slots are computed once per slot when the layout is built (`layout.rs`, `fill`) | 215 to 183 |
+| lists decoded twice | the arena slice of a list has to have its exact size, so every list was parsed once to count it (with a copy of the string table) and once for real | a list of up to four entries is decoded once into a buffer on the stack and copied to the arena; longer lists rewind and count as before (`codec.rs`, `Dec::list`) | 129 to 109 |
+
+Together: DIN decode 173 to 99 ns, encode 92 to 76; ISO 15118-2 190/109 to 117/88; ISO 15118-20 217/124 to 144/95. The price is code size, 7% more (the list buffer is generated per entry type): 169 to 181 kB for DIN.
+
+**Why OpenV2G is fast, and what is left.** Its codec is generated code with the event code widths as constants, decoding straight into one static struct: no interpretation of a layout, no value moves, no arena, and lists are fixed-size arrays, so one pass. That costs a 50 kB struct for every document and the limits of fixed sizes (the failures in the round-trip table). What this crate still does per event is the table lookup in `Layout::read` (about half of the decode time now) and moving whole values out of `decode_content` (a message is 100 to 260 bytes). Further steps, not done: generating the state machine with constant widths per type instead of looking the widths up; making `Event` and `Pos` smaller so that `read` returns in registers; decoding into the final place instead of returning large values; a bit reader that keeps a window of the stream instead of loading eight octets per read.
+
 ## Layout
 
 | | |

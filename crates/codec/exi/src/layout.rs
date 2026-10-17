@@ -28,12 +28,24 @@ pub struct Slot {
     last: u16,
     /// No slot at or after this one is mandatory, so `EE` is a production.
     open: bool,
+    // What `read` needs of the state `(this slot, count)`, worked out once in [`fill`] (the event code
+    // widths of the three kinds of state, and the slots that follow this one):
+    /// Width of the event code while fewer than `min` copies were seen, from `min` up to `max`
+    /// (more may follow, or the next slots), and at `max`.
+    w_below: u8,
+    w_mid: u8,
+    w_full: u8,
+    /// Width at the start of the layout (only slot 0).
+    w_start: u8,
+    /// `last` and `open` of the slot after this one (the end of the layout if there is none).
+    after_last: u16,
+    after_open: bool,
 }
 
 impl Slot {
     /// A slot whose derived fields are still empty: put the slots through [`table`].
     pub const fn new(min: u32, max: u32, alts: u16) -> Self {
-        Self { min, max, alts, pre: 0, last: 0, open: false }
+        Self { min, max, alts, pre: 0, last: 0, open: false, w_below: 0, w_mid: 0, w_full: 0, w_start: 0, after_last: 0, after_open: false }
     }
 }
 
@@ -60,6 +72,26 @@ pub const fn fill(slots: &mut [Slot]) {
             slots[i].last = n as u16;
             slots[i].open = true;
         }
+    }
+    // The widths: the productions of each kind of state, counted as `Layout::total` does.
+    let mut i = 0;
+    while i < n {
+        let s = slots[i];
+        let (after_last, after_open) = if i + 1 < n { (slots[i + 1].last, slots[i + 1].open) } else { (n as u16, true) };
+        // Productions of the slots `start..last` and the end event.
+        let run = if after_last as usize > i + 1 { slots[after_last as usize - 1].pre + slots[after_last as usize - 1].alts as u32 - slots[i + 1].pre } else { 0 };
+        let following = run + after_open as u32;
+        slots[i].after_last = after_last;
+        slots[i].after_open = after_open;
+        slots[i].w_below = ceil_log2(s.alts as u64 + 1) as u8;
+        slots[i].w_mid = ceil_log2((s.alts as u32 + following) as u64 + 1) as u8;
+        slots[i].w_full = ceil_log2(following as u64 + 1) as u8;
+        i += 1;
+    }
+    if n > 0 {
+        let s = slots[0];
+        let run = slots[s.last as usize - 1].pre + slots[s.last as usize - 1].alts as u32;
+        slots[0].w_start = ceil_log2((run + s.open as u32) as u64 + 1) as u8;
     }
 }
 
@@ -230,8 +262,49 @@ impl Layout {
         w.bits(total - 1, ceil_log2(u64::from(total + self.tail(&span)) + 1))
     }
 
+    /// Reads the event of state `pos`. The widths and the slots that follow come from the slot's own
+    /// precomputed fields ([`fill`]); [`Layout::read_generic`] works them out from the whole table and
+    /// is what mixed content (a tail of productions after `EE`) and the tests use.
     #[inline]
     pub fn read(&self, r: &mut BitReader<'_>, pos: Pos) -> Result<Event, DecodeError> {
+        if self.1 != 0 {
+            return self.read_generic(r, pos);
+        }
+        let (width, repeat, start, last, end) = if pos.count == 0 {
+            let Some(first) = self.0.first() else { return self.read_generic(r, pos) };
+            (first.w_start, 0, 0, usize::from(first.last), first.open)
+        } else {
+            let slot = &self.0[usize::from(pos.slot)];
+            let start = usize::from(pos.slot) + 1;
+            if pos.count < slot.min {
+                (slot.w_below, u32::from(slot.alts), start, start, false)
+            } else if pos.count < slot.max {
+                (slot.w_mid, u32::from(slot.alts), start, usize::from(slot.after_last), slot.after_open)
+            } else {
+                (slot.w_full, 0, start, usize::from(slot.after_last), slot.after_open)
+            }
+        };
+        let mut code = r.bits(u32::from(width))?;
+        if code < repeat {
+            let slot = usize::from(pos.slot);
+            return Ok(Event::Start { slot, alt: code as usize, next: Self::after(pos, slot) });
+        }
+        code -= repeat;
+        for slot in start..last {
+            let alts = u32::from(self.0[slot].alts);
+            if code < alts {
+                return Ok(Event::Start { slot, alt: code as usize, next: Self::after(pos, slot) });
+            }
+            code -= alts;
+        }
+        if end && code == 0 {
+            return Ok(Event::End);
+        }
+        Err(DecodeError::Unsupported("event outside the schema grammar"))
+    }
+
+    /// [`Layout::read`] computing the state's productions from the table each time.
+    pub fn read_generic(&self, r: &mut BitReader<'_>, pos: Pos) -> Result<Event, DecodeError> {
         let span = self.span(pos);
         let total = self.total(&span);
         let mut code = r.bits(ceil_log2(u64::from(total + self.tail(&span)) + 1))?;
@@ -389,6 +462,8 @@ mod tests {
                     let mut r = BitReader::new(&buf[..n]);
                     assert_eq!(r.bits(width).unwrap() as usize, code, "{pos:?} {prod:?}");
                     let mut r = BitReader::new(&buf[..n]);
+                    let mut r2 = BitReader::new(&buf[..n]);
+                    assert_eq!(layout.read(&mut r2, pos).unwrap(), layout.read_generic(&mut BitReader::new(&buf[..n]), pos).unwrap(), "{pos:?}");
                     match (layout.read(&mut r, pos).unwrap(), *prod) {
                         (Event::Start { slot, alt, next: got }, Prod::Start { slot: s, alt: a }) => {
                             assert_eq!((slot, alt), (s, a));

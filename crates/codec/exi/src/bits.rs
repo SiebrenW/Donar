@@ -36,9 +36,12 @@ impl<'b> BitWriter<'b> {
     fn flush(&mut self) -> Result<(), EncodeError> {
         let bytes = (self.nbits / 8) as usize;
         let out = self.buf.get_mut(self.len..self.len + bytes).ok_or(EncodeError::BufferTooSmall)?;
-        // Left-align the pending bits so that the oldest ones come out first.
+        // Left-align the pending bits so that the oldest ones come out first. The octets one by one:
+        // a copy of variable length is a call to `memmove`, and at most four octets are written.
         let top = (self.acc << (64 - self.nbits)).to_be_bytes();
-        out.copy_from_slice(&top[..bytes]);
+        for (o, t) in out.iter_mut().zip(top) {
+            *o = t;
+        }
         self.len += bytes;
         self.nbits %= 8;
         self.acc &= (1u64 << self.nbits) - 1;
@@ -134,10 +137,14 @@ impl<'b> BitReader<'b> {
         let word = match self.buf.get(first..first + 8) {
             Some(w) => u64::from_be_bytes(w.try_into().unwrap()),
             None => {
-                let mut tail = [0u8; 8];
-                let rest = &self.buf[first..];
-                tail[..rest.len()].copy_from_slice(rest);
-                u64::from_be_bytes(tail)
+                // Near the end of the buffer: the (at most five) octets that hold the bits, one by
+                // one. A variable-length copy here was a call to `memmove` for most bits of a short message.
+                let need = (self.pos % 8 + n as usize).div_ceil(8);
+                let mut word = 0u64;
+                for i in 0..need {
+                    word = (word << 8) | u64::from(self.buf[first + i]);
+                }
+                word << (8 * (8 - need))
             }
         };
         let v = ((word << (self.pos % 8)) >> (64 - n)) as u32;

@@ -16,3 +16,7 @@ exi = { path = "../../../exi" }
 din70121 = { path = "../../../din70121", optional = true }
 iso15118-2 = { path = "../../../iso15118-2", optional = true }
 iso15118-20 = { path = "../../../iso15118-20", optional = true }
+
+[[bin]]
+name = "spin"
+required-features = ["din"]

@@ -29,7 +29,11 @@ impl Clone for Table<'_> {
     /// Copies the used entries only.
     fn clone(&self) -> Self {
         let mut copy = Self::new();
-        copy.entries[..self.len].copy_from_slice(&self.entries[..self.len]);
+        // Entry by entry: a `copy_from_slice` of variable length is a call to `memmove`, and most
+        // tables (a stream without value partition, a message with few strings) are empty or nearly.
+        for i in 0..self.len {
+            copy.entries[i] = self.entries[i];
+        }
         copy.len = self.len;
         copy.keep = self.keep;
         copy
@@ -53,6 +57,16 @@ impl<'s> Table<'s> {
     /// A table for an EXI stream with `valuePartitionCapacity` 0: nothing is ever stored.
     pub fn without_values() -> Self {
         Self { keep: false, ..Self::new() }
+    }
+
+    /// Number of values in the table.
+    pub(crate) fn count(&self) -> usize {
+        self.len
+    }
+
+    /// Forgets the values added after the first `count`.
+    pub(crate) fn truncate(&mut self, count: usize) {
+        self.len = self.len.min(count);
     }
 
     fn used(&self) -> &[(u8, &'s str)] {

@@ -313,6 +313,37 @@ impl<'r, 's> Dec<'r, 's> {
             let (_, end) = self.run_list(lay, slot, next, &mut one)?;
             return Ok((&[], end));
         };
+        // Short lists, the common case, are decoded once into a buffer on the stack and copied to
+        // the arena. A longer one is rewound (the reader, the arena, the string table) and counted
+        // by a dry run, so that the arena slice has exactly the right size.
+        const STACK: usize = 4;
+        let (mark_reader, mark_arena, mark_strings) = (self.r.clone(), arena.used(), self.strings.count());
+        let mut buf = [core::mem::MaybeUninit::<T>::uninit(); STACK];
+        let mut n = 0;
+        let mut at = next;
+        loop {
+            buf[n] = core::mem::MaybeUninit::new(one(self)?);
+            n += 1;
+            let before = self.r.clone();
+            match lay.read(&mut self.r, at)? {
+                Event::Start { slot: s, next, .. } if s == slot => {
+                    if n == STACK {
+                        break;
+                    }
+                    at = next;
+                }
+                _ => {
+                    self.r = before;
+                    // SAFETY: the first `n` entries were written above; `T: Copy`.
+                    let items = arena.alloc_slice_with(n, |i| Ok::<T, DecodeError>(unsafe { buf[i].assume_init() }))?;
+                    return Ok((items, at));
+                }
+            }
+        }
+        self.r = mark_reader;
+        self.strings.truncate(mark_strings);
+        // SAFETY: the entries decoded so far live only in `buf`, which is not read again.
+        unsafe { arena.rewind(mark_arena) };
         let mut table = self.strings.clone();
         let mut dry = Dec { r: self.r.clone(), arena: None, strings: &mut table };
         let (n, end) = dry.run_list(lay, slot, next, &mut one)?;

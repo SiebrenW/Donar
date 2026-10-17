@@ -30,6 +30,14 @@ impl<'a> Arena<'a> {
         self.used.get()
     }
 
+    /// Gives back everything allocated since `mark` (a value of [`Arena::used`]).
+    ///
+    /// # Safety
+    /// Nothing allocated since `mark` may be used afterwards.
+    pub(crate) unsafe fn rewind(&self, mark: usize) {
+        self.used.set(mark);
+    }
+
     /// Allocates `n` elements, each produced by `f(index)`. `f` may itself allocate from
     /// this arena (the outer region is reserved first). On error nothing stays allocated.
     #[allow(clippy::mut_from_ref)]
