@@ -1,0 +1,16 @@
+name = "interop-iso15118-python-din"
+description = "The simulated vehicle against the SECC of the open-source Python iso15118 library (0.31.2): DIN SPEC 70121 DC, external payment, plain TCP."
+timeout_s = 60
+
+[secc]
+kind = "iso15118-python"
+protocols = "DIN_SPEC_70121"   # the library's PROTOCOLS setting
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+protocol = "din70121"
+connector = "extended"
+
+[expect]
+evcc_log = ["session: Ended(Completed)"]

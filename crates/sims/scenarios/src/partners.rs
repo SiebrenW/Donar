@@ -50,14 +50,15 @@ fn run_helper(sb: &Sandbox, spec: Spawn) -> io::Result<()> {
     }
 }
 
-/// The SECC of the `iso15118` library: ISO 15118-20 DC with EIM, plain TCP, or TLS 1.3 with
+/// The SECC of the `iso15118` library: `protocols` (its `PROTOCOLS` setting, `ISO_15118_20_DC` or
+/// `DIN_SPEC_70121`) with EIM, plain TCP, or TLS 1.3 with
 /// mutual authentication using the library's own test PKI (secp256r1, the ISO 15118-2
 /// profile), which is created for the run.
-pub fn iso15118_python(sb: &Sandbox, node: &Node, tls: bool) -> io::Result<Partner> {
+pub fn iso15118_python(sb: &Sandbox, node: &Node, tls: bool, protocols: &str) -> io::Result<Partner> {
     let mut spawn = Spawn::new(venv().join("bin/python"))
         .args(["-m", "iso15118.secc.main"])
         .env("NETWORK_INTERFACE", sandbox::INTERFACE)
-        .env("PROTOCOLS", "ISO_15118_20_DC")
+        .env("PROTOCOLS", protocols)
         .env("AUTH_MODES", "EIM")
         .env("LOG_LEVEL", "DEBUG")
         .current_dir(sb.artifacts())

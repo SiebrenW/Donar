@@ -110,6 +110,10 @@ pub struct Participant {
     /// trusts its root); for the vehicle only.
     #[serde(default)]
     pub pnc: bool,
+    /// For the external charger: the protocols it speaks, as its own setting names them
+    /// (`ISO_15118_20_DC` by default, or `DIN_SPEC_70121`).
+    #[serde(default)]
+    pub protocols: Option<String>,
     /// The participant's settings file as a table (`evcc_sim::Settings`, `evse_sim::Settings`).
     #[serde(default)]
     pub settings: toml::Table,

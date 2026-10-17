@@ -76,7 +76,8 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
     let mut partner_tls = None;
     let mut secc_process = match scenario.secc.kind {
         Kind::Iso15118Python => {
-            let partner = partners::iso15118_python(&sb, &secc, scenario.secc.tls)?;
+            let protocols = scenario.secc.protocols.as_deref().unwrap_or("ISO_15118_20_DC");
+            let partner = partners::iso15118_python(&sb, &secc, scenario.secc.tls, protocols)?;
             partner_tls = partner.vehicle_tls;
             partner.process
         }
