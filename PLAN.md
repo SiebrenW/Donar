@@ -333,7 +333,7 @@ Done: the generated codec already had the BPT types; five new EXIficient vectors
 
 Discharge simulation: with the battery model (a test platform) and `limits.discharge_to_soc` the vehicle requests a negative `EVTargetEnergyRequest` (our reading of the standard: negative means give energy back; to be checked against the text) until the battery is at the floor, then charges to `target_soc`; the simulated charger answers with a negative present current within both sides' discharge limits, and the battery follows. Test `a_bpt_session_discharges_then_charges` (web).
 
-Not done: no V2X energy requests, no separated channel or grid-forming mode, no Scheduled BPT, no independent partner for -20 BPT (the Python library was not tried).
+Not done: no V2X energy requests, no separated channel or grid-forming mode, no Scheduled BPT, Independent partner: the Python library's SECC (0.31.2) offers DC_BPT; `interop/iso15118-python-bpt` runs a full BPT session against it (it decodes our BPT parameter discovery, charge loop and channel selection). It does not offer `BPTChannel` and `GeneratorMode` in its DC_BPT parameter sets, so the vehicle accepts a set without them (`Config::optional_parameters`); whether the standard requires them is unchecked. Discharging was not exercised against it (the library's simulator answers fixed values).
 
 ## Web page redesign
 

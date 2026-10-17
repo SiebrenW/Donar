@@ -55,6 +55,9 @@ pub struct Config {
     /// A parameter set is acceptable when it holds every `(name, value)` listed here as an
     /// integer parameter. The first acceptable set is selected.
     pub parameter_filter: &'static [(&'static str, i32)],
+    /// Like `parameter_filter`, but a set that does not have the parameter at all is acceptable
+    /// (the Python library's DC_BPT sets carry neither `BPTChannel` nor `GeneratorMode`).
+    pub optional_parameters: &'static [(&'static str, i32)],
     /// Resume this paused session instead of starting a new one (V2G20-1541): the
     /// `SessionSetupReq` carries its id; when the charger agrees, authorization and service
     /// selection are not repeated.
@@ -79,7 +82,8 @@ impl Config {
     /// generator mode (Table 207: `BPTChannel` 1, `GeneratorMode` 1).
     pub const DC_BPT_20: Config = Config {
         energy_service: SERVICE_ID_DC_BPT,
-        parameter_filter: &[("ControlMode", 2), ("MobilityNeedsMode", 1), ("BPTChannel", 1), ("GeneratorMode", 1)],
+        parameter_filter: &[("ControlMode", 2), ("MobilityNeedsMode", 1)],
+        optional_parameters: &[("BPTChannel", 1), ("GeneratorMode", 1)],
         ..Config::DC_20
     };
 
@@ -116,6 +120,7 @@ impl Config {
         // needs provided by the EVCC. `Connector` follows the vehicle's inlet
         // ([`Ev::dc_connector`]) and is matched separately.
         parameter_filter: &[("ControlMode", 2), ("MobilityNeedsMode", 1)],
+        optional_parameters: &[],
         resume: None,
         pause_on_notification: false,
         prefer_pnc: false,

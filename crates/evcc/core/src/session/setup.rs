@@ -292,6 +292,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             .find(|set| {
                 has(set, "Connector", connector)
                     && self.config.parameter_filter.iter().all(|&(name, want)| has(set, name, want))
+                    && self.config.optional_parameters.iter().all(|&(name, want)| has(set, name, want) || !set.parameter.iter().any(|p| p.name == name))
             })
             .map(|set| set.parameter_set_id)
     }}
