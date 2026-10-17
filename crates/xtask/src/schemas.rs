@@ -30,12 +30,22 @@ const DIN_FILES: &[(&str, &str)] = &[
     ("xmldsig-core-schema.xsd", "xmldsig-core-schema.xsd"),
 ];
 
+const ISO2_FILES: &[(&str, &str)] = &[
+    ("iso15118_2/V2G_CI_MsgDataTypes.xsd", "V2G_CI_MsgDataTypes.xsd"),
+    ("iso15118_2/V2G_CI_MsgBody.xsd", "V2G_CI_MsgBody.xsd"),
+    ("iso15118_2/V2G_CI_MsgDef.xsd", "V2G_CI_MsgDef.xsd"),
+    ("iso15118_2/V2G_CI_MsgHeader.xsd", "V2G_CI_MsgHeader.xsd"),
+    ("xmldsig-core-schema.xsd", "xmldsig-core-schema.xsd"),
+];
+
 /// Downloads the XSDs (skipping files already present unless `force`).
 pub fn setup(force: bool) -> Result<(), String> {
     let iso20: Vec<(String, &str)> = ISO20_FILES.iter().map(|n| (format!("{ISO20_URL}{n}"), *n)).collect();
     fetch(&workspace_root().join("data/schemas/iso15118-20"), &iso20, force)?;
     let din: Vec<(String, &str)> = DIN_FILES.iter().map(|(from, to)| (format!("{DIN_URL}{from}"), *to)).collect();
-    fetch(&workspace_root().join("data/schemas/din-spec"), &din, force)
+    fetch(&workspace_root().join("data/schemas/din-spec"), &din, force)?;
+    let iso2: Vec<(String, &str)> = ISO2_FILES.iter().map(|(from, to)| (format!("{DIN_URL}{from}"), *to)).collect();
+    fetch(&workspace_root().join("data/schemas/iso15118-2"), &iso2, force)
 }
 
 /// Downloads `(url, file name)` into `dir`.
