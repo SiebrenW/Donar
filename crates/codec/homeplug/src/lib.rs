@@ -18,8 +18,10 @@ pub const BROADCAST: Mac = [0xFF; 6];
 pub const ETHERTYPE: u16 = 0x88E1;
 /// Management message version of HomePlug Green PHY 1.0 and AV 1.1.
 pub const MMV: u8 = 0x01;
-/// Destination, source, EtherType, MMV and MMTYPE.
-pub const HEADER_LEN: usize = 17;
+/// Destination, source, EtherType, MMV, MMTYPE and the fragmentation information (FMI, two zero
+/// octets: the messages are not fragmented). A QCA7005 modem ignores a request of version 1 without
+/// the FMI, which is how it was found that the field belongs to the header.
+pub const HEADER_LEN: usize = 19;
 /// The shortest Ethernet frame without the FCS; shorter ones are padded.
 pub const MIN_FRAME: usize = 60;
 
@@ -234,6 +236,7 @@ impl Message {
         out[12..14].copy_from_slice(&ETHERTYPE.to_be_bytes());
         out[14] = MMV;
         out[15..17].copy_from_slice(&self.mmtype().to_le_bytes());
+        out[17..19].fill(0);
         out[HEADER_LEN..HEADER_LEN + len].copy_from_slice(&body[..len]);
         out[HEADER_LEN + len..].fill(0);
         Ok(total)
@@ -345,8 +348,8 @@ mod tests {
     fn parm_req_wire_format() {
         let mut buf = [0u8; 64];
         let n = Message::ParmReq { run_id: RUN }.write(BROADCAST, EV, &mut buf).unwrap();
-        assert_eq!(&buf[..27], &[
-            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x02, 0, 0, 0, 0, 0x01, 0x88, 0xE1, 0x01, 0x64, 0x60, 0x00, 0x00, 1, 2, 3, 4, 5, 6, 7, 8
+        assert_eq!(&buf[..29], &[
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x02, 0, 0, 0, 0, 0x01, 0x88, 0xE1, 0x01, 0x64, 0x60, 0x00, 0x00, 0x00, 0x00, 1, 2, 3, 4, 5, 6, 7, 8
         ]);
         assert_eq!(n, 60);
     }

@@ -45,8 +45,9 @@ fn fake_modem(answers: u32, result: u8, ready: std::sync::mpsc::Sender<()>) -> S
                 reply.extend_from_slice(b"MAC-QCA7005-3.3.0.31-00-20231004-CS\0");
             }
             modem::SET_KEY_REQ => {
-                seen.keys.push((frame[31..38].try_into().unwrap(), frame[39..55].try_into().unwrap()));
-                reply.extend_from_slice(&[0x01, 0x09, 0x60, result, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0]);
+                seen.keys.push((frame[33..40].try_into().unwrap(), frame[41..57].try_into().unwrap()));
+                // Version 1, the type, the fragmentation information, the result, nonces, protocol id.
+                reply.extend_from_slice(&[0x01, 0x09, 0x60, 0x00, 0x00, result, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0]);
             }
             _ => continue,
         }

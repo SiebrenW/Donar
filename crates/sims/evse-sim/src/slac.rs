@@ -197,7 +197,7 @@ impl Evse {
     }
 
     fn frame(&self, m: Message, dst: Mac) -> Vec<u8> {
-        let mut buf = vec![0u8; 128];
+        let mut buf = vec![0u8; 256];
         let n = m.write(dst, self.config.mac, &mut buf).expect("frame fits");
         buf.truncate(n);
         buf

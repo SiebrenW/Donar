@@ -8,8 +8,7 @@
 //!
 //! Verified against a QCA7005 (firmware `MAC-QCA7005-3.3.0.31-00-20231004-CS`) on a Heliox
 //! EVAChargeSE board: the version request and its answer (the test below uses the frame as it
-//! came off the wire). `CM_SET_KEY` follows the field layout of the HomePlug AV 1.1 text and of
-//! open implementations (no fragmentation field); see the notes at [`set_key_req`].
+//! came off the wire) and `CM_SET_KEY`, which the modem answered with result 0.
 
 use crate::{ETHERTYPE, Mac, MIN_FRAME};
 
@@ -19,8 +18,11 @@ pub const LOCAL_DEVICE: Mac = [0x00, 0xB0, 0x52, 0x00, 0x00, 0x01];
 /// Qualcomm Atheros organizationally unique identifier, the first field of every vendor message.
 pub const QCA_OUI: [u8; 3] = [0x00, 0xB0, 0x52];
 
-/// Destination, source, EtherType, MMV, MMTYPE: the header of the messages here.
-const HEADER: usize = 17;
+/// Destination, source, EtherType, MMV, MMTYPE and, for management message version 1, the two
+/// octets of fragmentation information.
+const fn header(mmv: u8) -> usize {
+    if mmv == 0x01 { 19 } else { 17 }
+}
 
 /// The network ID of a network membership key (HomePlug Green PHY 4.4.3.1): PBKDF1 with SHA-256
 /// and five iterations, no salt, security level 0. The octet layout (the first seven octets of the
@@ -54,21 +56,24 @@ pub const FRAME_MAX: usize = 80;
 
 /// The frame of a request: `payload` behind the header, padded to the minimum frame length.
 fn frame(dst: Mac, src: Mac, mmv: u8, mmtype: u16, payload: &[u8], out: &mut [u8]) -> Option<usize> {
-    let total = (HEADER + payload.len()).max(MIN_FRAME);
+    let head = header(mmv);
+    let total = (head + payload.len()).max(MIN_FRAME);
     let out = out.get_mut(..total)?;
     out[0..6].copy_from_slice(&dst);
     out[6..12].copy_from_slice(&src);
     out[12..14].copy_from_slice(&ETHERTYPE.to_be_bytes());
     out[14] = mmv;
     out[15..17].copy_from_slice(&mmtype.to_le_bytes());
-    out[HEADER..HEADER + payload.len()].copy_from_slice(payload);
-    out[HEADER + payload.len()..].fill(0);
+    out[17..head].fill(0);
+    out[head..head + payload.len()].copy_from_slice(payload);
+    out[head + payload.len()..].fill(0);
     Some(total)
 }
 
 /// CM_SET_KEY.REQ: tells the modem to use `nmk` as the key of the network `nid`. The fields are
 /// `KeyType` (NMK), `MyNonce`, `YourNonce` (zero), `PID` (host-provided key), `PRN` and `PMN`
-/// (zero), `CCoCapability` (zero), `NID`, `NewEKS` and `NewKey`. Returns the frame length, or
+/// (zero), `CCoCapability` (zero), `NID`, `NewEKS` and `NewKey`, behind the fragmentation
+/// information of a version 1 header. Returns the frame length, or
 /// `None` if `out` is too short ([`FRAME_MAX`] is enough).
 pub fn set_key_req(src: Mac, nid: [u8; 7], nmk: [u8; 16], out: &mut [u8]) -> Option<usize> {
     let mut p = [0u8; 1 + 4 + 4 + 1 + 2 + 1 + 1 + 7 + 1 + 16];
@@ -116,10 +121,10 @@ pub fn parse_sw_ver_cnf(frame: &[u8]) -> Option<SwVer<'_>> {
 
 /// The payload of a standard message of type `mmtype` (after the header).
 fn body(frame: &[u8], mmtype: u16) -> Option<&[u8]> {
-    if frame.len() < HEADER || frame[12..14] != ETHERTYPE.to_be_bytes() || u16::from_le_bytes([frame[15], frame[16]]) != mmtype {
+    if frame.len() < 17 || frame[12..14] != ETHERTYPE.to_be_bytes() || u16::from_le_bytes([frame[15], frame[16]]) != mmtype {
         return None;
     }
-    Some(&frame[HEADER..])
+    frame.get(header(frame[14])..)
 }
 
 /// The payload of a vendor message (after the header and the OUI).
@@ -160,22 +165,25 @@ mod tests {
         let n = set_key_req([2, 0, 0, 0, 0, 1], nid, nmk, &mut out).unwrap();
         assert_eq!(n, MIN_FRAME);
         assert_eq!(&out[..6], &LOCAL_DEVICE);
-        assert_eq!(&out[12..17], &[0x88, 0xE1, 0x01, 0x08, 0x60]);
+        // The version 1 header with its fragmentation information.
+        assert_eq!(&out[12..19], &[0x88, 0xE1, 0x01, 0x08, 0x60, 0x00, 0x00]);
         // KeyType, nonces, PID, PRN, PMN, CCo capability, NID, NewEKS, NewKey.
-        assert_eq!(out[17], 1);
-        assert_eq!(&out[18..26], &[0; 8]);
-        assert_eq!(out[26], 4);
-        assert_eq!(&out[31..38], &nid);
-        assert_eq!(out[38], 1);
-        assert_eq!(&out[39..55], &nmk);
+        assert_eq!(out[19], 1);
+        assert_eq!(&out[20..28], &[0; 8]);
+        assert_eq!(out[28], 4);
+        assert_eq!(&out[33..40], &nid);
+        assert_eq!(out[40], 1);
+        assert_eq!(&out[41..57], &nmk);
     }
 
     #[test]
     fn the_key_confirmation_gives_its_result() {
-        let mut frame = hex("0001 8705 f505 0001 8705 f506 88e1 01 0960");
-        frame.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0]);
+        // As the QCA7005 answered: version 1, the fragmentation information, the result 0, the
+        // nonces and the protocol id 4.
+        let mut frame = hex("0001 8705 f505 0001 8705 f506 88e1 01 0960 0000 00 01e9f524 92000000 04");
+        frame.resize(60, 0);
         assert_eq!(parse_set_key_cnf(&frame), Some(0));
-        frame[17] = 1;
+        frame[19] = 1;
         assert_eq!(parse_set_key_cnf(&frame), Some(1));
         assert_eq!(parse_set_key_cnf(&frame[..10]), None);
     }

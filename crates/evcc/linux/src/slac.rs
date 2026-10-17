@@ -192,7 +192,7 @@ pub fn run_with_pilot(
     }
     let mut machine = Machine::new(config);
     let mut deadlines = Deadlines::default();
-    let (mut tx, mut rx) = ([0u8; 128], [0u8; 2048]);
+    let (mut tx, mut rx) = ([0u8; 256], [0u8; 2048]);
     let mut joining = false;
     let mut next = None::<Next>;
     let mut started = false;
