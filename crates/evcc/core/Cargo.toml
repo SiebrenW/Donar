@@ -8,6 +8,7 @@ publish = false
 v2gtp = { path = "../../codec/v2gtp" }
 homeplug = { path = "../../codec/homeplug" }
 iso15118-20 = { path = "../../codec/iso15118-20" }
+din70121 = { path = "../../codec/din70121" }
 app-protocol = { path = "../../codec/app-protocol" }
 exi = { path = "../../codec/exi" }
 

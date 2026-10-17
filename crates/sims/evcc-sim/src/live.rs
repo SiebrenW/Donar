@@ -45,15 +45,15 @@ impl Phase {
         match state {
             Idle => Phase::Connecting,
             AwaitSupportedAppProtocolRes | AwaitSessionSetupRes => Phase::Setup,
-            AwaitAuthorizationSetupRes | AwaitAuthorizationRes => Phase::Authorization,
-            AwaitServiceDiscoveryRes | AwaitServiceDetailRes | AwaitServiceSelectionRes => Phase::Service,
+            AwaitAuthorizationSetupRes | AwaitAuthorizationRes | AwaitContractAuthenticationRes => Phase::Authorization,
+            AwaitServiceDiscoveryRes | AwaitServiceDetailRes | AwaitServiceSelectionRes | AwaitServicePaymentSelectionRes => Phase::Service,
             AwaitChargeParameterDiscoveryRes => Phase::ChargeParameters,
             AwaitScheduleExchangeRes => Phase::ScheduleExchange,
-            AwaitCableCheckRes => Phase::CableCheck,
+            AwaitControlPilotC | AwaitCableCheckRes => Phase::CableCheck,
             AwaitPreChargeRes | AwaitContactors => Phase::PreCharge,
             AwaitPowerDeliveryRes => Phase::PowerDelivery,
-            AwaitChargeLoopRes | AwaitPowerDeliveryStandbyRes => Phase::ChargeLoop,
-            AwaitCurrentStopped | AwaitPowerDeliveryStopRes | AwaitContactorsOpened | AwaitWeldingDetectionRes | AwaitSessionStopRes => Phase::Stop,
+            AwaitChargeLoopRes | AwaitPowerDeliveryStandbyRes | AwaitCurrentDemandRes => Phase::ChargeLoop,
+            AwaitCurrentStopped | AwaitPowerDeliveryStopRes | AwaitContactorsOpened | AwaitControlPilotB | AwaitWeldingDetectionRes | AwaitSessionStopRes => Phase::Stop,
             Ended => Phase::Ended,
         }
     }
@@ -154,6 +154,7 @@ impl EvLive {
             Record::MsgTx { msg } => json!({ "src": "ev", "t": now_ms, "kind": "tx", "msg": format!("{msg:?}") }),
             Record::MsgRx { msg } => json!({ "src": "ev", "t": now_ms, "kind": "rx", "msg": format!("{msg:?}") }),
             Record::Response { msg, code } => json!({ "src": "ev", "t": now_ms, "kind": "response", "msg": format!("{msg:?}"), "code": code.xml_name() }),
+            Record::DinResponse { msg, code } => json!({ "src": "ev", "t": now_ms, "kind": "response", "msg": format!("{msg:?}"), "code": code.xml_name() }),
             Record::StateChange { from, to } => json!({ "src": "ev", "t": now_ms, "kind": "state", "text": format!("{from:?} -> {to:?}") }),
             // Raw payloads are for the log.
             Record::RxPayload { .. } => return,

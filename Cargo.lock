@@ -250,6 +250,7 @@ name = "evcc-core"
 version = "0.1.0"
 dependencies = [
  "app-protocol",
+ "din70121",
  "evse-sim",
  "exi",
  "homeplug",
@@ -309,6 +310,7 @@ name = "evse-sim"
 version = "0.1.0"
 dependencies = [
  "app-protocol",
+ "din70121",
  "evcc-linux",
  "exi",
  "homeplug",

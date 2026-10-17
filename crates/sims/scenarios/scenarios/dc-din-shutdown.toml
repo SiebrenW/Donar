@@ -1,0 +1,22 @@
+name = "dc-din-shutdown"
+description = "DIN SPEC 70121: the charger asks the vehicle to stop with the status code EVSE_Shutdown after four charge loop rounds (V2G-DC-650); the vehicle would charge for ever and stops in an orderly way."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session.din]
+shutdown_after_loops = 4
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+protocol = "din70121"
+connector = "extended"
+stop_after = 0
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)"]
+secc_log = ["session: Stopped"]

@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use evcc_core::sdp::Outcome as SdpOutcome;
 use evcc_core::session::EndReason;
 use evcc_linux::{Outcome, sdp, tls};
-use evcc_sim::{Behaviour, Connector, EvLive, LogLevel, Settings, StderrLog, Tls, run_car_live};
+use evcc_sim::{Behaviour, Connector, EvLive, LogLevel, Protocol, SessionConfig, Settings, StderrLog, Tls, run_car_live};
 use v2gtp::sdp::Security;
 
 const USAGE: &str = "usage: evcc-sim --interface IF [--config FILE] [--slac] [--no-tls | --chain F --key F --trust F [--key-password P] [--backwards-compatible] [--tls-versions V]] [--stop-after N | --never-stop] [--connector INLET] [--log LEVEL] [--control SOCKET]";
@@ -186,7 +186,10 @@ fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session:
     };
     eprintln!("sdp: {}", sdp::address(&response, ifindex));
     let tcp = sdp::connect(&response, ifindex)?;
-    let config = evcc_core::session::Config { resume, ..settings.session() };
+    let config = match settings.protocol {
+        Protocol::Iso20 => SessionConfig::Iso20(evcc_core::session::Config { resume, ..settings.session() }),
+        Protocol::Din => SessionConfig::Din(settings.din_session(), settings.din.mac_address),
+    };
     let log = evcc_sim::LiveLog {
         inner: StderrLog { level: settings.log.into() },
         live: live.clone(),

@@ -8,8 +8,10 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod din;
 pub mod ev;
 pub mod log;
+pub mod machine;
 pub mod sdp;
 pub mod slac;
 pub mod session;
@@ -34,6 +36,9 @@ pub enum Timer {
     /// The side stream of a schedule renegotiation (V2G20-1041: its timing is independent of
     /// the main stream's): the response to the request in flight, or the pause before a repeat.
     Side,
+    /// `V2G_EVCC_ReadyToCharge_Timer` (DIN SPEC 70121): from the start of the session until the
+    /// first `PowerDeliveryRes`.
+    ReadyToCharge,
     /// The wait of the current SLAC step: response, batch interval, link-up or retry pause.
     Slac,
     /// `TT_EV_atten_results`: how long the EV collects attenuation reports.

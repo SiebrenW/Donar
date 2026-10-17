@@ -13,7 +13,6 @@ fn vector(name: &str) -> Vec<u8> {
     (0..hex.trim().len() / 2).map(|i| u8::from_str_radix(&hex.trim()[2 * i..2 * i + 2], 16).unwrap()).collect()
 }
 
-const SESSION: [u8; 8] = [0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18];
 
 fn message(session: &'static [u8], body: BodyElementChoice<'static>) -> V2gMessage<'static> {
     V2gMessage { header: MessageHeader { session_id: session, notification: None, signature: None }, body: Body { body_element: Some(body) } }

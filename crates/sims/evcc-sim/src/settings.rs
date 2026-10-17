@@ -5,6 +5,41 @@ use evcc_core::log::Level;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// The protocol the simulated car speaks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum Protocol {
+    /// ISO 15118-20 (DC, Dynamic control mode).
+    #[default]
+    #[serde(rename = "iso15118-20")]
+    Iso20,
+    /// DIN SPEC 70121 (DC, external payment).
+    #[serde(rename = "din70121")]
+    Din,
+}
+
+/// The knobs of the DIN SPEC 70121 side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Din {
+    /// The MAC address of the EVCC, its EVCCID (six octets).
+    pub mac_address: [u8; 6],
+    /// Send a `ChargingProfile` that follows the charger's schedule with `PowerDeliveryReq`.
+    pub send_charging_profile: bool,
+    /// Do the welding detection after the energy transfer (optional for the EVCC).
+    pub welding_detection: bool,
+    /// Send `ServiceCategory` `EVCharging` in `ServiceDiscoveryReq`.
+    pub service_category: bool,
+    /// Keep the charge loop's limits within those announced in the charge parameter discovery.
+    pub enforce_cpd_limits: bool,
+}
+
+impl Default for Din {
+    fn default() -> Self {
+        // A locally administered address, as a car without a registered one has.
+        Self { mac_address: [0x02, 0x00, 0x5E, 0x00, 0x53, 0x01], send_charging_profile: true, welding_detection: true, service_category: false, enforce_cpd_limits: true }
+    }
+}
+
 /// The inlet the simulated car claims (value of the service parameter `Connector`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -181,6 +216,10 @@ pub struct Tls {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    /// The protocol to offer the charger.
+    pub protocol: Protocol,
+    /// DIN SPEC 70121.
+    pub din: Din,
     /// Run SLAC on the interface before looking for a charger.
     pub slac: bool,
     /// `TT_matching_repetition` (default 10 s): how long SLAC keeps trying.
@@ -234,6 +273,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            protocol: Protocol::Iso20,
+            din: Din::default(),
             slac: false,
             slac_repetition_ms: None,
             slac_validation: SlacValidation::Never,
@@ -277,6 +318,24 @@ impl Settings {
 
     pub fn stop_after(&self) -> Option<u32> {
         (self.stop_after > 0).then_some(self.stop_after)
+    }
+
+    /// The DIN SPEC 70121 session configuration these settings call for.
+    pub fn din_session(&self) -> evcc_core::din::Config {
+        let mut config = evcc_core::din::Config {
+            welding_detection: self.din.welding_detection,
+            send_charging_profile: self.din.send_charging_profile,
+            service_category: self.din.service_category,
+            enforce_cpd_limits: self.din.enforce_cpd_limits,
+            ..evcc_core::din::Config::DIN
+        };
+        if let Some(ms) = self.poll_interval_ms {
+            config.poll_interval_ms = ms;
+        }
+        if let Some(ms) = self.charge_loop_interval_ms {
+            config.charge_loop_interval_ms = ms;
+        }
+        config
     }
 
     /// The session configuration these settings call for.

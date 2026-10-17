@@ -11,6 +11,7 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 mod generated;
+mod physical;
 
 /// The message header's signature is the xmldsig element of ISO 15118-20's codec.
 pub mod signature {

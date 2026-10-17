@@ -18,10 +18,11 @@ mod live;
 mod settings;
 
 pub use live::{Action, EvLive, Phase};
-pub use settings::{CertificateChecks, Connector, Contract, Limits, LogLevel, Settings, SlacValidation, Tls, TlsVersions};
+pub use settings::{CertificateChecks, Connector, Contract, Din, Limits, LogLevel, Protocol, Settings, SlacValidation, Tls, TlsVersions};
 
 pub struct SimulatedEv {
     connector: DcConnector,
+    mac: [u8; 6],
     limits: Limits,
     live: Option<Arc<EvLive>>,
     contract: Option<Arc<dyn evcc_core::ev::Contract>>,
@@ -32,13 +33,19 @@ pub struct SimulatedEv {
 
 impl SimulatedEv {
     pub fn new(open: Rc<Cell<bool>>, connector: DcConnector) -> Self {
-        Self { connector, limits: Limits::default(), live: None, contract: None, reads: Cell::new(0), open }
+        Self { connector, mac: Din::default().mac_address, limits: Limits::default(), live: None, contract: None, reads: Cell::new(0), open }
     }
 
     /// A car whose limits are `limits` and whose measurements the test platform sees and sets.
     pub fn with_live(mut self, live: Arc<EvLive>) -> Self {
         self.limits = live.limits();
         self.live = Some(live);
+        self
+    }
+
+    /// A car with this MAC address (the EVCCID of DIN SPEC 70121).
+    pub fn with_mac(mut self, mac: [u8; 6]) -> Self {
+        self.mac = mac;
         self
     }
 
@@ -68,6 +75,9 @@ impl Ev for SimulatedEv {
     fn evcc_id(&self) -> &str {
         // Annex C.5: WMI, "V", the OEM's own id and the check digit; no I, O or Q. The example of C.5.2.
         "DE8VAA0000453C4D58Y2"
+    }
+    fn evcc_mac(&self) -> [u8; 6] {
+        self.mac
     }
     fn schedule_request(&self) -> ScheduleRequest {
         let l = &self.limits();
@@ -171,13 +181,33 @@ pub fn run_car(
     run_car_live(stream, secured, config, behaviour, log, None, Limits::default(), None)
 }
 
+/// The configuration of the session machine the car runs: the protocol it speaks.
+#[derive(Debug, Clone, Copy)]
+pub enum SessionConfig {
+    Iso20(Config),
+    /// DIN SPEC 70121, with the MAC address the car sends as its EVCCID.
+    Din(evcc_core::din::Config, [u8; 6]),
+}
+
+impl From<Config> for SessionConfig {
+    fn from(config: Config) -> Self {
+        SessionConfig::Iso20(config)
+    }
+}
+
+impl From<evcc_core::din::Config> for SessionConfig {
+    fn from(config: evcc_core::din::Config) -> Self {
+        SessionConfig::Din(config, Din::default().mac_address)
+    }
+}
+
 /// [`run_car`] with the live state of a test platform (held at the start of each phase, with
 /// measurements to see and set) and the vehicle's limits.
 #[allow(clippy::too_many_arguments)]
 pub fn run_car_live(
     stream: &mut impl Transport,
     secured: bool,
-    config: Config,
+    config: impl Into<SessionConfig>,
     behaviour: Behaviour,
     log: impl LogSink,
     live: Option<Arc<EvLive>>,
@@ -186,17 +216,21 @@ pub fn run_car_live(
 ) -> io::Result<Outcome> {
     let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
     let open = Rc::new(Cell::new(false));
+    let config = config.into();
     let mut car = SimulatedEv::new(open.clone(), behaviour.connector).with_limits(limits);
+    if let SessionConfig::Din(_, mac) = config {
+        car = car.with_mac(mac);
+    }
     if let Some(live) = &live {
         car = car.with_live(live.clone());
     }
     if let Some(contract) = contract {
         car = car.with_contract(contract);
     }
-    let mut session = Session::new(config, car, log, Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
+    let buffers = Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena };
     let (mut loops, mut renegotiated, mut rescheduled) = (0, false, false);
     let mut gate = |state| live.as_ref().is_some_and(|l| l.gate(state));
-    let outcome = evcc_linux::run_gated(stream, &mut session, secured, &mut |n| match n {
+    let mut host = |n: &Notice| match n {
         // The car closes its contactors and stops drawing current as soon as it is asked to.
         Notice::CloseContactors => Some(Event::ContactorsClosed),
         Notice::StopEnergyTransfer { .. } => Some(Event::EnergyTransferStopped),
@@ -204,6 +238,8 @@ pub fn run_car_live(
             open.set(true);
             Some(Event::ContactorsOpened)
         }
+        // The control pilot follows at once (DIN SPEC 70121).
+        Notice::ControlPilot(_) => Some(Event::ControlPilotChanged),
         // The charger's output is on again for the next pre-charge.
         Notice::ServicesRenegotiating => {
             open.set(false);
@@ -234,7 +270,17 @@ pub fn run_car_live(
             }
         }
         _ => None,
-    }, &mut gate);
+    };
+    let outcome = match config {
+        SessionConfig::Iso20(config) => {
+            let mut session = Session::new(config, car, log, buffers);
+            evcc_linux::run_gated(stream, &mut session, secured, &mut host, &mut gate)
+        }
+        SessionConfig::Din(config, _) => {
+            let mut session = evcc_core::din::Session::new(config, car, log, buffers);
+            evcc_linux::run_gated(stream, &mut session, secured, &mut host, &mut gate)
+        }
+    };
     if let Some(live) = &live {
         live.finished(format!("{outcome:?}"));
     }

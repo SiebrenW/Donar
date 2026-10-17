@@ -77,6 +77,10 @@ pub trait Ev {
     /// `SessionSetupRes` and keeps the stamps increasing (V2G20-1537), so a clock that is only
     /// approximately right, or even a plain counter, works.
     fn now_micros(&self) -> u64;
+    /// The MAC address of the EVCC: the EVCCID of DIN SPEC 70121 (six octets).
+    fn evcc_mac(&self) -> [u8; 6] {
+        [0; 6]
+    }
     /// Which DC inlet the vehicle has; selects the matching `Connector` service parameter set.
     fn dc_connector(&self) -> DcConnector;
     /// The vehicle's DC limits for this session. Static facts, so a plain call; live values

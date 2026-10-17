@@ -16,7 +16,7 @@ use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
 use std::sync::Arc;
 
-use crate::config::Config;
+use crate::config::{Config, Protocol};
 use crate::live::EvseLive;
 
 fn random_challenge() -> [u8; 16] {
@@ -26,6 +26,9 @@ fn random_challenge() -> [u8; 16] {
 }
 
 const DC_NAMESPACE: &str = "urn:iso:std:iso:15118:-20:DC";
+const DIN_NAMESPACE: &str = "urn:din:70121:2012:MsgDef";
+
+mod din;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
@@ -36,6 +39,10 @@ pub enum State {
     AwaitServiceDiscoveryReq,
     AwaitServiceDetailReq,
     AwaitServiceSelectionReq,
+    /// DIN SPEC 70121.
+    AwaitServicePaymentSelectionReq,
+    /// DIN SPEC 70121.
+    AwaitContractAuthenticationReq,
     AwaitChargeParameterDiscoveryReq,
     AwaitScheduleExchangeReq,
     AwaitCableCheckReq,
@@ -67,6 +74,8 @@ pub struct Evse {
     state: State,
     rx: Vec<u8>,
     schema_id: u8,
+    /// The protocol the vehicle and the charger agreed on.
+    protocol: Protocol,
     authorization_reqs_seen: u32,
     schedule_reqs_seen: u32,
     cable_reqs_seen: u32,
@@ -92,11 +101,13 @@ pub struct Evse {
     /// The limits of the vehicle's charge parameter discovery request, which its charge loop
     /// requests have to stay within (V2G20-2198, 2199).
     ev_announced: Option<dc::DcCpdReqEnergyTransferMode>,
+    /// DIN SPEC 70121: what the vehicle announced in its charge parameter discovery.
+    din_ev_announced: Option<din70121::types::DcEvChargeParameter>,
 }
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge(), last_stamp: std::cell::Cell::new(0), ev_announced: None }
+        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, protocol: Protocol::Iso20, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge(), last_stamp: std::cell::Cell::new(0), ev_announced: None, din_ev_announced: None }
     }
 
     /// Reports the charge loop measurements to a test platform and takes its edits.
@@ -179,7 +190,10 @@ impl Evse {
     }
 
     /// The request the charger waits for in `state`.
-    fn expects(state: State) -> &'static str {
+    fn expects(&self, state: State) -> &'static str {
+        if self.protocol == Protocol::Din {
+            return din::expects(state);
+        }
         match state {
             State::AwaitSupportedAppProtocolReq => "SupportedAppProtocolReq",
             State::AwaitSessionSetupReq => "SessionSetupReq",
@@ -188,6 +202,8 @@ impl Evse {
             State::AwaitServiceDiscoveryReq => "ServiceDiscoveryReq",
             State::AwaitServiceDetailReq => "ServiceDetailReq",
             State::AwaitServiceSelectionReq => "ServiceSelectionReq",
+            State::AwaitServicePaymentSelectionReq => "ServicePaymentSelectionReq",
+            State::AwaitContractAuthenticationReq => "ContractAuthenticationReq",
             State::AwaitChargeParameterDiscoveryReq => "DC_ChargeParameterDiscoveryReq",
             State::AwaitScheduleExchangeReq => "ScheduleExchangeReq",
             State::AwaitCableCheckReq => "DC_CableCheckReq",
@@ -202,7 +218,7 @@ impl Evse {
 
     fn on_frame(&mut self, payload_type: PayloadType, payload: &[u8]) -> Output {
         let before = self.state;
-        self.note(format!("rx {} bytes, payload type {:#06x}, waiting for {}", payload.len(), payload_type.0, Self::expects(before)));
+        self.note(format!("rx {} bytes, payload type {:#06x}, waiting for {}", payload.len(), payload_type.0, self.expects(before)));
         if self.config.silent {
             self.note("silent: not answering");
             return Output::default();
@@ -210,7 +226,7 @@ impl Evse {
         let mut out = self.on_frame_inner(payload_type, payload);
         // A request that is none of what the charger waits for gets FAILED_SequenceError of the
         // response type it asks for (V2G20-459); only what is not a request at all closes silently.
-        if out.send.is_none() && out.close && !self.config.silent {
+        if out.send.is_none() && out.close && !self.config.silent && self.protocol == Protocol::Iso20 {
             let mut mem = vec![0u8; 8192];
             let arena = Arena::new(&mut mem);
             let reply = crate::answers::decode_request(payload_type, payload, &arena).and_then(|r| self.failing(&r, ResponseCode::FailedSequenceError));
@@ -220,7 +236,7 @@ impl Evse {
             }
         }
         match (&out.send, out.close) {
-            (None, true) => self.note(format!("closing without an answer: the frame is not a decodable {} (state {before:?})", Self::expects(before))),
+            (None, true) => self.note(format!("closing without an answer: the frame is not a decodable {} (state {before:?})", self.expects(before))),
             (None, false) => self.note("no answer"),
             (Some(bytes), close) => {
                 let tail = if close { ", then closing" } else { "" };
@@ -245,6 +261,9 @@ impl Evse {
         let mut mem = vec![0u8; 8192];
         let arena = Arena::new(&mut mem);
         let closed = Output { send: None, close: true };
+        if self.protocol == Protocol::Din && self.state != State::AwaitSupportedAppProtocolReq {
+            return self.on_din_frame(payload_type, payload);
+        }
         if payload_type == PayloadType::SCHEDULE_RENEGOTIATION {
             return self.on_side(payload);
         }
@@ -255,13 +274,19 @@ impl Evse {
                     return closed;
                 };
                 // Highest priority = lowest number among the protocols we speak.
+                let speaks = |p: Protocol| self.config.protocols.contains(&p);
                 let pick = req
                     .app_protocol
                     .iter()
-                    .filter(|p| p.protocol_namespace == DC_NAMESPACE && p.version_number_major == 1)
+                    .filter(|p| {
+                        (speaks(Protocol::Iso20) && p.protocol_namespace == DC_NAMESPACE && p.version_number_major == 1)
+                            || (speaks(Protocol::Din) && p.protocol_namespace == DIN_NAMESPACE && p.version_number_major == 2)
+                    })
                     .min_by_key(|p| p.priority);
                 match pick.filter(|_| !self.config.reject_protocol) {
                     Some(p) => {
+                        self.protocol = if p.protocol_namespace == DIN_NAMESPACE { Protocol::Din } else { Protocol::Iso20 };
+                        self.note(format!("protocol {}, schema id {}", p.protocol_namespace, p.schema_id));
                         self.schema_id = p.schema_id;
                         self.state = State::AwaitSessionSetupReq;
                         let res = SupportedAppProtocolRes { response_code: SapCode::OkSuccessfulNegotiation, schema_id: Some(p.schema_id) };

@@ -37,7 +37,7 @@ mod shutdown;
 mod types;
 
 pub use config::{Config, SERVICE_ID_DC};
-pub use types::{Buffers, ChargeLoopStatus, EndReason, Event, Notice, Resume, State, Step};
+pub use types::{Buffers, ChargeLoopStatus, ControlPilot, EndReason, Event, Notice, Resume, State, Step};
 
 pub struct Session<'a, E: Ev, L: LogSink> {
     rx: &'a mut [u8],
@@ -264,6 +264,8 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                     _ => Step::default(),
                 }
             }
+            // DIN SPEC 70121 only.
+            Event::ControlPilotChanged => Step::default(),
             Event::EnergyTransferStopped => {
                 if m.state != State::AwaitCurrentStopped {
                     return Step::default();
@@ -303,6 +305,21 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 step
             }
         }
+    }
+}
+
+impl<E: Ev, L: LogSink> crate::machine::Machine for Session<'_, E, L> {
+    fn handle(&mut self, event: Event) -> Step {
+        Session::handle(self, event)
+    }
+    fn rx_space(&mut self) -> &mut [u8] {
+        Session::rx_space(self)
+    }
+    fn tx(&self) -> &[u8] {
+        Session::tx(self)
+    }
+    fn state(&self) -> State {
+        Session::state(self)
     }
 }
 

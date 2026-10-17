@@ -1,0 +1,19 @@
+name = "dc-din"
+description = "A DIN SPEC 70121 DC session over plain TCP: the vehicle offers DIN only, the charger (which speaks both protocols) answers with it; control pilot changes, cable check, pre-charge, current demand and welding detection."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+protocol = "din70121"
+connector = "extended"
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)"]
+secc_log = ["protocol urn:din:70121:2012:MsgDef", "tx CurrentDemandRes OK", "session: Stopped"]

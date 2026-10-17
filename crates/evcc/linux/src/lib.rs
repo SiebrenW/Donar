@@ -18,9 +18,8 @@ use openssl::ssl::SslStream;
 use std::time::{Duration, Instant};
 
 use evcc_core::{Timer, TimerCmd};
-use evcc_core::ev::Ev;
-use evcc_core::log::LogSink;
-use evcc_core::session::{EndReason, Event, Notice, Session, Step};
+use evcc_core::machine::Machine;
+use evcc_core::session::{EndReason, Event, Notice, State, Step};
 
 /// A byte stream whose reads can time out, which is how the timer commands are served.
 pub trait Transport: Read + Write {
@@ -50,9 +49,9 @@ pub enum Outcome {
 /// Runs `session` over `stream` until it reaches a result. A peer that hangs up, cleanly or
 /// by resetting the connection, is reported as [`Outcome::ConnectionClosed`]; other I/O
 /// errors are returned.
-pub fn run<E: Ev, L: LogSink>(
+pub fn run(
     stream: &mut impl Transport,
-    session: &mut Session<'_, E, L>,
+    session: &mut impl Machine,
     secured: bool,
     host: &mut impl FnMut(&Notice) -> Option<Event>,
 ) -> io::Result<Outcome> {
@@ -64,12 +63,12 @@ pub fn run<E: Ev, L: LogSink>(
 /// may block (a test platform stepping through a session). When it returns true the time it
 /// took is added to every pending timer, so a wait does not count against the protocol's
 /// timeouts; with false the timers ran in real time.
-pub fn run_gated<E: Ev, L: LogSink>(
+pub fn run_gated(
     stream: &mut impl Transport,
-    session: &mut Session<'_, E, L>,
+    session: &mut impl Machine,
     secured: bool,
     host: &mut impl FnMut(&Notice) -> Option<Event>,
-    gate: &mut impl FnMut(evcc_core::session::State) -> bool,
+    gate: &mut impl FnMut(State) -> bool,
 ) -> io::Result<Outcome> {
     match drive(stream, session, secured, host, gate) {
         Err(e) if is_hang_up(&e) => Ok(Outcome::ConnectionClosed),
@@ -84,12 +83,12 @@ fn is_hang_up(e: &io::Error) -> bool {
     )
 }
 
-fn drive<E: Ev, L: LogSink>(
+fn drive(
     stream: &mut impl Transport,
-    session: &mut Session<'_, E, L>,
+    session: &mut impl Machine,
     secured: bool,
     host: &mut impl FnMut(&Notice) -> Option<Event>,
-    gate: &mut impl FnMut(evcc_core::session::State) -> bool,
+    gate: &mut impl FnMut(State) -> bool,
 ) -> io::Result<Outcome> {
     let mut deadlines = Deadlines::default();
     let mut step = session.handle(Event::Start { secured });
@@ -123,7 +122,7 @@ fn drive<E: Ev, L: LogSink>(
     }
 }
 
-const ALL_TIMERS: [Timer; 10] = [
+const ALL_TIMERS: [Timer; 11] = [
     Timer::Sdp,
     Timer::Response,
     Timer::Ongoing,
@@ -134,11 +133,12 @@ const ALL_TIMERS: [Timer; 10] = [
     Timer::Slac,
     Timer::SlacResults,
     Timer::SlacOverall,
+    Timer::ReadyToCharge,
 ];
 
 /// Pending expiry per timer.
 #[derive(Default)]
-pub(crate) struct Deadlines([Option<Instant>; 10]);
+pub(crate) struct Deadlines([Option<Instant>; 11]);
 
 impl Deadlines {
     pub(crate) fn slot(timer: Timer) -> usize {
@@ -153,6 +153,7 @@ impl Deadlines {
             Timer::SlacResults => 7,
             Timer::SlacOverall => 8,
             Timer::Side => 9,
+            Timer::ReadyToCharge => 10,
         }
     }
 
@@ -191,9 +192,9 @@ enum Next {
 }
 
 /// Waits for the next socket data or timer expiry and feeds it to the session.
-fn next_step<E: Ev, L: LogSink>(
+fn next_step(
     stream: &mut impl Transport,
-    session: &mut Session<'_, E, L>,
+    session: &mut impl Machine,
     deadlines: &mut Deadlines,
 ) -> io::Result<Next> {
     let pending = deadlines.next();

@@ -52,6 +52,21 @@ pub enum MsgKind {
     SessionStopRes,
     DcWeldingDetectionReq,
     DcWeldingDetectionRes,
+    // DIN SPEC 70121 (the messages it shares with ISO 15118-20 keep their kinds above).
+    ServicePaymentSelectionReq,
+    ServicePaymentSelectionRes,
+    ContractAuthenticationReq,
+    ContractAuthenticationRes,
+    ChargeParameterDiscoveryReq,
+    ChargeParameterDiscoveryRes,
+    CableCheckReq,
+    CableCheckRes,
+    PreChargeReq,
+    PreChargeRes,
+    CurrentDemandReq,
+    CurrentDemandRes,
+    WeldingDetectionReq,
+    WeldingDetectionRes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +103,13 @@ pub enum Record<'a> {
     /// the `Connector` parameter) and every `(name, value)` of the vehicle's filter.
     NoParameterSet { connector: i32, filter: &'static [(&'static str, i32)], offered: &'a [ParameterSet<'a>] },
     Ended { reason: EndReason },
+    /// A response code of a DIN SPEC 70121 charger.
+    DinResponse { msg: MsgKind, code: din70121::types::ResponseCode },
+    /// The charger does not offer the energy transfer the vehicle wants (DIN SPEC 70121).
+    DinNoEnergyService { wanted: din70121::types::EvRequestedEnergyTransfer, offered: din70121::types::EvseSupportedEnergyTransfer },
+    /// The charger offers no payment option the vehicle can use: DIN SPEC 70121 has only
+    /// `ExternalPayment` (V2G-DC-252).
+    DinNoPayment { offered: &'a [din70121::types::PaymentOption] },
 }
 
 impl Record<'_> {
@@ -100,6 +122,9 @@ impl Record<'_> {
             | Record::AuthorizationSelected { .. }
             | Record::ServiceSelected { .. } => Level::Info,
             Record::Response { code, .. } if !crate::session::is_ok(*code) => Level::Info,
+            Record::DinResponse { code, .. } if !crate::din::is_ok(*code) => Level::Info,
+            Record::DinResponse { .. } => Level::Debug,
+            Record::DinNoEnergyService { .. } | Record::DinNoPayment { .. } => Level::Error,
             Record::Response { .. } | Record::EvseProcessing { .. } | Record::MsgTx { .. } | Record::MsgRx { .. } => {
                 Level::Debug
             }

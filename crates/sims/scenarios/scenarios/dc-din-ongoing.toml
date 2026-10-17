@@ -1,0 +1,24 @@
+name = "dc-din-ongoing"
+description = "DIN SPEC 70121 with a charger that takes its time: contract authentication, charge parameter discovery and the cable check answer Ongoing a few times first, and the vehicle asks again."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session]
+authorization_ongoing_responses = 2
+cable_check_ongoing_responses = 3
+[secc.settings.session.din]
+cpd_ongoing_responses = 2
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+protocol = "din70121"
+connector = "extended"
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)"]
+secc_log = ["tx ContractAuthenticationRes OK", "session: Stopped"]

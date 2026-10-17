@@ -272,9 +272,61 @@ pub struct Pnc {
     pub check_profile: bool,
 }
 
+/// A protocol the charger speaks; it picks the one the vehicle prefers of those both have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum Protocol {
+    /// ISO 15118-20 (DC, Dynamic control mode).
+    #[serde(rename = "iso15118-20")]
+    Iso20,
+    /// DIN SPEC 70121 (DC, external payment).
+    #[serde(rename = "din70121")]
+    Din,
+}
+
+/// The energy transfer type of DIN SPEC 70121 the charger offers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum DinEnergyTransfer {
+    /// The core pins of an IEC 62196-3 configuration CC or DD connector.
+    #[serde(rename = "DC_core")]
+    DcCore,
+    /// The extended pins of a configuration EE or FF connector (a CCS charger).
+    #[default]
+    #[serde(rename = "DC_extended")]
+    DcExtended,
+}
+
+/// The knobs of the DIN SPEC 70121 side (the other knobs of [`Config`] apply to it as well:
+/// `limits`, `setup_code`, `authorization_*`, `selection_code`, `cpd_code`, `cable_check_*`,
+/// `precharge_requests_to_settle`, `power_delivery_code`, `welding_code`, `silent`, `session_id`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Din {
+    /// The `EnergyTransferType` of `ServiceDiscoveryRes`.
+    pub energy_transfer: DinEnergyTransfer,
+    /// The EVSE id in the format of DIN SPEC 91286 (`49*89*6360`), sent as hexBinary (V2G-DC-621).
+    pub evse_id: String,
+    /// Also offer the payment option `Contract` (DIN SPEC 70121 defines `ExternalPayment` only).
+    pub offer_contract_payment: bool,
+    /// How many `ChargeParameterDiscoveryRes` carry `Ongoing` before one says `Finished`.
+    pub cpd_ongoing_responses: u32,
+    /// After this many `CurrentDemandRes` the charger asks the vehicle to stop with the status
+    /// code `EVSE_Shutdown` (V2G-DC-650).
+    pub shutdown_after_loops: Option<u32>,
+}
+
+impl Default for Din {
+    fn default() -> Self {
+        Self { energy_transfer: DinEnergyTransfer::default(), evse_id: "49*89*6360".into(), offer_contract_payment: false, cpd_ongoing_responses: 0, shutdown_after_loops: None }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    /// The protocols the charger speaks.
+    pub protocols: Vec<Protocol>,
+    /// DIN SPEC 70121.
+    pub din: Din,
     /// Plug & Charge.
     pub pnc: Pnc,
     /// Answer a charge loop request whose limits break V2G20-2198 or 2199 with `FAILED`; without
@@ -376,6 +428,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            protocols: vec![Protocol::Iso20, Protocol::Din],
+            din: Din::default(),
             pnc: Pnc::default(),
             silent: false,
             fail_on_limit_violation: false,

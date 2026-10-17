@@ -49,6 +49,18 @@ pub enum State {
     /// `DC_WeldingDetectionReq` is out.
     AwaitWeldingDetectionRes,
     AwaitSessionStopRes,
+    /// DIN SPEC 70121: `ServicePaymentSelectionReq` is out.
+    AwaitServicePaymentSelectionRes,
+    /// DIN SPEC 70121: `ContractAuthenticationReq` is out.
+    AwaitContractAuthenticationRes,
+    /// DIN SPEC 70121: the host changes the control pilot to state C (before the cable check) and
+    /// reports [`Event::ControlPilotChanged`].
+    AwaitControlPilotC,
+    /// DIN SPEC 70121: `CurrentDemandReq` is out (the charge loop).
+    AwaitCurrentDemandRes,
+    /// DIN SPEC 70121: the host changes the control pilot to state B (after the energy transfer
+    /// has stopped) and reports [`Event::ControlPilotChanged`].
+    AwaitControlPilotB,
     Ended,
 }
 
@@ -103,6 +115,8 @@ pub enum EndReason {
     TlsRequired,
     /// The TX buffer cannot hold the outgoing message.
     TxBufferTooSmall,
+    /// DIN SPEC 70121: the EVSE answered with a failing response code.
+    RejectedDin(din70121::types::ResponseCode),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +148,17 @@ pub enum Event {
     /// The host reduced the current to zero after [`Notice::StopEnergyTransfer`]
     /// (V2G20-1310 asks for this before `PowerDeliveryReq(Stop)`).
     EnergyTransferStopped,
+    /// The host changed the control pilot after [`Notice::ControlPilot`].
+    ControlPilotChanged,
+}
+
+/// A control pilot state (IEC 61851-1) the vehicle changes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlPilot {
+    /// Connected, not ready: the state before the session and after the energy transfer.
+    B,
+    /// Ready to charge: before the cable check.
+    C,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,6 +201,9 @@ pub enum Notice {
     /// The EVSE acknowledged the stop: open the contactors, then send
     /// [`Event::ContactorsOpened`]; welding detection follows.
     OpenContactors,
+    /// DIN SPEC 70121: change the control pilot to this state, then send
+    /// [`Event::ControlPilotChanged`].
+    ControlPilot(ControlPilot),
 }
 
 /// The EVSE's side of one charge loop exchange (Dynamic control mode).
