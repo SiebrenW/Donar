@@ -1257,9 +1257,10 @@ fn a_bpt_session_uses_the_bpt_variants() {
         let common::Message::ServiceDetailReq(r) = m else { panic!("{m:?}") };
         assert_eq!(r.service_id, 6);
     });
-    // A set without the BPT parameters does not fit; with them it does.
+    // A set with another BPT channel does not fit; one that matches does.
     const BPT: &[(&str, i32)] = &[("Connector", 1), ("ControlMode", 2), ("MobilityNeedsMode", 1), ("Pricing", 0), ("BPTChannel", 1), ("GeneratorMode", 1)];
-    let step = deliver(&mut s, &detail_res(ResponseCode::Ok, 6, &[(1, DYNAMIC), (2, BPT)]));
+    const SEPARATED: &[(&str, i32)] = &[("Connector", 1), ("ControlMode", 2), ("MobilityNeedsMode", 1), ("Pricing", 0), ("BPTChannel", 2), ("GeneratorMode", 1)];
+    let step = deliver(&mut s, &detail_res(ResponseCode::Ok, 6, &[(1, SEPARATED), (2, BPT)]));
     sent_common(&s, &step, |m| {
         let common::Message::ServiceSelectionReq(r) = m else { panic!("{m:?}") };
         assert_eq!((r.selected_energy_transfer_service.service_id, r.selected_energy_transfer_service.parameter_set_id), (6, 2));
