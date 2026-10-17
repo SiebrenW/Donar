@@ -238,6 +238,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             maximum_charge_power: res.evse_maximum_power_limit.map(rational).or(announced.and_then(|a| a.max_power)).unwrap_or(zero),
             maximum_charge_current: res.evse_maximum_current_limit.map(rational).or(announced.map(|a| a.max_current)).unwrap_or(zero),
             maximum_voltage: res.evse_maximum_voltage_limit.map(rational).or(announced.map(|a| a.max_voltage)).unwrap_or(zero),
+            meter: None,
         };
         if res.receipt_required == Some(true) && let Some(meter) = res.meter_info {
             return self.answer_with_receipt(meter, res.sa_schedule_tuple_id, status, tx);
@@ -272,6 +273,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             maximum_charge_power: zero,
             maximum_charge_current: max_current,
             maximum_voltage: self.evse.map_or(zero, |e| e.max_voltage),
+            meter: None,
         };
         if res.receipt_required == Some(true) && let Some(meter) = res.meter_info {
             return self.answer_with_receipt(meter, res.sa_schedule_tuple_id, status, tx);

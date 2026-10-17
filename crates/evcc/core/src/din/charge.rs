@@ -217,6 +217,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             maximum_charge_power: res.evse_maximum_power_limit.map(rational).or(announced.and_then(|a| a.max_power)).unwrap_or(zero),
             maximum_charge_current: res.evse_maximum_current_limit.map(rational).or(announced.map(|a| a.max_current)).unwrap_or(zero),
             maximum_voltage: res.evse_maximum_voltage_limit.map(rational).or(announced.map(|a| a.max_voltage)).unwrap_or(zero),
+            meter: None,
         };
         if self.stop_requested || self.evse_stops {
             // The notice that stops the energy transfer takes the place of the status of this answer.

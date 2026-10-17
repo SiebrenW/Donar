@@ -31,6 +31,7 @@ use crate::{Timer, TimerCmd, Timers};
 mod charge;
 mod config;
 mod limits;
+mod metering;
 mod parameters;
 mod renegotiation;
 mod schedule;
@@ -39,7 +40,7 @@ mod shutdown;
 mod types;
 
 pub use config::{Config, SERVICE_ID_AC, SERVICE_ID_AC_BPT, SERVICE_ID_DC, SERVICE_ID_DC_BPT};
-pub use types::{AcChargeLoopStatus, Buffers, ChargeLoopStatus, ControlPilot, EndReason, Event, Notice, Resume, State, Step};
+pub use types::{AcChargeLoopStatus, Buffers, ChargeLoopStatus, MeterReading, ControlPilot, EndReason, Event, Notice, Resume, State, Step};
 
 pub struct Session<'a, E: Ev, L: LogSink> {
     rx: &'a mut [u8],
@@ -572,6 +573,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         use common::Message as M;
         if payload_type == PayloadType::SCHEDULE_RENEGOTIATION {
             return self.on_side_frame(payload_type, payload, arena, tx);
+        }
+        if payload_type == PayloadType::METERING_CONFIRMATION {
+            return self.on_metering_frame(payload_type, payload, arena);
         }
         match self.state {
             State::AwaitSupportedAppProtocolRes if payload_type == PayloadType::SAP => {

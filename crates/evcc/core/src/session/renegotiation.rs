@@ -31,6 +31,8 @@ pub enum Side {
     AwaitSchedule,
     /// `PowerDeliveryReq` (ScheduleRenegotiation) is out.
     AwaitPowerDelivery,
+    /// `MeteringConfirmationReq` is out, on its own stream (`metering.rs`).
+    AwaitMetering,
 }
 
 /// The pause before repeating a `ScheduleExchangeReq` that got `Ongoing`, when the main stream's
@@ -67,7 +69,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 self.frame_power_delivery_req(common::ChargeProgress::ScheduleRenegotiation, PayloadType::SCHEDULE_RENEGOTIATION, tail),
                 MsgKind::PowerDeliveryReq,
             ),
-            Side::Idle => return step,
+            Side::Idle | Side::AwaitMetering => return step,
         };
         let Ok(len) = framed else { return self.end(EndReason::TxBufferTooSmall) };
         self.log.record(&Record::MsgTx { msg });
@@ -97,7 +99,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             return self.ignore(payload_type);
         }
         match self.side {
-            Side::Idle => self.ignore(payload_type),
+            Side::Idle | Side::AwaitMetering => self.ignore(payload_type),
             Side::AwaitChargeParameters if self.config.ac() => match ac::decode(payload, arena) {
                 Ok(ac::Message::AcChargeParameterDiscoveryRes(res)) => {
                     if let Some(end) = self.received(MsgKind::AcChargeParameterDiscoveryRes, res.response_code) {

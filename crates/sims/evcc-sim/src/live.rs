@@ -393,6 +393,7 @@ mod tests {
             maximum_charge_power: rn(100_000.0),
             maximum_charge_current: rn(200.0),
             maximum_voltage: rn(450.0),
+            meter: None,
         }
     }
 

@@ -220,6 +220,17 @@ pub enum Notice {
     ControlPilot(ControlPilot),
 }
 
+/// What the charger's meter said in a charge loop answer (`MeterInfo`, V2G20-902: the energy of the
+/// service session so far), when the vehicle asked for it ([`super::Config::request_meter_info`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeterReading {
+    pub charged_wh: u64,
+    /// Energy given back (BPT), if the meter counts it.
+    pub discharged_wh: Option<u64>,
+    /// The meter's time stamp, if it has one.
+    pub timestamp: Option<u64>,
+}
+
 /// The EVSE's side of one charge loop exchange (Dynamic control mode).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChargeLoopStatus {
@@ -231,6 +242,8 @@ pub struct ChargeLoopStatus {
     pub maximum_charge_power: iso15118_20::common_types::RationalNumber,
     pub maximum_charge_current: iso15118_20::common_types::RationalNumber,
     pub maximum_voltage: iso15118_20::common_types::RationalNumber,
+    /// The meter reading of this answer, if it had one.
+    pub meter: Option<MeterReading>,
 }
 
 /// The EVSE's side of one AC charge loop exchange (Dynamic control mode). A negative target
@@ -243,6 +256,8 @@ pub struct AcChargeLoopStatus {
     /// What the EVSE measures (`EVSEPresentActivePower`), per line.
     pub present_active_power: [Option<iso15118_20::common_types::RationalNumber>; 3],
     pub target_frequency: Option<iso15118_20::common_types::RationalNumber>,
+    /// The meter reading of this answer, if it had one.
+    pub meter: Option<MeterReading>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

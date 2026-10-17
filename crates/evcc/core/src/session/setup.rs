@@ -371,13 +371,42 @@ fn is_pnc_warning(code: ResponseCode) -> bool {
     )
 }
 
+/// Signs the fragment `scratch[..length]` (the stream of the element that `uri` refers to) with the
+/// contract key (V2G20-1063): its digest in a `SignedInfo`, the signature over the `SignedInfo`
+/// fragment, which is written into `scratch` after the digest was taken. `build` frames the message
+/// that carries the signature in its header.
+pub(super) fn sign_fragment(
+    contract: &dyn crate::ev::Contract,
+    uri: &str,
+    scratch: &mut [u8],
+    length: usize,
+    build: impl FnOnce(iso15118_20::signature::Signature<'_>) -> Result<usize, ()>,
+) -> Result<usize, ()> {
+    use crate::ev::{MAX_DIGEST_LEN, MAX_SIGNATURE_LEN};
+    use iso15118_20::signature::{CANONICAL_EXI, Reference, Signature, SignatureValue, SignedInfo};
+    let mut digest = [0u8; MAX_DIGEST_LEN];
+    let digest_len = contract.digest(&scratch[..length], &mut digest).ok_or(())?;
+    let references = [Reference {
+        id: None,
+        uri: Some(uri),
+        transform_algorithm: Some(CANONICAL_EXI),
+        digest_algorithm: contract.digest_algorithm(),
+        digest_value: &digest[..digest_len],
+    }];
+    let info = SignedInfo { id: None, canonicalization_algorithm: CANONICAL_EXI, signature_algorithm: contract.signature_algorithm(), reference: &references };
+    let length = info.encode_fragment(scratch).map_err(|_| ())?;
+    let mut value = [0u8; MAX_SIGNATURE_LEN];
+    let value_len = contract.sign(&scratch[..length], &mut value).ok_or(())?;
+    build(Signature { id: None, signed_info: info, signature_value: SignatureValue { id: None, value: &value[..value_len] } })
+}
+
 /// The `AuthorizationReq` for Plug & Charge, framed into `tx`: the `PnC_AReqAuthorizationMode`
 /// with the challenge and the contract chain, and in the header the signature over it with the
 /// contract key (V2G20-1063). The second half of `tx` is scratch for the two fragments that are
 /// digested and signed; the frame is built in the first.
 fn frame_pnc_authorization_req(contract: &dyn crate::ev::Contract, challenge: [u8; 16], session_id: [u8; 8], time_stamp: u64, tx: &mut [u8]) -> Result<usize, ()> {
-    use crate::ev::{MAX_DIGEST_LEN, MAX_SIGNATURE_LEN, MAX_SUB_CERTIFICATES};
-    use iso15118_20::signature::{CANONICAL_EXI, Reference, Signature, SignatureValue, SignedInfo, encode_fragment};
+    use crate::ev::MAX_SUB_CERTIFICATES;
+    use iso15118_20::signature::encode_fragment;
     let (out, scratch) = tx.split_at_mut(tx.len() / 2);
     let mut subs: [&[u8]; MAX_SUB_CERTIFICATES] = [&[]; MAX_SUB_CERTIFICATES];
     let mut count = 0;
@@ -391,30 +420,13 @@ fn frame_pnc_authorization_req(contract: &dyn crate::ev::Contract, challenge: [u
         gen_challenge: challenge,
         contract_certificate_chain: ContractCertificateChain { certificate: contract.certificate(), sub_certificates: SubCertificates { certificate: &subs[..count] } },
     };
-    // The digest of the element's fragment, then the signature over the fragment of the SignedInfo
-    // that carries it.
     let length = encode_fragment(scratch, iso15118_20::signature::fragment::PNC_A_REQ_AUTHORIZATION_MODE, |e| mode.encode_content(e)).map_err(|_| ())?;
-    let mut digest = [0u8; MAX_DIGEST_LEN];
-    let digest_len = contract.digest(&scratch[..length], &mut digest).ok_or(())?;
-    let references = [Reference {
-        id: None,
-        uri: Some(PNC_URI),
-        transform_algorithm: Some(CANONICAL_EXI),
-        digest_algorithm: contract.digest_algorithm(),
-        digest_value: &digest[..digest_len],
-    }];
-    let info = SignedInfo { id: None, canonicalization_algorithm: CANONICAL_EXI, signature_algorithm: contract.signature_algorithm(), reference: &references };
-    let length = info.encode_fragment(scratch).map_err(|_| ())?;
-    let mut value = [0u8; MAX_SIGNATURE_LEN];
-    let value_len = contract.sign(&scratch[..length], &mut value).ok_or(())?;
-    let msg = AuthorizationReq {
-        header: MessageHeader {
-            session_id,
-            time_stamp,
-            signature: Some(Signature { id: None, signed_info: info, signature_value: SignatureValue { id: None, value: &value[..value_len] } }),
-        },
-        selected_authorization_service: Authorization::PnC,
-        a_req_authorization_mode: AReqAuthorizationModeChoice::PnC(mode),
-    };
-    frame(out, PayloadType::MAINSTREAM, |o| msg.encode(o))
+    sign_fragment(contract, PNC_URI, scratch, length, |signature| {
+        let msg = AuthorizationReq {
+            header: MessageHeader { session_id, time_stamp, signature: Some(signature) },
+            selected_authorization_service: Authorization::PnC,
+            a_req_authorization_mode: AReqAuthorizationModeChoice::PnC(mode),
+        };
+        frame(out, PayloadType::MAINSTREAM, |o| msg.encode(o))
+    })
 }

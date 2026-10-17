@@ -32,6 +32,8 @@ impl PayloadType {
     pub const WPT_MAINSTREAM: Self = Self(0x8006);
     /// Side stream of a schedule renegotiation, multiplexed with the charge loop (Table 14).
     pub const SCHEDULE_RENEGOTIATION: Self = Self(0x8101);
+    /// Side stream of the metering confirmation, multiplexed with the charge loop (Table 14).
+    pub const METERING_CONFIRMATION: Self = Self(0x8102);
     pub const SDP_REQUEST: Self = Self(0x9000);
     pub const SDP_RESPONSE: Self = Self(0x9001);
 }

@@ -82,6 +82,9 @@ pub struct Config {
     /// Scheduled mode: state `PowerToleranceAcceptance` also when the charger offered no tolerance
     /// (V2G20-1866 asks for it only with one; the Python library requires it always).
     pub state_tolerance_always: bool,
+    /// Set `MeterInfoRequested` in the charge loop requests (V2G20-1081): the charger then sends its
+    /// meter reading in every answer ([`super::MeterReading`] in the status).
+    pub request_meter_info: bool,
 }
 
 impl Config {
@@ -159,6 +162,7 @@ impl Config {
         enforce_cpd_limits: true,
         scheduled: false,
         state_tolerance_always: false,
+        request_meter_info: false,
     };
 
     /// The same session in Scheduled control mode (ISO 15118-20:2022 Table 205: `ControlMode` 1

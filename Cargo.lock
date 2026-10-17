@@ -308,6 +308,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "evse-core"
+version = "0.1.0"
+dependencies = [
+ "app-protocol",
+ "evcc-core",
+ "exi",
+ "iso15118-20",
+ "v2gtp",
+]
+
+[[package]]
 name = "evse-sim"
 version = "0.1.0"
 dependencies = [

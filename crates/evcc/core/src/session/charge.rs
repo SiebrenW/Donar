@@ -13,6 +13,11 @@ use crate::ev::{AcDischargePowerLimits, AcPowerLimits, AcPresentPower, Ev, Phase
 use crate::log::{LogSink, MsgKind, Record};
 use crate::{Timer, TimerCmd, Timers};
 
+/// What the vehicle's host is told of a `MeterInfo`.
+fn reading(m: &common_types::MeterInfo<'_>) -> MeterReading {
+    MeterReading { charged_wh: m.charged_energy_reading_wh, discharged_wh: m.bpt_discharged_energy_reading_wh, timestamp: m.meter_timestamp }
+}
+
 impl<E: Ev, L: LogSink> Machine<E, L> {
     pub(super) fn on_cable_check_res(&mut self, res: dc::DcCableCheckRes, tx: &mut [u8]) -> Step {
         if let Some(end) = self.received(MsgKind::DcCableCheckRes, res.response_code) {
@@ -105,14 +110,15 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             maximum_charge_power: mode.evse_maximum_charge_power,
             maximum_charge_current: mode.evse_maximum_charge_current,
             maximum_voltage: mode.evse_maximum_voltage,
+            meter: res.meter_info.as_ref().map(reading),
         };
-        self.after_charge_loop_res(res.evse_status, Notice::ChargeLoop(status), tx)
+        self.after_charge_loop_res(res.evse_status, Notice::ChargeLoop(status), res.meter_info.as_ref(), res.receipt.as_ref(), tx)
     }
 
     /// The part of a charge loop answer that is the same in every kind of charge loop: what the
     /// EVSE's notification asks for, or else the next request of the cycle. `notice` is handed to
     /// the host when the loop goes on.
-    fn after_charge_loop_res(&mut self, evse_status: Option<common_types::EvseStatus>, notice: Notice, tx: &mut [u8]) -> Step {
+    fn after_charge_loop_res(&mut self, evse_status: Option<common_types::EvseStatus>, notice: Notice, meter: Option<&common_types::MeterInfo<'_>>, receipt: Option<&common_types::Receipt<'_>>, tx: &mut [u8]) -> Step {
         // V2G20-1416, V2G20-1960: Terminate means shut down and stop the session.
         let notification = evse_status.map(|s| (s.evse_notification, s.notification_max_delay));
         if let Some((EvseNotification::Terminate, within_s)) = notification {
@@ -153,7 +159,16 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 step.notice = Some(notice);
                 return step;
             }
-            // Metering confirmation belongs to Plug & Charge and is ignored.
+            // V2G20-1621, 1084: the signed acknowledgement of the meter reading on its own stream, next
+            // to the charge loop. It needs the contract (V2G20-2704: Plug & Charge only).
+            Some((EvseNotification::MeteringConfirmation, _)) if self.authorization == Authorization::PnC => {
+                if let Some(meter) = meter {
+                    let mut step = self.pace_charge_loop(tx);
+                    step = self.start_metering_confirmation(step, meter, receipt, tx);
+                    step.notice = Some(notice);
+                    return step;
+                }
+            }
             _ => {}
         }
         let mut step = self.pace_charge_loop(tx);
@@ -254,7 +269,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         let msg = dc::DcChargeLoopReq {
             header: self.header(),
             display_parameters: self.display_parameters(),
-            meter_info_requested: false,
+            meter_info_requested: self.config.request_meter_info,
             ev_present_voltage: self.ev.battery_voltage(),
             cl_req_control_mode: control_mode,
         };
@@ -371,7 +386,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         let msg = ac::AcChargeLoopReq {
             header: self.header(),
             display_parameters: self.display_parameters(),
-            meter_info_requested: false,
+            meter_info_requested: self.config.request_meter_info,
             cl_req_control_mode: control_mode,
         };
         let framed = frame(tx, PayloadType::AC_MAINSTREAM, |out| msg.encode(out));
@@ -441,8 +456,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             target_reactive_power: [mode.evse_target_reactive_power, mode.evse_target_reactive_power_l2, mode.evse_target_reactive_power_l3],
             present_active_power: [mode.evse_present_active_power, mode.evse_present_active_power_l2, mode.evse_present_active_power_l3],
             target_frequency: res.evse_target_frequency,
+            meter: res.meter_info.as_ref().map(reading),
         };
-        self.after_charge_loop_res(res.evse_status, Notice::AcChargeLoop(status), tx)
+        self.after_charge_loop_res(res.evse_status, Notice::AcChargeLoop(status), res.meter_info.as_ref(), res.receipt.as_ref(), tx)
     }
 
     /// The vehicle's `DisplayParameters` for a charge loop request.

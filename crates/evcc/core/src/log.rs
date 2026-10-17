@@ -56,6 +56,8 @@ pub enum MsgKind {
     AcChargeParameterDiscoveryRes,
     AcChargeLoopReq,
     AcChargeLoopRes,
+    MeteringConfirmationReq,
+    MeteringConfirmationRes,
     // DIN SPEC 70121 (the messages it shares with ISO 15118-20 keep their kinds above).
     ServicePaymentSelectionReq,
     ServicePaymentSelectionRes,
@@ -194,6 +196,7 @@ impl MsgKind {
             MsgKind::DcWeldingDetectionRes => M::DcWeldingDetection,
             MsgKind::AcChargeParameterDiscoveryRes => M::AcChargeParameterDiscovery,
             MsgKind::AcChargeLoopRes => M::AcChargeLoop,
+            MsgKind::MeteringConfirmationRes => M::MeteringConfirmation,
             MsgKind::SessionStopRes => M::SessionStop,
             _ => return None,
         })
