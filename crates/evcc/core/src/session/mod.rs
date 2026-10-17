@@ -95,6 +95,11 @@ struct Machine<E, L> {
     ev_announced: Option<crate::ev::DcLimits>,
     ev_announced_discharge: Option<crate::ev::DischargeLimits>,
     evse_announced: Option<dc::DcCpdResEnergyTransferMode>,
+    /// Scheduled control mode: the schedule tuple the vehicle selected, and the power of its
+    /// first entry (what the vehicle draws when the charger names no target).
+    selected_tuple: u32,
+    scheduled_power: Option<crate::ev::Phases>,
+    tolerance_offered: bool,
     /// The same for an AC session.
     ev_announced_ac: Option<crate::ev::AcPowerLimits>,
     ev_announced_ac_discharge: Option<crate::ev::AcDischargePowerLimits>,
@@ -139,6 +144,9 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 ev_announced: None,
                 ev_announced_discharge: None,
                 evse_announced: None,
+                selected_tuple: 0,
+                scheduled_power: None,
+                tolerance_offered: false,
                 ev_announced_ac: None,
                 ev_announced_ac_discharge: None,
                 evse_announced_ac: None,

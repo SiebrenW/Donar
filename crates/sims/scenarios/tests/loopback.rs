@@ -657,3 +657,35 @@ fn the_evse_can_end_an_ac_charge_and_renegotiate_the_schedule() {
     assert_eq!(log.count("MsgTx { msg: PowerDeliveryReq }"), 3);
     assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
 }
+
+#[test]
+fn a_scheduled_ac_session_selects_a_schedule_and_follows_it() {
+    let (addr, server) = start(evse_sim::Config::default());
+    let (outcome, log) = run_ac(addr, Config { poll_interval_ms: 10, charge_loop_interval_ms: 10, allow_unsecured: true, ..Config::AC_20.scheduled() }, Some(3));
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    assert_eq!(log.count("MsgTx { msg: AcChargeLoopReq }"), 3);
+    assert_eq!(log.count("MsgTx { msg: PowerDeliveryReq }"), 2);
+    // Parameter set 4 of the charger: three phases, Scheduled.
+    assert_eq!(log.count("ServiceSelected { service_id: 1, parameter_set_id: 4 }"), 1);
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+}
+
+#[test]
+fn a_scheduled_bidirectional_ac_session_and_a_renegotiation_of_the_schedule() {
+    let config = evse_sim::Config { schedule_renegotiation_after_loops: Some(2), terminate_after_loops: Some(6), ..Default::default() };
+    let (addr, server) = start(config);
+    let (outcome, log) = run_ac(addr, Config { poll_interval_ms: 10, charge_loop_interval_ms: 10, allow_unsecured: true, ..Config::AC_BPT_20.scheduled() }, None);
+    assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
+    assert_eq!(log.count("ServiceSelected { service_id: 5, parameter_set_id: 4 }"), 1);
+    assert_eq!(log.count("MsgTx { msg: ScheduleExchangeReq }"), 2);
+    assert_eq!(server.join().unwrap().unwrap(), EvseState::Stopped);
+}
+
+#[test]
+fn a_dynamic_car_and_a_charger_offering_only_scheduled_sets_do_not_match() {
+    let scheduled = OfferedSet::new(1, [("Connector", 2), ("EVSENominalVoltage", 400), ("ControlMode", 1), ("MobilityNeedsMode", 1), ("Pricing", 0)]);
+    let (addr, server) = start(evse_sim::Config { ac_parameter_sets: vec![scheduled], ..Default::default() });
+    let (outcome, _) = run_ac(addr, fast_ac(), Some(2));
+    assert_eq!(outcome, Outcome::Ended(EndReason::NoCompatibleParameterSet));
+    drop(server);
+}

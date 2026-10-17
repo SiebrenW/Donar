@@ -342,6 +342,120 @@ fn schedule_exchange_dynamic() {
     check("schedule_exchange_res_full", Message::ScheduleExchangeRes(m), |o| m.encode(o));
 }
 
+/// Scheduled control mode: the energy offer, the schedule tuples with their prices, the selection.
+#[test]
+fn scheduled_control_mode() {
+    let m = ScheduleExchangeReq {
+        header: hdr(),
+        maximum_supporting_points: 12,
+        se_req_control_mode: SeReqControlModeChoice::Scheduled(ScheduledSeReqControlMode {
+            departure_time: None,
+            ev_target_energy_request: None,
+            ev_maximum_energy_request: None,
+            ev_minimum_energy_request: None,
+            ev_energy_offer: None,
+        }),
+    };
+    check("schedule_exchange_req_scheduled_min", Message::ScheduleExchangeReq(m), |o| m.encode(o));
+    let ev_entries = [EvPowerScheduleEntry { duration: 3600, power: rn(3, 7) }];
+    let rule = [EvPriceRule { energy_fee: rn(-2, 30), power_range_start: rn(0, 0) }];
+    let stacks = [EvPriceRuleStack { duration: 3600, ev_price_rule: &rule }];
+    let m = ScheduleExchangeReq {
+        header: hdr(),
+        maximum_supporting_points: 1024,
+        se_req_control_mode: SeReqControlModeChoice::Scheduled(ScheduledSeReqControlMode {
+            departure_time: Some(28800),
+            ev_target_energy_request: Some(rn(3, 40)),
+            ev_maximum_energy_request: Some(rn(3, 60)),
+            ev_minimum_energy_request: Some(rn(0, 0)),
+            ev_energy_offer: Some(EvEnergyOffer {
+                ev_power_schedule: EvPowerSchedule { time_anchor: TS, ev_power_schedule_entries: EvPowerScheduleEntryList { ev_power_schedule_entry: &ev_entries } },
+                ev_absolute_price_schedule: EvAbsolutePriceSchedule {
+                    time_anchor: TS,
+                    currency: "EUR",
+                    price_algorithm: "urn:iso:std:iso:15118:-20:PriceAlgorithm:1-Power",
+                    ev_price_rule_stacks: EvPriceRuleStackList { ev_price_rule_stack: &stacks },
+                },
+            }),
+        }),
+    };
+    check("schedule_exchange_req_scheduled_offer", Message::ScheduleExchangeReq(m), |o| m.encode(o));
+
+    let entry = |duration: u32, power: i16, l2: Option<i16>, l3: Option<i16>| PowerScheduleEntry { duration, power: rn(3, power), power_l2: l2.map(|p| rn(3, p)), power_l3: l3.map(|p| rn(3, p)) };
+    let first = [entry(3600, 7, None, None)];
+    let second = [entry(1800, 11, Some(4), Some(4)), entry(1800, 2, None, None)];
+    let third = [entry(3600, 3, None, None)];
+    let power = |entries: &'static [PowerScheduleEntry], available, tolerance| PowerSchedule {
+        time_anchor: TS,
+        available_energy: available,
+        power_tolerance: tolerance,
+        power_schedule_entries: PowerScheduleEntryList { power_schedule_entry: entries },
+    };
+    let levels = [PriceLevelScheduleEntry { duration: 1800, price_level: 1 }, PriceLevelScheduleEntry { duration: 1800, price_level: 2 }];
+    let price_rule = [PriceRule { energy_fee: rn(-2, 25), parking_fee: None, parking_fee_period: None, carbon_dioxide_emission: None, renewable_generation_percentage: None, power_range_start: rn(0, 0) }];
+    let price_stacks = [PriceRuleStack { duration: 3600, price_rule: &price_rule }];
+    let tuples = [
+        ScheduleTuple { schedule_tuple_id: 1, charging_schedule: ChargingSchedule { power_schedule: power(Box::leak(Box::new(first)), None, None), schedule: None }, discharging_schedule: None },
+        ScheduleTuple {
+            schedule_tuple_id: 2,
+            charging_schedule: ChargingSchedule {
+                power_schedule: power(Box::leak(Box::new(second)), Some(rn(3, 30)), Some(rn(0, 5))),
+                schedule: Some(ScheduleChoice::PriceLevel(PriceLevelSchedule {
+                    id: None,
+                    time_anchor: TS,
+                    price_schedule_id: 5,
+                    price_schedule_description: Some("night"),
+                    number_of_price_levels: 2,
+                    price_level_schedule_entries: PriceLevelScheduleEntryList { price_level_schedule_entry: &levels },
+                })),
+            },
+            discharging_schedule: Some(ChargingSchedule {
+                power_schedule: power(Box::leak(Box::new(third)), None, None),
+                schedule: Some(ScheduleChoice::AbsolutePrice(AbsolutePriceSchedule {
+                    id: None,
+                    time_anchor: TS,
+                    price_schedule_id: 6,
+                    price_schedule_description: None,
+                    currency: "EUR",
+                    language: "eng",
+                    price_algorithm: "urn:iso:std:iso:15118:-20:PriceAlgorithm:1-Power",
+                    minimum_cost: None,
+                    maximum_cost: None,
+                    tax_rules: None,
+                    price_rule_stacks: PriceRuleStackList { price_rule_stack: &price_stacks },
+                    overstay_rules: None,
+                    additional_selected_services: None,
+                })),
+            }),
+        },
+    ];
+    let m = ScheduleExchangeRes {
+        header: hdr(),
+        response_code: ResponseCode::Ok,
+        evse_processing: Processing::Finished,
+        go_to_pause: None,
+        se_res_control_mode: SeResControlModeChoice::Scheduled(ScheduledSeResControlMode { schedule_tuple: &tuples }),
+    };
+    check("schedule_exchange_res_scheduled", Message::ScheduleExchangeRes(m), |o| m.encode(o));
+
+    let entries = [PowerScheduleEntry { duration: 3600, power: rn(3, 7), power_l2: None, power_l3: None }];
+    let m = PowerDeliveryReq {
+        header: hdr(),
+        ev_processing: Processing::Finished,
+        charge_progress: ChargeProgress::Start,
+        ev_power_profile: Some(EvPowerProfile {
+            time_anchor: TS,
+            evppt_control_mode: EvpptControlModeChoice::Scheduled(ScheduledEvpptControlMode {
+                selected_schedule_tuple_id: 2,
+                power_tolerance_acceptance: Some(PowerToleranceAcceptance::PowerToleranceConfirmed),
+            }),
+            ev_power_profile_entries: EvPowerProfileEntryList { ev_power_profile_entry: &entries },
+        }),
+        bpt_channel_selection: None,
+    };
+    check("power_delivery_req_start_scheduled", Message::PowerDeliveryReq(m), |o| m.encode(o));
+}
+
 // ---------------------------------------------------------------- DC
 
 #[test]

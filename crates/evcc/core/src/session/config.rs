@@ -75,6 +75,10 @@ pub struct Config {
     /// (V2G20-2198, 2199): maximums no higher, minimums no lower. Off, the vehicle sends whatever
     /// [`crate::ev::Ev::dc_limits`] says, for tests of a charger.
     pub enforce_cpd_limits: bool,
+    /// Scheduled control mode (ControlMode 1): the charger offers schedules, the vehicle selects one
+    /// (the first) and follows it in the charge loop. For the AC services only; the DC charge loop
+    /// is Dynamic.
+    pub scheduled: bool,
 }
 
 impl Config {
@@ -150,7 +154,14 @@ impl Config {
         prefer_pnc: false,
         pnc_fallback_to_eim: true,
         enforce_cpd_limits: true,
+        scheduled: false,
     };
+
+    /// The same session in Scheduled control mode (ISO 15118-20:2022 Table 205: `ControlMode` 1
+    /// with the mobility needs from the EVCC).
+    pub const fn scheduled(self) -> Config {
+        Config { scheduled: true, parameter_filter: &[("ControlMode", 1), ("MobilityNeedsMode", 1)], ..self }
+    }
 }
 
 /// A `RationalNumber` (value * 10^exponent) in volts, for comparisons.

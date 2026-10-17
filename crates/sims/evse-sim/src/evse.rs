@@ -114,6 +114,11 @@ pub struct Evse {
     /// messages are the `AC_` ones (payload type `AC_MAINSTREAM`).
     ac: bool,
     ac_namespace: bool,
+    /// The selected parameter set has ControlMode 1 (Scheduled): the charger offers schedule
+    /// tuples, the vehicle selects one in its power profile, and the charge loop follows it.
+    scheduled: bool,
+    selected_tuple: u32,
+    schedule_started: Option<std::time::Instant>,
     /// The `EVSENominalVoltage` of the selected AC parameter set, which the live measurements
     /// show (the AC power over this voltage is the current shown).
     ac_voltage: f64,
@@ -136,7 +141,7 @@ pub struct Evse {
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, protocol: Protocol::Iso20, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge(), last_stamp: std::cell::Cell::new(0), ev_announced: None, bpt: false, ac: false, ac_namespace: false, ac_voltage: 400.0, ac_announced: None, din_ev_announced: None, iso2_ev_power: None, iso2_ac: false, iso2_phases: 1.0, iso2_renegotiating: false, iso2_renegotiation_asked: false, iso2_receipt_reading: None, iso2_contract: None }
+        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, protocol: Protocol::Iso20, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge(), last_stamp: std::cell::Cell::new(0), ev_announced: None, bpt: false, ac: false, ac_namespace: false, scheduled: false, selected_tuple: 0, schedule_started: None, ac_voltage: 400.0, ac_announced: None, din_ev_announced: None, iso2_ev_power: None, iso2_ac: false, iso2_phases: 1.0, iso2_renegotiating: false, iso2_renegotiation_asked: false, iso2_receipt_reading: None, iso2_contract: None }
     }
 
     /// Reports the charge loop measurements to a test platform and takes its edits.
@@ -504,6 +509,7 @@ impl Evse {
                 let code = self.config.selection_code;
                 self.bpt = matches!(service_id, SERVICE_ID_DC_BPT | ac20::SERVICE_ID_AC_BPT);
                 self.ac = is_ac_service(service_id);
+                self.scheduled = self.sets_for(service_id).iter().find(|set| set.id == parameter_set_id).and_then(|set| set.values.get("ControlMode")) == Some(&1);
                 if let Some(volts) = self.sets_for(service_id).iter().find(|set| set.id == parameter_set_id).and_then(|set| set.values.get("EVSENominalVoltage")) {
                     self.ac_voltage = f64::from(*volts);
                 }
@@ -543,20 +549,21 @@ impl Evse {
                 self.schedule_reqs_seen += 1;
                 let (processing, code) = if req.header.session_id != self.session_id {
                     (Processing::Finished, ResponseCode::FailedUnknownSession)
-                } else if !matches!(req.se_req_control_mode, common::SeReqControlModeChoice::Dynamic(_)) {
+                } else if matches!(req.se_req_control_mode, common::SeReqControlModeChoice::Scheduled(_)) != self.scheduled {
+                    // The mode of the selected parameter set is the one to use.
                     (Processing::Finished, ResponseCode::Failed)
                 } else if self.schedule_reqs_seen <= self.config.schedule_ongoing_responses {
                     (Processing::Ongoing, ResponseCode::Ok)
                 } else {
                     (Processing::Finished, self.config.schedule_code)
                 };
-                let res = self.schedule_res(processing, code);
+                let send = self.schedule_frame(PayloadType::MAINSTREAM, processing, code);
                 let ongoing = processing == Processing::Ongoing;
                 if !ongoing && is_ok(code) {
                     // AC has no cable check or pre-charge: the power delivery follows.
                     self.state = if self.ac { State::AwaitPowerDeliveryReq } else { State::AwaitCableCheckReq };
                 }
-                Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: !ongoing && !is_ok(code) }
+                Output { send, close: !ongoing && !is_ok(code) }
             }
             State::AwaitCableCheckReq if payload_type == PayloadType::DC_MAINSTREAM => {
                 let Ok(dc::Message::DcCableCheckReq(req)) = dc::decode(payload, &arena) else { return closed };
@@ -604,12 +611,15 @@ impl Evse {
                 } else if req.charge_progress != common::ChargeProgress::Start || req.ev_power_profile.is_none() {
                     // V2G20-1546: the profile must accompany Start.
                     ResponseCode::FailedPowerDeliveryNotApplied
+                } else if !self.selects_offered_tuple(&req) {
+                    ResponseCode::FailedScheduleSelectionInvalid
                 } else {
                     self.config.power_delivery_code
                 };
                 let res = common::PowerDeliveryRes { header: self.header(), response_code: code, evse_status: None };
                 if is_ok(code) {
                     self.state = State::ChargeLoop;
+                    self.schedule_started = Some(std::time::Instant::now());
                 }
                 Output { send: frame(PayloadType::MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) }
             }
@@ -909,16 +919,19 @@ impl Evse {
                 } else {
                     (Processing::Finished, self.config.schedule_code)
                 };
-                let res = self.schedule_res(processing, code);
-                Output { send: frame(side, |out| res.encode(out)), close: processing != Processing::Ongoing && !is_ok(code) }
+                let send = self.schedule_frame(side, processing, code);
+                Output { send, close: processing != Processing::Ongoing && !is_ok(code) }
             }
             Ok(common::Message::PowerDeliveryReq(req)) => {
                 let code = if req.header.session_id != self.session_id {
                     ResponseCode::FailedUnknownSession
                 } else if req.charge_progress != common::ChargeProgress::ScheduleRenegotiation || req.ev_power_profile.is_none() {
                     ResponseCode::FailedPowerDeliveryNotApplied
+                } else if !self.selects_offered_tuple(&req) {
+                    ResponseCode::FailedScheduleSelectionInvalid
                 } else {
                     self.side_renegotiated = true;
+                    self.schedule_started = Some(std::time::Instant::now());
                     ResponseCode::Ok
                 };
                 let res = common::PowerDeliveryRes { header: self.header(), response_code: code, evse_status: None };

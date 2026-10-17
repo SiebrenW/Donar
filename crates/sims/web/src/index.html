@@ -907,7 +907,7 @@ function buildSim() {
     b.onclick = () => {
       for (const [k, v] of Object.entries(p.set)) setPath(sim.evcc, [k], v);
       // The other protocols' options go back to what they were.
-      if (p.id !== "iso20") { delete sim.evcc.bpt; delete sim.evcc.ac; }
+      if (p.id !== "iso20") { delete sim.evcc.bpt; delete sim.evcc.ac; delete sim.evcc.scheduled; }
       if (p.set.protocol !== "iso15118-2") delete sim.evcc.iso2;
       if (p.id === "iso20") delete sim.evcc.connector;
       buildSim();
@@ -919,12 +919,16 @@ function buildSim() {
   const energy = $("div", { className: "seg iso20-only", id: "sim-energy", role: "group", "aria-label": "energy transfer" });
   for (const [id, label, ac] of [["dc", "DC", false], ["ac", "AC", true]]) {
     const b = $("button", { type: "button", textContent: label, id: `energy-${id}` });
-    b.onclick = () => { if (ac) sim.evcc.ac = true; else delete sim.evcc.ac; buildSim(); };
+    b.onclick = () => { if (ac) sim.evcc.ac = true; else { delete sim.evcc.ac; delete sim.evcc.scheduled; } buildSim(); };
     energy.append(b);
   }
   const v2g = $("input", { type: "checkbox", id: "sim-v2g", checked: !!sim.evcc.bpt });
   v2g.onchange = () => { if (v2g.checked) sim.evcc.bpt = true; else delete sim.evcc.bpt; buildSim(); };
   const v2gLabel = $("label", { className: "inline iso20-only", title: "bidirectional power transfer: the car can give energy back" }, v2g, "V2G");
+
+  const scheduled = $("input", { type: "checkbox", id: "sim-scheduled", checked: !!sim.evcc.scheduled });
+  scheduled.onchange = () => { if (scheduled.checked) sim.evcc.scheduled = true; else delete sim.evcc.scheduled; };
+  const scheduledLabel = $("label", { className: "inline ac-only", title: "Scheduled control mode: the car selects one of the charger's schedules and follows it" }, scheduled, "Scheduled");
 
   const primary = $("button", { id: "primary", className: "big", type: "button" });
   primary.onclick = () => (sim.view.running ? simCmd("ev", { cmd: "advance", to: "ended" }) : startSession(false));
@@ -980,7 +984,7 @@ function buildSim() {
 
   view.replaceChildren(
     $("div", { className: "bar" },
-      protocol, energy, v2gLabel,
+      protocol, energy, v2gLabel, scheduledLabel,
       $("div", { className: "row tight", style: "margin:0" }, checkbox("sim-tls", "tls", "TLS", "encrypt the connection"), checkbox("sim-slac", "slac", "SLAC", "match the vehicle to the charger over the powerline first"), $("label", { className: "inline" }, "Certificates", pki)),
       $("span", { className: "spacer" }),
       $("span", { id: "sim-status", className: "pill" }), primary, stepStart, close),
@@ -1017,6 +1021,7 @@ function applyProtocol() {
   document.getElementById("phase-stop").textContent = ac ? "Stop" : "Stop and welding";
   document.querySelectorAll(".iso-only").forEach(e => e.hidden = id !== "iso20");
   document.querySelectorAll(".iso20-only").forEach(e => e.hidden = id !== "iso20");
+  document.querySelectorAll(".ac-only").forEach(e => e.hidden = !ac);
   document.querySelectorAll(".din-only").forEach(e => e.hidden = id !== "din");
   document.querySelectorAll(".iso2-only").forEach(e => e.hidden = id !== "iso2");
   // Rows say what they need: the AC service, the bidirectional one, or the DC ones.
@@ -1062,7 +1067,7 @@ function applyView() {
   $id("step-start").disabled = busy;
   $id("sim-close").disabled = !v.open || v.opening;
   for (const id of ["sim-tls", "sim-slac", "sim-pki"]) $id(id).disabled = v.open || v.opening;
-  for (const b of [...$id("sim-protocol").children, ...$id("sim-energy").children, $id("sim-v2g")]) b.disabled = !!v.running;
+  for (const b of [...$id("sim-protocol").children, ...$id("sim-energy").children, $id("sim-v2g"), $id("sim-scheduled")]) b.disabled = !!v.running;
   $id("sim-held").textContent = !ev ? "" : ev.held ? `held before ${phaseName(ev.phase)}: click a phase to go on` : !v.running ? "" : ev.free_run ? "" : ev.stay && ev.phase === ev.target ? `staying in ${phaseName(ev.phase)}` : `running ${ev.stay ? "into" : "up to"} ${phaseName(ev.target)}`;
   if (document.activeElement !== $id("real-timers")) $id("real-timers").checked = !!ev?.real_timers;
   for (const [target, side] of [["ev", ev], ["evse", evse]]) {

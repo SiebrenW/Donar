@@ -475,6 +475,8 @@ pub struct Config {
     /// Parameter sets answered for the AC services (Table 205: `Connector` 1 single phase, 2 three
     /// phase, `EVSENominalVoltage`, `ControlMode`, `MobilityNeedsMode`, `Pricing`).
     pub ac_parameter_sets: Vec<OfferedSet>,
+    /// Scheduled control mode: how long one entry of an offered power schedule lasts, in seconds.
+    pub schedule_entry_s: u32,
     /// Response code of the `ServiceSelectionRes` for a valid selection.
     #[serde(with = "code")]
     #[schemars(with = "String")]
@@ -563,9 +565,14 @@ impl Default for Config {
             parameter_sets: (1..=4)
                 .map(|connector| OfferedSet::new(connector as u16, [("Connector", connector), ("ControlMode", 2), ("MobilityNeedsMode", 1), ("Pricing", 0)]))
                 .collect(),
-            ac_parameter_sets: (1..=2)
-                .map(|connector| OfferedSet::new(connector as u16, [("Connector", connector), ("EVSENominalVoltage", 400), ("ControlMode", 2), ("MobilityNeedsMode", 1), ("Pricing", 0)]))
+            // Dynamic control for each connection (ids 1 and 2), then Scheduled (3 and 4).
+            ac_parameter_sets: [2, 1]
+                .into_iter()
+                .flat_map(|mode| (1..=2).map(move |connector| (mode, connector)))
+                .enumerate()
+                .map(|(i, (mode, connector))| OfferedSet::new(i as u16 + 1, [("Connector", connector), ("EVSENominalVoltage", 400), ("ControlMode", mode), ("MobilityNeedsMode", 1), ("Pricing", 0)]))
                 .collect(),
+            schedule_entry_s: 3600,
             selection_code: ResponseCode::Ok,
             cpd_code: ResponseCode::Ok,
             schedule_ongoing_responses: 0,

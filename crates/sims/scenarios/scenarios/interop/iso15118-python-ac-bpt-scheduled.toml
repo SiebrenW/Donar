@@ -1,0 +1,17 @@
+name = "interop-iso15118-python-ac-bpt-scheduled"
+description = "As iso15118-python-ac-scheduled with the bidirectional service AC_BPT."
+timeout_s = 60
+
+[secc]
+kind = "iso15118-python"
+protocols = "ISO_15118_20_AC"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+ac = true
+bpt = true
+scheduled = true
+
+[expect]
+evcc_log = ["session: Ended(Completed)"]

@@ -282,6 +282,9 @@ pub struct Settings {
     /// ISO 15118-20: select the bidirectional service `DC_BPT` instead of `DC` (`AC_BPT` instead
     /// of `AC` with `ac`).
     pub bpt: bool,
+    /// ISO 15118-20 AC: Scheduled control mode (select one of the charger's schedules, follow it)
+    /// instead of Dynamic.
+    pub scheduled: bool,
     /// ISO 15118-20: charge with the AC service (offering the AC schema) instead of DC.
     pub ac: bool,
     /// DIN SPEC 70121.
@@ -347,6 +350,7 @@ impl Default for Settings {
             protocol: Protocol::Iso20,
             bpt: false,
             ac: false,
+            scheduled: false,
             din: Din::default(),
             iso2: Iso2::default(),
             slac: false,
@@ -440,16 +444,14 @@ impl Settings {
 
     /// The session configuration these settings call for.
     pub fn session(&self) -> evcc_core::session::Config {
-        let mut config = evcc_core::session::Config {
-            allow_unsecured: self.tls.is_none(),
-            prefer_pnc: self.pnc.is_some(),
-            ..match (self.ac, self.bpt) {
-                (false, false) => evcc_core::session::Config::DC_20,
-                (false, true) => evcc_core::session::Config::DC_BPT_20,
-                (true, false) => evcc_core::session::Config::AC_20,
-                (true, true) => evcc_core::session::Config::AC_BPT_20,
-            }
+        let base = match (self.ac, self.bpt) {
+            (false, false) => evcc_core::session::Config::DC_20,
+            (false, true) => evcc_core::session::Config::DC_BPT_20,
+            (true, false) => evcc_core::session::Config::AC_20,
+            (true, true) => evcc_core::session::Config::AC_BPT_20,
         };
+        let base = if self.ac && self.scheduled { base.scheduled() } else { base };
+        let mut config = evcc_core::session::Config { allow_unsecured: self.tls.is_none(), prefer_pnc: self.pnc.is_some(), ..base };
         if let Some(ms) = self.poll_interval_ms {
             config.poll_interval_ms = ms;
         }

@@ -268,7 +268,55 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         let r = self.ev.schedule_request();
         let l = self.loop_ac_limits();
         let p = self.ev.ac_present_power();
-        let control_mode = if self.config.bpt() {
+        let control_mode = if self.config.scheduled {
+            // The charger's schedule sets the power; the vehicle reports its energy needs, what it
+            // can take and what it draws.
+            let scheduled = ac::ScheduledAcClReqControlMode {
+                ev_target_energy_request: Some(r.target_energy),
+                ev_maximum_energy_request: Some(r.maximum_energy),
+                ev_minimum_energy_request: Some(r.minimum_energy),
+                ev_maximum_charge_power: Some(l.maximum_charge_power.l1),
+                ev_maximum_charge_power_l2: l.maximum_charge_power.l2,
+                ev_maximum_charge_power_l3: l.maximum_charge_power.l3,
+                ev_minimum_charge_power: Some(l.minimum_charge_power.l1),
+                ev_minimum_charge_power_l2: l.minimum_charge_power.l2,
+                ev_minimum_charge_power_l3: l.minimum_charge_power.l3,
+                ev_present_active_power: p.active.l1,
+                ev_present_active_power_l2: p.active.l2,
+                ev_present_active_power_l3: p.active.l3,
+                ev_present_reactive_power: Some(p.reactive.l1),
+                ev_present_reactive_power_l2: p.reactive.l2,
+                ev_present_reactive_power_l3: p.reactive.l3,
+            };
+            if self.config.bpt() {
+                let d = self.loop_ac_discharge_limits();
+                ac::ClReqControlModeChoice::BptScheduledAc(ac::BptScheduledAcClReqControlMode {
+                    ev_target_energy_request: scheduled.ev_target_energy_request,
+                    ev_maximum_energy_request: scheduled.ev_maximum_energy_request,
+                    ev_minimum_energy_request: scheduled.ev_minimum_energy_request,
+                    ev_maximum_charge_power: scheduled.ev_maximum_charge_power,
+                    ev_maximum_charge_power_l2: scheduled.ev_maximum_charge_power_l2,
+                    ev_maximum_charge_power_l3: scheduled.ev_maximum_charge_power_l3,
+                    ev_minimum_charge_power: scheduled.ev_minimum_charge_power,
+                    ev_minimum_charge_power_l2: scheduled.ev_minimum_charge_power_l2,
+                    ev_minimum_charge_power_l3: scheduled.ev_minimum_charge_power_l3,
+                    ev_present_active_power: scheduled.ev_present_active_power,
+                    ev_present_active_power_l2: scheduled.ev_present_active_power_l2,
+                    ev_present_active_power_l3: scheduled.ev_present_active_power_l3,
+                    ev_present_reactive_power: scheduled.ev_present_reactive_power,
+                    ev_present_reactive_power_l2: scheduled.ev_present_reactive_power_l2,
+                    ev_present_reactive_power_l3: scheduled.ev_present_reactive_power_l3,
+                    ev_maximum_discharge_power: Some(d.maximum_discharge_power.l1),
+                    ev_maximum_discharge_power_l2: d.maximum_discharge_power.l2,
+                    ev_maximum_discharge_power_l3: d.maximum_discharge_power.l3,
+                    ev_minimum_discharge_power: Some(d.minimum_discharge_power.l1),
+                    ev_minimum_discharge_power_l2: d.minimum_discharge_power.l2,
+                    ev_minimum_discharge_power_l3: d.minimum_discharge_power.l3,
+                })
+            } else {
+                ac::ClReqControlModeChoice::ScheduledAc(scheduled)
+            }
+        } else if self.config.bpt() {
             let d = self.loop_ac_discharge_limits();
             ac::ClReqControlModeChoice::BptDynamicAc(ac::BptDynamicAcClReqControlMode {
                 departure_time: None,
@@ -333,10 +381,38 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         if let Some(end) = self.received(MsgKind::AcChargeLoopRes, res.response_code) {
             return end;
         }
-        // We asked for Dynamic control, with the BPT variant in a BPT session.
-        let mode = match (res.cl_res_control_mode, self.config.bpt()) {
-            (ac::ClResControlModeChoice::DynamicAc(m), false) => m,
-            (ac::ClResControlModeChoice::BptDynamicAc(m), true) => ac::DynamicAcClResControlMode {
+        // The mode we asked for, with the BPT variant in a BPT session. In Scheduled mode the target
+        // power is optional: without one the vehicle follows the schedule it selected.
+        let scheduled_mode = |m: ac::ScheduledAcClResControlMode| ac::DynamicAcClResControlMode {
+            departure_time: None,
+            minimum_soc: None,
+            target_soc: None,
+            ack_max_delay: None,
+            evse_target_active_power: m.evse_target_active_power.or(self.scheduled_power.map(|p| p.l1)).unwrap_or(iso15118_20::common_types::RationalNumber { exponent: 0, value: 0 }),
+            evse_target_active_power_l2: m.evse_target_active_power_l2.or(self.scheduled_power.and_then(|p| p.l2)),
+            evse_target_active_power_l3: m.evse_target_active_power_l3.or(self.scheduled_power.and_then(|p| p.l3)),
+            evse_target_reactive_power: m.evse_target_reactive_power,
+            evse_target_reactive_power_l2: m.evse_target_reactive_power_l2,
+            evse_target_reactive_power_l3: m.evse_target_reactive_power_l3,
+            evse_present_active_power: m.evse_present_active_power,
+            evse_present_active_power_l2: m.evse_present_active_power_l2,
+            evse_present_active_power_l3: m.evse_present_active_power_l3,
+        };
+        let mode = match (res.cl_res_control_mode, self.config.bpt(), self.config.scheduled) {
+            (ac::ClResControlModeChoice::ScheduledAc(m), false, true) => scheduled_mode(m),
+            (ac::ClResControlModeChoice::BptScheduledAc(m), true, true) => scheduled_mode(ac::ScheduledAcClResControlMode {
+                evse_target_active_power: m.evse_target_active_power,
+                evse_target_active_power_l2: m.evse_target_active_power_l2,
+                evse_target_active_power_l3: m.evse_target_active_power_l3,
+                evse_target_reactive_power: m.evse_target_reactive_power,
+                evse_target_reactive_power_l2: m.evse_target_reactive_power_l2,
+                evse_target_reactive_power_l3: m.evse_target_reactive_power_l3,
+                evse_present_active_power: m.evse_present_active_power,
+                evse_present_active_power_l2: m.evse_present_active_power_l2,
+                evse_present_active_power_l3: m.evse_present_active_power_l3,
+            }),
+            (ac::ClResControlModeChoice::DynamicAc(m), false, false) => m,
+            (ac::ClResControlModeChoice::BptDynamicAc(m), true, false) => ac::DynamicAcClResControlMode {
                 departure_time: m.departure_time,
                 minimum_soc: m.minimum_soc,
                 target_soc: m.target_soc,
@@ -442,7 +518,15 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             charge_progress: progress,
             ev_power_profile: Some(common::EvPowerProfile {
                 time_anchor,
-                evppt_control_mode: common::EvpptControlModeChoice::Dynamic(common::DynamicEvpptControlMode {}),
+                evppt_control_mode: if self.config.scheduled {
+                    common::EvpptControlModeChoice::Scheduled(common::ScheduledEvpptControlMode { selected_schedule_tuple_id: self.selected_tuple,
+                        // Stated always (the Python library insists on it): the tolerance of the schedule is
+                        // accepted when it has one.
+                        power_tolerance_acceptance: Some(if self.tolerance_offered { common::PowerToleranceAcceptance::PowerToleranceConfirmed } else { common::PowerToleranceAcceptance::PowerToleranceNotConfirmed }),
+                    })
+                } else {
+                    common::EvpptControlModeChoice::Dynamic(common::DynamicEvpptControlMode {})
+                },
                 ev_power_profile_entries: common::EvPowerProfileEntryList { ev_power_profile_entry: &entries },
             }),
             // A BPT session says which channel the power flows on at the start (unified channel:

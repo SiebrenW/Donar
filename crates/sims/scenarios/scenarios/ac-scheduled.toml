@@ -1,0 +1,19 @@
+name = "ac-scheduled"
+description = "ISO 15118-20 AC in Scheduled control mode: the charger offers schedule tuples in the schedule exchange, the vehicle selects one in its power profile and sends the Scheduled charge loop; the charger's target power follows the schedule."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+ac = true
+scheduled = true
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)"]
+secc_log = ["service 1 selected, parameter set 4", "tx AC_ChargeLoopRes OK", "session: Stopped"]

@@ -4,6 +4,7 @@
 
 use exi::Arena;
 use iso15118_20::ac;
+use iso15118_20::common::{self, ChargingSchedule, EvpptControlModeChoice, PowerSchedule, PowerScheduleEntry, PowerScheduleEntryList, ScheduleTuple};
 use iso15118_20::common_types::{self, RationalNumber, ResponseCode};
 use v2gtp::PayloadType;
 
@@ -12,6 +13,10 @@ use super::{Evse, Output, State, frame, is_ok};
 /// Service ids of the AC services (Table 204).
 pub(super) const SERVICE_ID_AC: u16 = 1;
 pub(super) const SERVICE_ID_AC_BPT: u16 = 5;
+
+/// The schedule tuples a scheduled session offers: 1 is the charger's full power for an entry
+/// (`schedule_entry_s`) and then half of it, 2 half of it throughout.
+const TUPLES: [u32; 2] = [1, 2];
 
 /// A power per line, in watts; a line the charger or the vehicle does not use is `None`.
 type Lines = [Option<f64>; 3];
@@ -158,8 +163,11 @@ impl Evse {
         let Ok(ac::Message::AcChargeLoopReq(req)) = ac::decode(payload, arena) else { return Output { send: None, close: true } };
         self.loops_seen += 1;
         let matching = matches!(
-            (&req.cl_req_control_mode, self.bpt),
-            (ac::ClReqControlModeChoice::DynamicAc(_), false) | (ac::ClReqControlModeChoice::BptDynamicAc(_), true)
+            (&req.cl_req_control_mode, self.bpt, self.scheduled),
+            (ac::ClReqControlModeChoice::DynamicAc(_), false, false)
+                | (ac::ClReqControlModeChoice::BptDynamicAc(_), true, false)
+                | (ac::ClReqControlModeChoice::ScheduledAc(_), false, true)
+                | (ac::ClReqControlModeChoice::BptScheduledAc(_), true, true)
         );
         let mut code = if req.header.session_id != self.session_id {
             ResponseCode::FailedUnknownSession
@@ -185,18 +193,47 @@ impl Evse {
                 lines(m.ev_minimum_charge_power, m.ev_minimum_charge_power_l2, m.ev_minimum_charge_power_l3),
                 lines(m.ev_maximum_discharge_power, m.ev_maximum_discharge_power_l2, m.ev_maximum_discharge_power_l3),
             ),
-            _ => (0.0, [None; 3], [None; 3], [None; 3]),
+            // Scheduled: what the vehicle left out it does not limit; no target energy is a charge.
+            ac::ClReqControlModeChoice::ScheduledAc(m) => (
+                m.ev_target_energy_request.map_or(1.0, RationalNumber::to_f64),
+                [m.ev_maximum_charge_power.map(RationalNumber::to_f64), m.ev_maximum_charge_power_l2.map(RationalNumber::to_f64), m.ev_maximum_charge_power_l3.map(RationalNumber::to_f64)],
+                [m.ev_minimum_charge_power.map(RationalNumber::to_f64), m.ev_minimum_charge_power_l2.map(RationalNumber::to_f64), m.ev_minimum_charge_power_l3.map(RationalNumber::to_f64)],
+                [None; 3],
+            ),
+            ac::ClReqControlModeChoice::BptScheduledAc(m) => (
+                m.ev_target_energy_request.map_or(1.0, RationalNumber::to_f64),
+                [m.ev_maximum_charge_power.map(RationalNumber::to_f64), m.ev_maximum_charge_power_l2.map(RationalNumber::to_f64), m.ev_maximum_charge_power_l3.map(RationalNumber::to_f64)],
+                [m.ev_minimum_charge_power.map(RationalNumber::to_f64), m.ev_minimum_charge_power_l2.map(RationalNumber::to_f64), m.ev_minimum_charge_power_l3.map(RationalNumber::to_f64)],
+                [m.ev_maximum_discharge_power.map(RationalNumber::to_f64), m.ev_maximum_discharge_power_l2.map(RationalNumber::to_f64), m.ev_maximum_discharge_power_l3.map(RationalNumber::to_f64)],
+            ),
         };
         if !self.check_ac_loop_limits(ev_max, ev_min) && self.config.fail_on_limit_violation {
             code = ResponseCode::Failed;
         }
+        // The lines the vehicle says it draws on (Scheduled mode may leave its limits out).
+        let present_lines: [bool; 3] = match &req.cl_req_control_mode {
+            ac::ClReqControlModeChoice::ScheduledAc(m) => [true, m.ev_present_active_power_l2.is_some(), m.ev_present_active_power_l3.is_some()],
+            ac::ClReqControlModeChoice::BptScheduledAc(m) => [true, m.ev_present_active_power_l2.is_some(), m.ev_present_active_power_l3.is_some()],
+            _ => [true; 3],
+        };
         let discharging = self.bpt && target_energy < 0.0;
         let offered = self.ac_lines_offered();
         let mut target: Lines = [None; 3];
         for line in 0..offered {
-            // A line the vehicle does not use carries nothing.
-            let Some(vehicle) = (if discharging { ev_discharge_max[line] } else { ev_max[line] }) else { continue };
-            let charger = f64::from(if discharging { l.ac_max_discharge_power_w } else { l.ac_max_charge_power_w });
+            // Dynamic: a line the vehicle does not use carries nothing. Scheduled: the vehicle's limits
+            // are optional, and the schedule's entry is what the charger asks for.
+            let vehicle = if self.scheduled {
+                let own = if discharging { ev_discharge_max[line] } else { ev_max[line] };
+                // Line 1 always; the others where the vehicle has them (it reported a present power).
+                if !present_lines[line] {
+                    continue;
+                }
+                own.unwrap_or(f64::MAX)
+            } else {
+                let Some(v) = (if discharging { ev_discharge_max[line] } else { ev_max[line] }) else { continue };
+                v
+            };
+            let charger = if self.scheduled { self.scheduled_power(discharging) } else { f64::from(if discharging { l.ac_max_discharge_power_w } else { l.ac_max_charge_power_w }) };
             let minimum = f64::from(if discharging { l.ac_min_discharge_power_w } else { l.ac_min_charge_power_w });
             let power = vehicle.min(charger);
             // Below the minimum the charger cannot deliver with the expected accuracy.
@@ -242,7 +279,34 @@ impl Evse {
             meter_info: None,
             receipt: None,
             evse_target_frequency: None,
-            cl_res_control_mode: if self.bpt {
+            cl_res_control_mode: if self.scheduled {
+                let scheduled = ac::ScheduledAcClResControlMode {
+                    evse_target_active_power: Some(RationalNumber::from_f64(target[0].unwrap_or(0.0))),
+                    evse_target_active_power_l2: rational(target[1]),
+                    evse_target_active_power_l3: rational(target[2]),
+                    evse_target_reactive_power: None,
+                    evse_target_reactive_power_l2: None,
+                    evse_target_reactive_power_l3: None,
+                    evse_present_active_power: rational(present[0]),
+                    evse_present_active_power_l2: rational(present[1]),
+                    evse_present_active_power_l3: rational(present[2]),
+                };
+                if self.bpt {
+                    ac::ClResControlModeChoice::BptScheduledAc(ac::BptScheduledAcClResControlMode {
+                        evse_target_active_power: scheduled.evse_target_active_power,
+                        evse_target_active_power_l2: scheduled.evse_target_active_power_l2,
+                        evse_target_active_power_l3: scheduled.evse_target_active_power_l3,
+                        evse_target_reactive_power: None,
+                        evse_target_reactive_power_l2: None,
+                        evse_target_reactive_power_l3: None,
+                        evse_present_active_power: scheduled.evse_present_active_power,
+                        evse_present_active_power_l2: scheduled.evse_present_active_power_l2,
+                        evse_present_active_power_l3: scheduled.evse_present_active_power_l3,
+                    })
+                } else {
+                    ac::ClResControlModeChoice::ScheduledAc(scheduled)
+                }
+            } else if self.bpt {
                 ac::ClResControlModeChoice::BptDynamicAc(ac::BptDynamicAcClResControlMode {
                     departure_time: mode.departure_time,
                     minimum_soc: mode.minimum_soc,
@@ -263,5 +327,87 @@ impl Evse {
             },
         };
         Output { send: frame(PayloadType::AC_MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) }
+    }
+
+    /// The entries of a tuple's schedule, per line: `(duration, watts)`; the discharging schedule
+    /// (bidirectional sessions) is the charger's discharge power.
+    fn schedule_entries(&self, tuple: u32, discharging: bool) -> Vec<(u32, f64)> {
+        let l = self.limits();
+        let entry = self.config.schedule_entry_s.max(1);
+        if discharging {
+            return vec![(entry, f64::from(l.ac_max_discharge_power_w))];
+        }
+        let full = f64::from(l.ac_max_charge_power_w);
+        if tuple == 1 { vec![(entry, full), (entry, full / 2.0)] } else { vec![(entry, full / 2.0)] }
+    }
+
+    /// The power per line the selected tuple asks for now, counted from the start of the power
+    /// delivery; the last entry holds beyond the end.
+    pub(super) fn scheduled_power(&self, discharging: bool) -> f64 {
+        let elapsed = self.schedule_started.map_or(0, |t| t.elapsed().as_secs());
+        let mut left = elapsed;
+        let entries = self.schedule_entries(self.selected_tuple, discharging);
+        for (duration, watts) in &entries {
+            if left < u64::from(*duration) {
+                return *watts;
+            }
+            left -= u64::from(*duration);
+        }
+        entries.last().map_or(0.0, |e| e.1)
+    }
+
+    /// `ScheduleExchangeRes`, framed: Dynamic, or in Scheduled mode the offered tuples.
+    pub(super) fn schedule_frame(&self, payload_type: PayloadType, processing: common_types::Processing, code: ResponseCode) -> Option<Vec<u8>> {
+        if !self.scheduled {
+            let res = self.schedule_res(processing, code);
+            return frame(payload_type, |out| res.encode(out));
+        }
+        let offered_lines = self.ac_lines_offered();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let per_line = |watts: f64| (RationalNumber::from_f64(watts), (offered_lines == 3).then(|| RationalNumber::from_f64(watts)), (offered_lines == 3).then(|| RationalNumber::from_f64(watts)));
+        let build = |tuple: u32, discharging: bool| -> Vec<PowerScheduleEntry> {
+            self.schedule_entries(tuple, discharging)
+                .into_iter()
+                .map(|(duration, watts)| {
+                    let (power, power_l2, power_l3) = per_line(watts);
+                    PowerScheduleEntry { duration, power, power_l2, power_l3 }
+                })
+                .collect()
+        };
+        let charging: Vec<Vec<PowerScheduleEntry>> = TUPLES.iter().map(|&t| build(t, false)).collect();
+        let discharging = build(1, true);
+        fn schedule(now: u64, entries: &[PowerScheduleEntry]) -> ChargingSchedule<'_> {
+            ChargingSchedule {
+                power_schedule: PowerSchedule { time_anchor: now, available_energy: None, power_tolerance: None, power_schedule_entries: PowerScheduleEntryList { power_schedule_entry: entries } },
+                schedule: None,
+            }
+        }
+        let tuples: Vec<ScheduleTuple<'_>> = TUPLES
+            .iter()
+            .zip(&charging)
+            .map(|(&id, entries)| ScheduleTuple { schedule_tuple_id: id, charging_schedule: schedule(now, entries), discharging_schedule: self.bpt.then(|| schedule(now, &discharging)) })
+            .collect();
+        let res = common::ScheduleExchangeRes {
+            header: self.header(),
+            response_code: code,
+            evse_processing: processing,
+            go_to_pause: None,
+            se_res_control_mode: common::SeResControlModeChoice::Scheduled(common::ScheduledSeResControlMode { schedule_tuple: &tuples }),
+        };
+        frame(payload_type, |out| res.encode(out))
+    }
+
+    /// Whether a power delivery request's profile selects what the session is set up for: in
+    /// Scheduled mode one of the offered tuples, in Dynamic mode no tuple. Notes the selection.
+    pub(super) fn selects_offered_tuple(&mut self, req: &common::PowerDeliveryReq<'_>) -> bool {
+        let Some(profile) = &req.ev_power_profile else { return true };
+        match (&profile.evppt_control_mode, self.scheduled) {
+            (EvpptControlModeChoice::Scheduled(m), true) if TUPLES.contains(&m.selected_schedule_tuple_id) => {
+                self.selected_tuple = m.selected_schedule_tuple_id;
+                true
+            }
+            (EvpptControlModeChoice::Dynamic(_), false) => true,
+            _ => false,
+        }
     }
 }

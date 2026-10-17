@@ -128,7 +128,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         return end;
                     }
                     self.log.record(&Record::EvseProcessing { processing: res.evse_processing });
-                    if !matches!(res.se_res_control_mode, common::SeResControlModeChoice::Dynamic(_)) {
+                    if !self.take_schedule(&res.se_res_control_mode) {
                         return self.end(EndReason::UnexpectedMessage);
                     }
                     match res.evse_processing {
