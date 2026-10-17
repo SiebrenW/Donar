@@ -252,6 +252,8 @@ pub struct Tls {
 pub struct Settings {
     /// The protocol to offer the charger.
     pub protocol: Protocol,
+    /// ISO 15118-20: select the bidirectional service `DC_BPT` instead of `DC`.
+    pub bpt: bool,
     /// DIN SPEC 70121.
     pub din: Din,
     /// ISO 15118-2.
@@ -310,6 +312,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             protocol: Protocol::Iso20,
+            bpt: false,
             din: Din::default(),
             iso2: Iso2::default(),
             slac: false,
@@ -403,7 +406,7 @@ impl Settings {
         let mut config = evcc_core::session::Config {
             allow_unsecured: self.tls.is_none(),
             prefer_pnc: self.pnc.is_some(),
-            ..evcc_core::session::Config::DC_20
+            ..if self.bpt { evcc_core::session::Config::DC_BPT_20 } else { evcc_core::session::Config::DC_20 }
         };
         if let Some(ms) = self.poll_interval_ms {
             config.poll_interval_ms = ms;

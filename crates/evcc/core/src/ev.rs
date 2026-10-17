@@ -17,6 +17,15 @@ pub struct DcLimits {
     pub target_soc: Option<u8>,
 }
 
+/// What the vehicle can feed back into the grid or a load (bidirectional power transfer, BPT).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DischargeLimits {
+    pub maximum_discharge_power: RationalNumber,
+    pub minimum_discharge_power: RationalNumber,
+    pub maximum_discharge_current: RationalNumber,
+    pub minimum_discharge_current: RationalNumber,
+}
+
 /// The vehicle's AC charging parameters (ISO 15118-2 `AC_EVChargeParameter`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcLimits {
@@ -100,6 +109,16 @@ pub trait Ev {
     /// The vehicle's DC limits for this session. Static facts, so a plain call; live values
     /// (present voltage, target current) will come through events once the charge loop exists.
     fn dc_limits(&self) -> DcLimits;
+    /// The vehicle's discharge limits for BPT sessions ([`crate::session::Config::energy_service`]
+    /// `SERVICE_ID_DC_BPT`). The default is a small vehicle-to-load capability.
+    fn dc_discharge_limits(&self) -> DischargeLimits {
+        DischargeLimits {
+            maximum_discharge_power: RationalNumber { exponent: 3, value: 11 },
+            minimum_discharge_power: RationalNumber { exponent: 0, value: 100 },
+            maximum_discharge_current: RationalNumber { exponent: 0, value: 30 },
+            minimum_discharge_current: RationalNumber { exponent: 0, value: 1 },
+        }
+    }
     /// The vehicle's AC limits (ISO 15118-2 AC charging).
     fn ac_limits(&self) -> AcLimits {
         AcLimits {

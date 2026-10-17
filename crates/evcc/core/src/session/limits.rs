@@ -29,9 +29,19 @@ pub(super) fn larger(a: RationalNumber, b: RationalNumber) -> RationalNumber {
 impl<E: Ev, L: LogSink> Machine<E, L> {
     /// Remembers what the charger offered (the charge loop answers are held to it).
     pub(super) fn note_evse_limits(&mut self, mode: &dc::DcCpdResEnergyTransferModeChoice) {
-        if let dc::DcCpdResEnergyTransferModeChoice::Base(m) = mode {
-            self.evse_announced = Some(*m);
-        }
+        self.evse_announced = Some(match mode {
+            dc::DcCpdResEnergyTransferModeChoice::Base(m) => *m,
+            // The charge side of a BPT answer is the base answer.
+            dc::DcCpdResEnergyTransferModeChoice::Bpt(m) => dc::DcCpdResEnergyTransferMode {
+                evse_maximum_charge_power: m.evse_maximum_charge_power,
+                evse_minimum_charge_power: m.evse_minimum_charge_power,
+                evse_maximum_charge_current: m.evse_maximum_charge_current,
+                evse_minimum_charge_current: m.evse_minimum_charge_current,
+                evse_maximum_voltage: m.evse_maximum_voltage,
+                evse_minimum_voltage: m.evse_minimum_voltage,
+                evse_power_ramp_limitation: m.evse_power_ramp_limitation,
+            },
+        });
     }
 
     /// The vehicle's limits for a charge loop request: the host's, and within what was announced
@@ -47,6 +57,21 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 maximum_voltage: smaller(now.maximum_voltage, then.maximum_voltage),
                 minimum_voltage: larger(now.minimum_voltage, then.minimum_voltage),
                 target_soc: now.target_soc,
+            },
+            _ => now,
+        }
+    }
+
+    /// The vehicle's discharge limits for a BPT charge loop request: the host's, and within what
+    /// was announced in the charge parameter discovery (V2G20-2198, 2199 hold for them too).
+    pub(super) fn loop_discharge_limits(&self) -> crate::ev::DischargeLimits {
+        let now = self.ev.dc_discharge_limits();
+        match (self.config.enforce_cpd_limits, self.ev_announced_discharge) {
+            (true, Some(then)) => crate::ev::DischargeLimits {
+                maximum_discharge_power: smaller(now.maximum_discharge_power, then.maximum_discharge_power),
+                minimum_discharge_power: larger(now.minimum_discharge_power, then.minimum_discharge_power),
+                maximum_discharge_current: smaller(now.maximum_discharge_current, then.maximum_discharge_current),
+                minimum_discharge_current: larger(now.minimum_discharge_current, then.minimum_discharge_current),
             },
             _ => now,
         }

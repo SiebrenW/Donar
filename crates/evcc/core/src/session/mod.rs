@@ -36,7 +36,7 @@ mod setup;
 mod shutdown;
 mod types;
 
-pub use config::{Config, SERVICE_ID_DC};
+pub use config::{Config, SERVICE_ID_DC, SERVICE_ID_DC_BPT};
 pub use types::{Buffers, ChargeLoopStatus, ControlPilot, EndReason, Event, Notice, Resume, State, Step};
 
 pub struct Session<'a, E: Ev, L: LogSink> {
@@ -92,6 +92,7 @@ struct Machine<E, L> {
     /// The limits the vehicle announced in its last charge parameter discovery and the charger's
     /// answer to it, which the charge loop has to stay within (V2G20-2198, 2199, 2654, 2655).
     ev_announced: Option<crate::ev::DcLimits>,
+    ev_announced_discharge: Option<crate::ev::DischargeLimits>,
     evse_announced: Option<dc::DcCpdResEnergyTransferMode>,
     /// The voltage at the inlet as the vehicle last measured it (side B during pre-charge).
     last_inlet: iso15118_20::common_types::RationalNumber,
@@ -131,6 +132,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 eim_offered: false,
                 pnc_challenge: None,
                 ev_announced: None,
+                ev_announced_discharge: None,
                 evse_announced: None,
                 last_inlet: iso15118_20::common_types::RationalNumber { exponent: 0, value: 0 },
             },

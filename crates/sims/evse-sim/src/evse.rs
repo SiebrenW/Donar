@@ -105,6 +105,8 @@ pub struct Evse {
     /// The limits of the vehicle's charge parameter discovery request, which its charge loop
     /// requests have to stay within (V2G20-2198, 2199).
     ev_announced: Option<dc::DcCpdReqEnergyTransferMode>,
+    /// The selected energy service is DC_BPT: charge parameter discovery and charge loop use the BPT variants.
+    bpt: bool,
     /// DIN SPEC 70121: what the vehicle announced in its charge parameter discovery.
     din_ev_announced: Option<din70121::types::DcEvChargeParameter>,
     /// ISO 15118-2: the vehicle's announced power limit, and whether this is an AC session.
@@ -116,7 +118,7 @@ pub struct Evse {
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, protocol: Protocol::Iso20, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge(), last_stamp: std::cell::Cell::new(0), ev_announced: None, din_ev_announced: None, iso2_ev_power: None, iso2_ac: false, iso2_contract: None }
+        Self { session_id: config.session_id, config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), schema_id: 0, protocol: Protocol::Iso20, authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0, standby: None, pause_answered: false, renegotiation_requested: false, renegotiated: false, side_schedule_reqs_seen: 0, side_renegotiated: false, live: None, log: Vec::new(), challenge: random_challenge(), last_stamp: std::cell::Cell::new(0), ev_announced: None, bpt: false, din_ev_announced: None, iso2_ev_power: None, iso2_ac: false, iso2_contract: None }
     }
 
     /// Reports the charge loop measurements to a test platform and takes its edits.
@@ -451,6 +453,8 @@ impl Evse {
                     return self.selection_res(ResponseCode::FailedServiceSelectionInvalid);
                 }
                 let code = self.config.selection_code;
+                self.bpt = service_id == SERVICE_ID_DC_BPT;
+                self.note(format!("service {service_id} selected, parameter set {parameter_set_id}"));
                 if matches!(code, ResponseCode::Ok) {
                     self.state = State::AwaitChargeParameterDiscoveryReq;
                 }
@@ -458,11 +462,16 @@ impl Evse {
             }
             State::AwaitChargeParameterDiscoveryReq if payload_type == PayloadType::DC_MAINSTREAM => {
                 let Ok(dc::Message::DcChargeParameterDiscoveryReq(req)) = dc::decode(payload, &arena) else { return closed };
-                if let dc::DcCpdReqEnergyTransferModeChoice::Base(m) = &req.dc_cpd_req_energy_transfer_mode {
-                    self.ev_announced = Some(*m);
-                }
+                self.ev_announced = Some(match &req.dc_cpd_req_energy_transfer_mode {
+                    dc::DcCpdReqEnergyTransferModeChoice::Base(m) => *m,
+                    dc::DcCpdReqEnergyTransferModeChoice::Bpt(m) => base_of_bpt_cpd(m),
+                });
+                let wrong_mode = matches!(req.dc_cpd_req_energy_transfer_mode, dc::DcCpdReqEnergyTransferModeChoice::Bpt(_)) != self.bpt;
                 let code = if req.header.session_id != self.session_id {
                     ResponseCode::FailedUnknownSession
+                } else if wrong_mode {
+                    // Table 226: the mode has to be the one of the selected service.
+                    ResponseCode::FailedWrongChargeParameter
                 } else {
                     self.config.cpd_code
                 };
@@ -554,7 +563,10 @@ impl Evse {
                 self.loops_seen += 1;
                 let code = if req.header.session_id != self.session_id {
                     ResponseCode::FailedUnknownSession
-                } else if !matches!(req.cl_req_control_mode, dc::ClReqControlModeChoice::DynamicDc(_)) {
+                } else if !matches!(
+                    (&req.cl_req_control_mode, self.bpt),
+                    (dc::ClReqControlModeChoice::DynamicDc(_), false) | (dc::ClReqControlModeChoice::BptDynamicDc(_), true)
+                ) {
                     // Table 226: FAILED_WrongChargeParameter is for the parameter discovery only.
                     ResponseCode::Failed
                 } else {
@@ -582,12 +594,17 @@ impl Evse {
                 };
                 let rn = |value: u32| RationalNumber::from_f64(f64::from(value));
                 let l = &self.limits();
-                let (ev_voltage, ev_max_current, ev_max_power, ev_max_voltage) = match &req.cl_req_control_mode {
-                    dc::ClReqControlModeChoice::DynamicDc(m) => (req.ev_present_voltage.to_f64(), m.ev_maximum_charge_current.to_f64(), m.ev_maximum_charge_power.to_f64(), m.ev_maximum_voltage.to_f64()),
-                    _ => (req.ev_present_voltage.to_f64(), 0.0, 0.0, 0.0),
+                let requested = match &req.cl_req_control_mode {
+                    dc::ClReqControlModeChoice::DynamicDc(m) => Some(*m),
+                    dc::ClReqControlModeChoice::BptDynamicDc(m) => Some(base_of_bpt_loop(m)),
+                    _ => None,
+                };
+                let (ev_voltage, ev_max_current, ev_max_power, ev_max_voltage) = match &requested {
+                    Some(m) => (req.ev_present_voltage.to_f64(), m.ev_maximum_charge_current.to_f64(), m.ev_maximum_charge_power.to_f64(), m.ev_maximum_voltage.to_f64()),
+                    None => (req.ev_present_voltage.to_f64(), 0.0, 0.0, 0.0),
                 };
                 let mut code = code;
-                if let dc::ClReqControlModeChoice::DynamicDc(m) = &req.cl_req_control_mode
+                if let Some(m) = &requested
                     && !self.check_ev_loop_limits(m) && self.config.fail_on_limit_violation {
                         code = ResponseCode::Failed;
                     }
@@ -614,16 +631,33 @@ impl Evse {
                     evse_power_limit_achieved: power_limit_achieved,
                     evse_current_limit_achieved: current_limit_achieved,
                     evse_voltage_limit_achieved: voltage_limit_achieved,
-                    cl_res_control_mode: dc::ClResControlModeChoice::DynamicDc(dc::DynamicDcClResControlMode {
-                        departure_time: None,
-                        minimum_soc: None,
-                        target_soc: None,
-                        ack_max_delay: None,
-                        evse_maximum_charge_power: RationalNumber::from_f64(max_power),
-                        evse_minimum_charge_power: rn(l.min_charge_power_w),
-                        evse_maximum_charge_current: rn(l.max_charge_current_a),
-                        evse_maximum_voltage: rn(l.max_voltage_v),
-                    }),
+                    cl_res_control_mode: if self.bpt {
+                        dc::ClResControlModeChoice::BptDynamicDc(dc::BptDynamicDcClResControlMode {
+                            departure_time: None,
+                            minimum_soc: None,
+                            target_soc: None,
+                            ack_max_delay: None,
+                            evse_maximum_charge_power: RationalNumber::from_f64(max_power),
+                            evse_minimum_charge_power: rn(l.min_charge_power_w),
+                            evse_maximum_charge_current: rn(l.max_charge_current_a),
+                            evse_maximum_voltage: rn(l.max_voltage_v),
+                            evse_maximum_discharge_power: rn(l.max_discharge_power_w),
+                            evse_minimum_discharge_power: rn(l.min_discharge_power_w),
+                            evse_maximum_discharge_current: rn(l.max_discharge_current_a),
+                            evse_minimum_voltage: rn(l.min_voltage_v),
+                        })
+                    } else {
+                        dc::ClResControlModeChoice::DynamicDc(dc::DynamicDcClResControlMode {
+                            departure_time: None,
+                            minimum_soc: None,
+                            target_soc: None,
+                            ack_max_delay: None,
+                            evse_maximum_charge_power: RationalNumber::from_f64(max_power),
+                            evse_minimum_charge_power: rn(l.min_charge_power_w),
+                            evse_maximum_charge_current: rn(l.max_charge_current_a),
+                            evse_maximum_voltage: rn(l.max_voltage_v),
+                        })
+                    },
                 };
                 Output { send: frame(PayloadType::DC_MAINSTREAM, |out| res.encode(out)), close: !is_ok(code) }
             }
@@ -713,23 +747,66 @@ impl Evse {
     }
 }
 
+/// Service id of DC_BPT (Table 204).
+const SERVICE_ID_DC_BPT: u16 = 6;
+
+fn base_of_bpt_cpd(m: &dc::BptDcCpdReqEnergyTransferMode) -> dc::DcCpdReqEnergyTransferMode {
+    dc::DcCpdReqEnergyTransferMode {
+        ev_maximum_charge_power: m.ev_maximum_charge_power,
+        ev_minimum_charge_power: m.ev_minimum_charge_power,
+        ev_maximum_charge_current: m.ev_maximum_charge_current,
+        ev_minimum_charge_current: m.ev_minimum_charge_current,
+        ev_maximum_voltage: m.ev_maximum_voltage,
+        ev_minimum_voltage: m.ev_minimum_voltage,
+        target_soc: m.target_soc,
+    }
+}
+
+fn base_of_bpt_loop(m: &dc::BptDynamicDcClReqControlMode) -> dc::DynamicDcClReqControlMode {
+    dc::DynamicDcClReqControlMode {
+        departure_time: m.departure_time,
+        ev_target_energy_request: m.ev_target_energy_request,
+        ev_maximum_energy_request: m.ev_maximum_energy_request,
+        ev_minimum_energy_request: m.ev_minimum_energy_request,
+        ev_maximum_charge_power: m.ev_maximum_charge_power,
+        ev_minimum_charge_power: m.ev_minimum_charge_power,
+        ev_maximum_charge_current: m.ev_maximum_charge_current,
+        ev_maximum_voltage: m.ev_maximum_voltage,
+        ev_minimum_voltage: m.ev_minimum_voltage,
+    }
+}
+
 impl Evse {
     pub(crate) fn cpd_res(&self, code: ResponseCode) -> dc::DcChargeParameterDiscoveryRes<'static> {
         let rn = |value: u32| RationalNumber::from_f64(f64::from(value));
         let l = &self.limits();
-        dc::DcChargeParameterDiscoveryRes {
-            header: self.header(),
-            response_code: code,
-            dc_cpd_res_energy_transfer_mode: dc::DcCpdResEnergyTransferModeChoice::Base(dc::DcCpdResEnergyTransferMode {
-                evse_maximum_charge_power: rn(l.max_charge_power_w),
-                evse_minimum_charge_power: rn(l.min_charge_power_w),
-                evse_maximum_charge_current: rn(l.max_charge_current_a),
-                evse_minimum_charge_current: rn(l.min_charge_current_a),
-                evse_maximum_voltage: rn(l.max_voltage_v),
-                evse_minimum_voltage: rn(l.min_voltage_v),
-                evse_power_ramp_limitation: l.power_ramp_limitation_percent_per_min.map(rn),
-            }),
-        }
+        let base = dc::DcCpdResEnergyTransferMode {
+            evse_maximum_charge_power: rn(l.max_charge_power_w),
+            evse_minimum_charge_power: rn(l.min_charge_power_w),
+            evse_maximum_charge_current: rn(l.max_charge_current_a),
+            evse_minimum_charge_current: rn(l.min_charge_current_a),
+            evse_maximum_voltage: rn(l.max_voltage_v),
+            evse_minimum_voltage: rn(l.min_voltage_v),
+            evse_power_ramp_limitation: l.power_ramp_limitation_percent_per_min.map(rn),
+        };
+        let mode = if self.bpt {
+            dc::DcCpdResEnergyTransferModeChoice::Bpt(dc::BptDcCpdResEnergyTransferMode {
+                evse_maximum_charge_power: base.evse_maximum_charge_power,
+                evse_minimum_charge_power: base.evse_minimum_charge_power,
+                evse_maximum_charge_current: base.evse_maximum_charge_current,
+                evse_minimum_charge_current: base.evse_minimum_charge_current,
+                evse_maximum_voltage: base.evse_maximum_voltage,
+                evse_minimum_voltage: base.evse_minimum_voltage,
+                evse_power_ramp_limitation: base.evse_power_ramp_limitation,
+                evse_maximum_discharge_power: rn(l.max_discharge_power_w),
+                evse_minimum_discharge_power: rn(l.min_discharge_power_w),
+                evse_maximum_discharge_current: rn(l.max_discharge_current_a),
+                evse_minimum_discharge_current: rn(l.min_discharge_current_a),
+            })
+        } else {
+            dc::DcCpdResEnergyTransferModeChoice::Base(base)
+        };
+        dc::DcChargeParameterDiscoveryRes { header: self.header(), response_code: code, dc_cpd_res_energy_transfer_mode: mode }
     }
 
     fn schedule_res(&self, processing: Processing, code: ResponseCode) -> common::ScheduleExchangeRes<'static> {
@@ -757,9 +834,10 @@ impl Evse {
         }
         let side = PayloadType::SCHEDULE_RENEGOTIATION;
         if let Ok(dc::Message::DcChargeParameterDiscoveryReq(req)) = dc::decode(payload, &arena) {
-            if let dc::DcCpdReqEnergyTransferModeChoice::Base(m) = &req.dc_cpd_req_energy_transfer_mode {
-                self.ev_announced = Some(*m);
-            }
+            self.ev_announced = Some(match &req.dc_cpd_req_energy_transfer_mode {
+                dc::DcCpdReqEnergyTransferModeChoice::Base(m) => *m,
+                dc::DcCpdReqEnergyTransferModeChoice::Bpt(m) => base_of_bpt_cpd(m),
+            });
             let code = if req.header.session_id != self.session_id { ResponseCode::FailedUnknownSession } else { self.config.cpd_code };
             self.side_schedule_reqs_seen = 0;
             let res = self.cpd_res(code);
@@ -820,7 +898,9 @@ impl Evse {
             .parameter_sets
             .iter()
             .map(|set| {
-                set.values.iter().map(|(name, v)| Parameter { name, choice: ParameterChoice::IntValue(*v) }).collect()
+                // Table 207: DC_BPT adds the channel (1 unified) and the generator mode (1 grid following).
+                let bpt: &[(&str, i32)] = if service_id == SERVICE_ID_DC_BPT { &[("BPTChannel", 1), ("GeneratorMode", 1)] } else { &[] };
+                set.values.iter().map(|(name, v)| (name.as_str(), *v)).chain(bpt.iter().copied()).map(|(name, v)| Parameter { name, choice: ParameterChoice::IntValue(v) }).collect()
             })
             .collect();
         let sets: Vec<ParameterSet<'_>> = self

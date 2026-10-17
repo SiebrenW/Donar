@@ -50,7 +50,7 @@ pub struct Config {
     /// `MaximumSupportingPoints` of the schedule exchange: how many entries of a schedule the
     /// EV can take (12..=1024).
     pub maximum_supporting_points: u16,
-    /// The energy transfer service to select (`services::service_id`).
+    /// The energy transfer service to select: [`SERVICE_ID_DC`] or [`SERVICE_ID_DC_BPT`].
     pub energy_service: u16,
     /// A parameter set is acceptable when it holds every `(name, value)` listed here as an
     /// integer parameter. The first acceptable set is selected.
@@ -75,6 +75,19 @@ pub struct Config {
 }
 
 impl Config {
+    /// Bidirectional power transfer: the service `DC_BPT` with a unified channel and grid-following
+    /// generator mode (Table 207: `BPTChannel` 1, `GeneratorMode` 1).
+    pub const DC_BPT_20: Config = Config {
+        energy_service: SERVICE_ID_DC_BPT,
+        parameter_filter: &[("ControlMode", 2), ("MobilityNeedsMode", 1), ("BPTChannel", 1), ("GeneratorMode", 1)],
+        ..Config::DC_20
+    };
+
+    /// Whether the session is a BPT one.
+    pub fn bpt(&self) -> bool {
+        self.energy_service == SERVICE_ID_DC_BPT
+    }
+
     /// ISO 15118-20 DC, version 1.0, schema id 1, top priority.
     pub const DC_20: Config = Config {
         offer: AppProtocol {
@@ -127,3 +140,5 @@ pub(crate) fn pow10(exp: i8) -> f32 {
 
 /// Service id of DC energy transfer (ISO 15118-20:2022 Table 204, V2G20-1355).
 pub const SERVICE_ID_DC: u16 = 2;
+/// Service id of DC bidirectional power transfer (Table 204).
+pub const SERVICE_ID_DC_BPT: u16 = 6;

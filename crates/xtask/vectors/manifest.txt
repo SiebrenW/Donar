@@ -160,3 +160,8 @@ iso2_notification iso15118-2/all.xsd
 fragment_iso2_authorization_req iso15118-2/all.xsd fragment
 fragment_iso2_signed_info iso15118-2/xmldsig-core-schema.xsd fragment
 iso2_authorization_req_signed iso15118-2/all.xsd
+dc_bpt_cpd_req V2G_CI_DC.xsd
+dc_bpt_cpd_res V2G_CI_DC.xsd
+dc_bpt_charge_loop_req V2G_CI_DC.xsd
+dc_bpt_charge_loop_res V2G_CI_DC.xsd
+power_delivery_req_start_bpt V2G_CI_CommonMessages.xsd

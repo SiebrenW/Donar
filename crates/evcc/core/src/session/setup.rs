@@ -202,20 +202,34 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     pub(super) fn frame_charge_parameter_discovery_req(&mut self, payload_type: PayloadType, tx: &mut [u8]) -> Result<usize, ()> {
         let limits = self.ev.dc_limits();
         self.ev_announced = Some(limits);
-        let msg = dc::DcChargeParameterDiscoveryReq {
-            header: self.header(),
-            dc_cpd_req_energy_transfer_mode: dc::DcCpdReqEnergyTransferModeChoice::Base(
-                dc::DcCpdReqEnergyTransferMode {
-                    ev_maximum_charge_power: limits.maximum_charge_power,
-                    ev_minimum_charge_power: limits.minimum_charge_power,
-                    ev_maximum_charge_current: limits.maximum_charge_current,
-                    ev_minimum_charge_current: limits.minimum_charge_current,
-                    ev_maximum_voltage: limits.maximum_voltage,
-                    ev_minimum_voltage: limits.minimum_voltage,
-                    target_soc: limits.target_soc.map(|s| s as i8),
-                },
-            ),
+        let mode = if self.config.bpt() {
+            let d = self.ev.dc_discharge_limits();
+            self.ev_announced_discharge = Some(d);
+            dc::DcCpdReqEnergyTransferModeChoice::Bpt(dc::BptDcCpdReqEnergyTransferMode {
+                ev_maximum_charge_power: limits.maximum_charge_power,
+                ev_minimum_charge_power: limits.minimum_charge_power,
+                ev_maximum_charge_current: limits.maximum_charge_current,
+                ev_minimum_charge_current: limits.minimum_charge_current,
+                ev_maximum_voltage: limits.maximum_voltage,
+                ev_minimum_voltage: limits.minimum_voltage,
+                target_soc: limits.target_soc.map(|s| s as i8),
+                ev_maximum_discharge_power: d.maximum_discharge_power,
+                ev_minimum_discharge_power: d.minimum_discharge_power,
+                ev_maximum_discharge_current: d.maximum_discharge_current,
+                ev_minimum_discharge_current: d.minimum_discharge_current,
+            })
+        } else {
+            dc::DcCpdReqEnergyTransferModeChoice::Base(dc::DcCpdReqEnergyTransferMode {
+                ev_maximum_charge_power: limits.maximum_charge_power,
+                ev_minimum_charge_power: limits.minimum_charge_power,
+                ev_maximum_charge_current: limits.maximum_charge_current,
+                ev_minimum_charge_current: limits.minimum_charge_current,
+                ev_maximum_voltage: limits.maximum_voltage,
+                ev_minimum_voltage: limits.minimum_voltage,
+                target_soc: limits.target_soc.map(|s| s as i8),
+            })
         };
+        let msg = dc::DcChargeParameterDiscoveryReq { header: self.header(), dc_cpd_req_energy_transfer_mode: mode };
         frame(tx, payload_type, |out| msg.encode(out))
     }
 

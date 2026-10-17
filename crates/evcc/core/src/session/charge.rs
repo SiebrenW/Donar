@@ -79,9 +79,20 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         if let Some(end) = self.received(MsgKind::DcChargeLoopRes, res.response_code) {
             return end;
         }
-        let dc::ClResControlModeChoice::DynamicDc(mode) = res.cl_res_control_mode else {
-            // We asked for Dynamic control.
-            return self.end(EndReason::UnexpectedMessage);
+        // We asked for Dynamic control, with the BPT variant in a BPT session.
+        let mode = match (res.cl_res_control_mode, self.config.bpt()) {
+            (dc::ClResControlModeChoice::DynamicDc(m), false) => m,
+            (dc::ClResControlModeChoice::BptDynamicDc(m), true) => dc::DynamicDcClResControlMode {
+                departure_time: m.departure_time,
+                minimum_soc: m.minimum_soc,
+                target_soc: m.target_soc,
+                ack_max_delay: m.ack_max_delay,
+                evse_maximum_charge_power: m.evse_maximum_charge_power,
+                evse_minimum_charge_power: m.evse_minimum_charge_power,
+                evse_maximum_charge_current: m.evse_maximum_charge_current,
+                evse_maximum_voltage: m.evse_maximum_voltage,
+            },
+            _ => return self.end(EndReason::UnexpectedMessage),
         };
         self.check_evse_loop_limits(&mode);
         let status = ChargeLoopStatus {
@@ -198,6 +209,37 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         self.charge_loop_started = true;
         let r = self.ev.schedule_request();
         let l = self.loop_limits();
+        let control_mode = if self.config.bpt() {
+            let d = self.loop_discharge_limits();
+            dc::ClReqControlModeChoice::BptDynamicDc(dc::BptDynamicDcClReqControlMode {
+                departure_time: None,
+                ev_target_energy_request: r.target_energy,
+                ev_maximum_energy_request: r.maximum_energy,
+                ev_minimum_energy_request: r.minimum_energy,
+                ev_maximum_charge_power: l.maximum_charge_power,
+                ev_minimum_charge_power: l.minimum_charge_power,
+                ev_maximum_charge_current: l.maximum_charge_current,
+                ev_maximum_voltage: l.maximum_voltage,
+                ev_minimum_voltage: l.minimum_voltage,
+                ev_maximum_discharge_power: d.maximum_discharge_power,
+                ev_minimum_discharge_power: d.minimum_discharge_power,
+                ev_maximum_discharge_current: d.maximum_discharge_current,
+                ev_maximum_v2x_energy_request: None,
+                ev_minimum_v2x_energy_request: None,
+            })
+        } else {
+            dc::ClReqControlModeChoice::DynamicDc(dc::DynamicDcClReqControlMode {
+                departure_time: None,
+                ev_target_energy_request: r.target_energy,
+                ev_maximum_energy_request: r.maximum_energy,
+                ev_minimum_energy_request: r.minimum_energy,
+                ev_maximum_charge_power: l.maximum_charge_power,
+                ev_minimum_charge_power: l.minimum_charge_power,
+                ev_maximum_charge_current: l.maximum_charge_current,
+                ev_maximum_voltage: l.maximum_voltage,
+                ev_minimum_voltage: l.minimum_voltage,
+            })
+        };
         let msg = dc::DcChargeLoopReq {
             header: self.header(),
             display_parameters: self.ev.present_soc().map(|soc| common_types::DisplayParameters {
@@ -214,17 +256,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             }),
             meter_info_requested: false,
             ev_present_voltage: self.ev.battery_voltage(),
-            cl_req_control_mode: dc::ClReqControlModeChoice::DynamicDc(dc::DynamicDcClReqControlMode {
-                departure_time: None,
-                ev_target_energy_request: r.target_energy,
-                ev_maximum_energy_request: r.maximum_energy,
-                ev_minimum_energy_request: r.minimum_energy,
-                ev_maximum_charge_power: l.maximum_charge_power,
-                ev_minimum_charge_power: l.minimum_charge_power,
-                ev_maximum_charge_current: l.maximum_charge_current,
-                ev_maximum_voltage: l.maximum_voltage,
-                ev_minimum_voltage: l.minimum_voltage,
-            }),
+            cl_req_control_mode: control_mode,
         };
         let framed = frame(tx, PayloadType::DC_MAINSTREAM, |out| msg.encode(out));
         if self.state == State::AwaitChargeLoopRes {
@@ -282,7 +314,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 evppt_control_mode: common::EvpptControlModeChoice::Dynamic(common::DynamicEvpptControlMode {}),
                 ev_power_profile_entries: common::EvPowerProfileEntryList { ev_power_profile_entry: &entries },
             }),
-            bpt_channel_selection: None,
+            // A BPT session says which channel the power flows on at the start (unified channel:
+            // charging; discharging follows from the charge loop's setpoints).
+            bpt_channel_selection: (self.config.bpt() && progress == common::ChargeProgress::Start).then_some(common::ChannelSelection::Charge),
         };
         frame(tx, payload_type, |out| msg.encode(out))
     }}

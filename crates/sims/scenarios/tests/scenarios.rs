@@ -59,6 +59,7 @@ mod run {
 
     scenario_tests! {
         dc_plain => "dc-plain",
+        dc_bpt => "dc-bpt",
         dc_slac => "dc-slac",
         slac_too_far => "slac-too-far",
         dc_tls_slac => "dc-tls-slac",

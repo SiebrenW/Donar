@@ -1239,3 +1239,78 @@ fn time_stamps_follow_the_evse_clock_and_increase() {
     });
     assert!(second > first && (5..1000).contains(&second), "{second}");
 }
+
+#[test]
+fn a_bpt_session_uses_the_bpt_variants() {
+    let mut rig = Rig::new();
+    let Rig { rx, tx, arena } = &mut rig;
+    let config = Config { poll_interval_ms: 0, allow_unsecured: true, ..Config::DC_BPT_20 };
+    let mut s = Session::new(config, TestEv::new(), Capture::default(), Buffers { rx, tx, arena });
+    s.handle(Event::Start { secured: false });
+    deliver(&mut s, &sap_res(SapCode::OkSuccessfulNegotiation, Some(1)));
+    deliver(&mut s, &setup_res(ResponseCode::OkNewSessionEstablished, SID));
+    deliver(&mut s, &auth_setup_res(ResponseCode::Ok, &[Authorization::Eim]));
+    deliver(&mut s, &auth_res(ResponseCode::Ok, Processing::Finished));
+    // The charger offers both energy services; the vehicle asks about DC_BPT.
+    let step = deliver(&mut s, &discovery_res(ResponseCode::Ok, &[2, 6]));
+    sent_common(&s, &step, |m| {
+        let common::Message::ServiceDetailReq(r) = m else { panic!("{m:?}") };
+        assert_eq!(r.service_id, 6);
+    });
+    // A set without the BPT parameters does not fit; with them it does.
+    const BPT: &[(&str, i32)] = &[("Connector", 1), ("ControlMode", 2), ("MobilityNeedsMode", 1), ("Pricing", 0), ("BPTChannel", 1), ("GeneratorMode", 1)];
+    let step = deliver(&mut s, &detail_res(ResponseCode::Ok, 6, &[(1, DYNAMIC), (2, BPT)]));
+    sent_common(&s, &step, |m| {
+        let common::Message::ServiceSelectionReq(r) = m else { panic!("{m:?}") };
+        assert_eq!((r.selected_energy_transfer_service.service_id, r.selected_energy_transfer_service.parameter_set_id), (6, 2));
+    });
+    let step = deliver(&mut s, &selection_res(ResponseCode::Ok));
+    sent_dc(&s, &step, |m| {
+        let dc::Message::DcChargeParameterDiscoveryReq(r) = m else { panic!("{m:?}") };
+        let dc::DcCpdReqEnergyTransferModeChoice::Bpt(mode) = r.dc_cpd_req_energy_transfer_mode else { panic!("{r:?}") };
+        assert_eq!(mode.ev_maximum_discharge_power, rn(3, 11));
+    });
+    // A base answer is a violation of the selected service in the charge loop; here the BPT answer.
+    let bpt_cpd = framed(PayloadType::DC_MAINSTREAM, |out| {
+        dc::DcChargeParameterDiscoveryRes {
+            header: hdr(),
+            response_code: ResponseCode::Ok,
+            dc_cpd_res_energy_transfer_mode: dc::DcCpdResEnergyTransferModeChoice::Bpt(dc::BptDcCpdResEnergyTransferMode {
+                evse_maximum_charge_power: rn(3, 150),
+                evse_minimum_charge_power: rn(0, 1000),
+                evse_maximum_charge_current: rn(0, 300),
+                evse_minimum_charge_current: rn(0, 2),
+                evse_maximum_voltage: rn(0, 920),
+                evse_minimum_voltage: rn(0, 150),
+                evse_power_ramp_limitation: None,
+                evse_maximum_discharge_power: rn(3, 12),
+                evse_minimum_discharge_power: rn(0, 200),
+                evse_maximum_discharge_current: rn(0, 40),
+                evse_minimum_discharge_current: rn(0, 2),
+            }),
+        }
+        .encode(out)
+        .unwrap()
+    });
+    deliver(&mut s, &bpt_cpd);
+    assert_eq!(s.state(), State::AwaitScheduleExchangeRes);
+    deliver(&mut s, &se_res(ResponseCode::Ok, Processing::Finished));
+    deliver(&mut s, &cable_res(ResponseCode::Ok, Processing::Finished));
+    INLET.with(|i| i.set(BATTERY_V));
+    deliver(&mut s, &precharge_res(ResponseCode::Ok, BATTERY_V));
+    deliver(&mut s, &precharge_res(ResponseCode::Ok, BATTERY_V));
+    let step = s.handle(Event::ContactorsClosed);
+    sent_common(&s, &step, |m| {
+        let common::Message::PowerDeliveryReq(r) = m else { panic!("{m:?}") };
+        assert_eq!(r.bpt_channel_selection, Some(common::ChannelSelection::Charge));
+    });
+    let step = deliver(&mut s, &power_delivery_res(ResponseCode::Ok));
+    sent_dc(&s, &step, |m| {
+        let dc::Message::DcChargeLoopReq(r) = m else { panic!("{m:?}") };
+        let dc::ClReqControlModeChoice::BptDynamicDc(mode) = r.cl_req_control_mode else { panic!("{r:?}") };
+        assert_eq!(mode.ev_maximum_discharge_current, rn(0, 30));
+    });
+    // A plain Dynamic answer in a BPT session ends it.
+    let step = deliver(&mut s, &loop_res(None));
+    assert!(matches!(step.end, Some(EndReason::UnexpectedMessage)), "{step:?}");
+}

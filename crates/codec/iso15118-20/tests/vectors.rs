@@ -441,6 +441,93 @@ fn dc_charge_loop() {
 }
 
 #[test]
+fn dc_bpt() {
+    let m = dc::DcChargeParameterDiscoveryReq {
+        header: hdr(),
+        dc_cpd_req_energy_transfer_mode: dc::DcCpdReqEnergyTransferModeChoice::Bpt(dc::BptDcCpdReqEnergyTransferMode {
+            ev_maximum_charge_power: rn(3, 120),
+            ev_minimum_charge_power: rn(0, 100),
+            ev_maximum_charge_current: rn(0, 200),
+            ev_minimum_charge_current: rn(0, 1),
+            ev_maximum_voltage: rn(0, 450),
+            ev_minimum_voltage: rn(0, 200),
+            target_soc: Some(80),
+            ev_maximum_discharge_power: rn(3, 11),
+            ev_minimum_discharge_power: rn(0, 100),
+            ev_maximum_discharge_current: rn(0, 30),
+            ev_minimum_discharge_current: rn(0, 1),
+        }),
+    };
+    check_dc("dc_bpt_cpd_req", dc::Message::DcChargeParameterDiscoveryReq(m), |o| m.encode(o));
+    let m = dc::DcChargeParameterDiscoveryRes {
+        header: hdr(),
+        response_code: ResponseCode::Ok,
+        dc_cpd_res_energy_transfer_mode: dc::DcCpdResEnergyTransferModeChoice::Bpt(dc::BptDcCpdResEnergyTransferMode {
+            evse_maximum_charge_power: rn(3, 150),
+            evse_minimum_charge_power: rn(0, 1000),
+            evse_maximum_charge_current: rn(0, 300),
+            evse_minimum_charge_current: rn(0, -2),
+            evse_maximum_voltage: rn(0, 920),
+            evse_minimum_voltage: rn(0, 150),
+            evse_power_ramp_limitation: Some(rn(0, 50)),
+            evse_maximum_discharge_power: rn(3, 12),
+            evse_minimum_discharge_power: rn(0, 200),
+            evse_maximum_discharge_current: rn(0, 40),
+            evse_minimum_discharge_current: rn(0, 2),
+        }),
+    };
+    check_dc("dc_bpt_cpd_res", dc::Message::DcChargeParameterDiscoveryRes(m), |o| m.encode(o));
+
+    let m = dc::DcChargeLoopReq {
+        cl_req_control_mode: dc::ClReqControlModeChoice::BptDynamicDc(dc::BptDynamicDcClReqControlMode {
+            departure_time: None,
+            ev_target_energy_request: rn(3, 40),
+            ev_maximum_energy_request: rn(3, 60),
+            ev_minimum_energy_request: rn(0, 0),
+            ev_maximum_charge_power: rn(3, 100),
+            ev_minimum_charge_power: rn(0, 100),
+            ev_maximum_charge_current: rn(0, 200),
+            ev_maximum_voltage: rn(0, 450),
+            ev_minimum_voltage: rn(0, 200),
+            ev_maximum_discharge_power: rn(3, 11),
+            ev_minimum_discharge_power: rn(0, 100),
+            ev_maximum_discharge_current: rn(0, 30),
+            ev_maximum_v2x_energy_request: Some(rn(3, 20)),
+            ev_minimum_v2x_energy_request: Some(rn(0, 500)),
+        }),
+        ..charge_loop_req()
+    };
+    check_dc("dc_bpt_charge_loop_req", dc::Message::DcChargeLoopReq(m), |o| m.encode(o));
+    let m = dc::DcChargeLoopRes {
+        header: hdr(),
+        response_code: ResponseCode::Ok,
+        evse_status: None,
+        meter_info: None,
+        receipt: None,
+        evse_present_current: rn(0, 120),
+        evse_present_voltage: rn(0, 398),
+        evse_power_limit_achieved: false,
+        evse_current_limit_achieved: true,
+        evse_voltage_limit_achieved: false,
+        cl_res_control_mode: dc::ClResControlModeChoice::BptDynamicDc(dc::BptDynamicDcClResControlMode {
+            departure_time: None,
+            minimum_soc: None,
+            target_soc: None,
+            ack_max_delay: None,
+            evse_maximum_charge_power: rn(3, 150),
+            evse_minimum_charge_power: rn(0, 100),
+            evse_maximum_charge_current: rn(0, 300),
+            evse_maximum_voltage: rn(0, 920),
+            evse_maximum_discharge_power: rn(3, 12),
+            evse_minimum_discharge_power: rn(0, 200),
+            evse_maximum_discharge_current: rn(0, 40),
+            evse_minimum_voltage: rn(0, 150),
+        }),
+    };
+    check_dc("dc_bpt_charge_loop_res", dc::Message::DcChargeLoopRes(m), |o| m.encode(o));
+}
+
+#[test]
 fn dc_welding_detection() {
     for (name, p) in [("dc_welding_req_ongoing", Processing::Ongoing), ("dc_welding_req_finished", Processing::Finished)] {
         let m = dc::DcWeldingDetectionReq { header: hdr(), ev_processing: p };
@@ -453,7 +540,11 @@ fn dc_welding_detection() {
 #[test]
 fn power_delivery_and_session_stop() {
     let entries = [PowerScheduleEntry { duration: 3600, power: rn(3, 100), power_l2: None, power_l3: None }];
-    for (name, progress) in [("power_delivery_req_start", ChargeProgress::Start), ("power_delivery_req_stop", ChargeProgress::Stop)] {
+    for (name, progress, channel) in [
+        ("power_delivery_req_start", ChargeProgress::Start, None),
+        ("power_delivery_req_start_bpt", ChargeProgress::Start, Some(ChannelSelection::Discharge)),
+        ("power_delivery_req_stop", ChargeProgress::Stop, None),
+    ] {
         let m = PowerDeliveryReq {
             header: hdr(),
             ev_processing: Processing::Finished,
@@ -463,7 +554,7 @@ fn power_delivery_and_session_stop() {
                 evppt_control_mode: EvpptControlModeChoice::Dynamic(DynamicEvpptControlMode {}),
                 ev_power_profile_entries: EvPowerProfileEntryList { ev_power_profile_entry: &entries },
             }),
-            bpt_channel_selection: None,
+            bpt_channel_selection: channel,
         };
         check(name, Message::PowerDeliveryReq(m), |o| m.encode(o));
     }

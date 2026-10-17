@@ -242,6 +242,11 @@ pub struct Limits {
     /// `EVSEPowerRampLimitation` in percent per minute (8.3.5.5.2), when the charger limits how
     /// fast the power may change.
     pub power_ramp_limitation_percent_per_min: Option<u32>,
+    /// What the charger takes back from the vehicle in a BPT session (service 6).
+    pub max_discharge_power_w: u32,
+    pub min_discharge_power_w: u32,
+    pub max_discharge_current_a: u32,
+    pub min_discharge_current_a: u32,
 }
 
 impl Default for Limits {
@@ -254,6 +259,10 @@ impl Default for Limits {
             max_voltage_v: 920,
             min_voltage_v: 150,
             power_ramp_limitation_percent_per_min: None,
+            max_discharge_power_w: 11_000,
+            min_discharge_power_w: 100,
+            max_discharge_current_a: 30,
+            min_discharge_current_a: 1,
         }
     }
 }
@@ -499,7 +508,7 @@ impl Default for Config {
             authorization_never_finishes: false,
             authorization_code: ResponseCode::Ok,
             offered_authorization: vec![Authorization::Eim],
-            energy_services: vec![2],
+            energy_services: vec![2, 6],
             // One set per inlet (Connector 1 to 4), ControlMode 2 (Dynamic), MobilityNeedsMode 1,
             // Pricing 0, so that any vehicle finds its own; the numbers are those of
             // ISO 15118-20:2022 Table 207.
