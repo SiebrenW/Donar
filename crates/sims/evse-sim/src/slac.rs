@@ -13,6 +13,9 @@ pub struct Config {
     pub mac: Mac,
     /// The attenuation (dB) reported for every carrier group.
     pub attenuation: u8,
+    /// Correction (dB) added to the attenuation before it is reported to the vehicle: the modem measures through the
+    /// wiring between itself and the plug, which is no part of the path to the vehicle (negative where it costs).
+    pub attenuation_correction_db: i8,
     /// Requests of the first kind that are not answered, counted per message type.
     pub ignore_parm: u32,
     pub ignore_match: u32,
@@ -44,6 +47,7 @@ impl Default for Config {
         Self {
             mac: [0x02, 0, 0, 0, 0, 0x02],
             attenuation: 5,
+            attenuation_correction_db: 0,
             ignore_parm: 0,
             ignore_match: 0,
             no_report: false,
@@ -131,7 +135,7 @@ impl Evse {
                                 source: ev,
                                 run_id,
                                 num_sounds: received,
-                                groups: [self.config.attenuation; GROUPS],
+                                groups: [(i16::from(self.config.attenuation) + i16::from(self.config.attenuation_correction_db)).clamp(0, 255) as u8; GROUPS],
                             },
                             ev,
                         ));

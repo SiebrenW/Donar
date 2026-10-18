@@ -193,6 +193,26 @@ fn a_charger_that_is_not_directly_connected_is_not_used() {
     assert_eq!(kinds(&r.sent, mmtype::SLAC_MATCH_REQ), 0);
 }
 
+/// The wiring between the plug and the modem costs attenuation that is no part of the path to the charger: a correction on
+/// either side (the vehicle's, on what it receives; the charger's, on what it reports) brings a direct charger back under the threshold.
+#[test]
+fn a_correction_for_the_wiring_makes_a_charger_direct() {
+    let retry = Config { rate_ms: 100, repetition_ms: 1500, ..Config::DEFAULT };
+    // 15 dB measured is no direct charger (the threshold is 10) ...
+    let r = drive(retry, &mut [evse_at(0, 15)], Some(10), &[]);
+    assert_eq!(r.outcome, Outcome::Failed(Failure::NoDirectEvse));
+    // ... but 6 dB of it are the vehicle's own wiring,
+    let r = drive(Config { attenuation_correction_db: -6, ..retry }, &mut [evse_at(0, 15)], Some(10), &[]);
+    assert!(matches!(r.outcome, Outcome::Matched { .. }), "{:?}", r.outcome);
+    // or the charger's.
+    let mut corrected = [Evse::new(EvseConfig { mac: [0x02, 0, 0, 0, 0, 0x10], attenuation: 15, attenuation_correction_db: -6, ..Default::default() })];
+    let r = drive(retry, &mut corrected, Some(10), &[]);
+    assert!(matches!(r.outcome, Outcome::Matched { .. }), "{:?}", r.outcome);
+    // A correction does not wrap around below zero.
+    let r = drive(Config { attenuation_correction_db: -100, ..retry }, &mut [evse_at(0, 15)], Some(10), &[]);
+    assert!(matches!(r.outcome, Outcome::Matched { .. }), "{:?}", r.outcome);
+}
+
 #[test]
 fn a_charger_between_the_thresholds_can_be_accepted_by_policy() {
     let mut evses = [evse_at(0, 15)];

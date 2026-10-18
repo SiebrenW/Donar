@@ -323,6 +323,9 @@ pub struct Settings {
     pub slac_validation: SlacValidation,
     /// Toggles per validation (1 to 3); 0: chosen per run.
     pub slac_toggles: u8,
+    /// Correction (dB) added to the attenuation the charger reports (negative where the wiring between the inlet and the
+    /// modem costs): see `evcc_core::slac::Config::attenuation_correction_db`.
+    pub slac_attenuation_correction_db: i8,
     /// Where the simulated control pilot leaves one octet per toggle (a path relative to the
     /// artifacts directory in a scenario).
     pub control_pilot_file: Option<String>,
@@ -382,6 +385,7 @@ impl Default for Settings {
             slac_validation: SlacValidation::Never,
             qca_modem: false,
             slac_toggles: 0,
+            slac_attenuation_correction_db: 0,
             control_pilot_file: None,
             tls: None,
             stop_after: 3,
@@ -416,6 +420,7 @@ impl Settings {
             SlacValidation::Always => evcc_core::slac::Validation::Always,
         };
         config.toggles = self.slac_toggles;
+        config.attenuation_correction_db = self.slac_attenuation_correction_db;
         config
     }
 
