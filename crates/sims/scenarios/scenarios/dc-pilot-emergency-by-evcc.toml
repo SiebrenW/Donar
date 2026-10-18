@@ -1,0 +1,20 @@
+name = "dc-pilot-emergency-by-evcc"
+description = "ISO 15118-20 DC: after two charge loop answers the vehicle has an emergency of its own (IEC 61851-23 CC.3.4.3, scenario 1): its pilot leaves state C and it drops the connection without a word. The charger sees C change to B that nothing explains, ends the session at once (Emergency) and answers nothing more."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+stop_after = 0
+pilot_emergency_after = 2
+
+[expect]
+evcc_exit = 1
+secc_exit = 1
+evcc_log = ["Emergency(Reading { state: B"]
+secc_log = ["control pilot Reading { state: B", "Emergency", "the session ends and nothing is sent"]

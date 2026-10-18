@@ -170,6 +170,15 @@ fn run(args: &Args) -> io::Result<bool> {
         }
         None => None,
     };
+    // The control pilot: the oscillator is on (5 %) from the start, until a session ends in an emergency of the charger.
+    let wire = match &settings.control_pilot_wire {
+        Some(dir) => {
+            let wire = evcc_linux::pilot::Wire::new(dir)?;
+            wire.set_evse(control_pilot::Pwm::Duty(5))?;
+            Some(wire)
+        }
+        None => None,
+    };
     let mut served = 0;
     let mut all_stopped = true;
     let sessions = args.sessions.unwrap_or(settings.sessions);
@@ -185,9 +194,10 @@ fn run(args: &Args) -> io::Result<bool> {
                     let mut stream = evcc_linux::tls::accept(context, stream)?;
                     evcc_linux::tls::check_peer_certificates(&stream, evcc_linux::certificates::Peer::Vehicle, settings.certificate_checks.into(), |v| eprintln!("certificates: {v}"))?;
                     eprintln!("tls: {} {}", stream.ssl().version_str(), stream.ssl().current_cipher().map_or("?", |c| c.name()));
-                    match &live {
-                        Some(live) => evse_sim::serve_live(&mut stream, live),
-                        None => evse_sim::serve(&mut stream, settings.session.clone()),
+                    match (&wire, &live) {
+                        (Some(wire), _) => evse_sim::serve_wired(&mut stream, settings.session.clone(), live.as_ref(), wire),
+                        (None, Some(live)) => evse_sim::serve_live(&mut stream, live),
+                        (None, None) => evse_sim::serve(&mut stream, settings.session.clone()),
                     }
                 };
                 session().unwrap_or_else(|e| {
@@ -195,11 +205,15 @@ fn run(args: &Args) -> io::Result<bool> {
                     State::Closed
                 })
             }
-            None => match &live {
-                Some(live) => evse_sim::serve_live(&mut tcp.accept()?.0, live)?,
-                None => evse_sim::serve_one(&tcp, settings.session.clone())?,
+            None => match (&wire, &live) {
+                (Some(wire), _) => evse_sim::serve_wired(&mut tcp.accept()?.0, settings.session.clone(), live.as_ref(), wire)?,
+                (None, Some(live)) => evse_sim::serve_live(&mut tcp.accept()?.0, live)?,
+                (None, None) => evse_sim::serve_one(&tcp, settings.session.clone())?,
             },
         };
+        if let Some(wire) = &wire {
+            wire.set_evse(control_pilot::Pwm::Duty(5))?;
+        }
         if let Some(live) = &live {
             live.set_state("Waiting");
         }

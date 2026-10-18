@@ -127,6 +127,10 @@ pub(crate) struct SimSecc {
 }
 
 impl SimSecc {
+    pub(crate) fn loops_seen(&self) -> u32 {
+        self.loops_seen
+    }
+
     pub(crate) fn new(config: Config, live: Option<Arc<EvseLive>>) -> Self {
         let mut s = Self {
             config: config.clone(),

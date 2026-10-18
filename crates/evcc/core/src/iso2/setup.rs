@@ -96,14 +96,14 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         let payment = if wants_contract { PaymentOption::Contract } else { PaymentOption::ExternalPayment };
         if !offered.contains(&payment) {
             self.log.record(&Record::Iso2NoPayment { wanted: payment, offered });
-            return self.end(EndReason::NoCompatibleAuthorization);
+            return self.end_politely(EndReason::NoCompatibleAuthorization, tx);
         }
         self.contract = payment == PaymentOption::Contract;
         let wanted = self.requested_mode();
         let modes = res.charge_service.supported_energy_transfer_mode.energy_transfer_mode;
         if !modes.contains(&wanted) {
             self.log.record(&Record::Iso2NoEnergyMode { wanted, offered: modes });
-            return self.end(EndReason::NoCompatibleService);
+            return self.end_politely(EndReason::NoCompatibleService, tx);
         }
         self.service_id = res.charge_service.service_id;
         // The value-added services the vehicle cares about, of those the charger offers.

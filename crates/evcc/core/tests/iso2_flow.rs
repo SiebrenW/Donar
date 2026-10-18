@@ -250,7 +250,9 @@ fn ongoing_responses_are_repeated() {
 #[test]
 fn a_mode_the_charger_does_not_offer_ends_the_session() {
     let evse = EvseConfig { iso2: evse_sim::Iso2 { modes: vec![evse_sim::Iso2Mode::DcExtended], ..Default::default() }, ..Default::default() };
-    assert_eq!(run(DcConnector::Dual2, evse.clone(), iso2(), None).end, EndReason::NoCompatibleService);
+    let r = run(DcConnector::Dual2, evse.clone(), iso2(), None);
+    assert_eq!(r.end, EndReason::NoCompatibleService);
+    assert_eq!(r.sent.last().map(String::as_str), Some("SessionStopReq"), "the vehicle says so before it ends: {:?}", r.sent);
     assert_eq!(run(DcConnector::Core, evse, Config::ac(false), None).end, EndReason::NoCompatibleService);
 }
 

@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use evcc_core::sdp::Outcome as SdpOutcome;
 use evcc_core::session::EndReason;
 use evcc_linux::{Outcome, sdp, tls};
-use evcc_sim::{Behaviour, Connector, EvLive, LogLevel, Protocol, SessionConfig, Settings, StderrLog, Tls, run_car_live};
+use evcc_sim::{Behaviour, Connector, EvLive, LogLevel, PilotHost, Protocol, SessionConfig, Settings, StderrLog, Tls, run_car_pilot};
 use v2gtp::sdp::Security;
 
 const USAGE: &str = "usage: evcc-sim --interface IF [--config FILE] [--slac] [--no-tls | --chain F --key F --trust F [--key-password P] [--backwards-compatible] [--tls-versions V]] [--stop-after N | --never-stop] [--connector INLET] [--log LEVEL] [--control SOCKET]";
@@ -150,6 +150,10 @@ fn run(interface: &str, settings: &Settings, control: Option<&str>) -> io::Resul
         }
         None => None,
     };
+    // Plugged in: the pilot is at B before anything else happens.
+    if let Some(dir) = &settings.control_pilot_wire {
+        evcc_linux::pilot::Wire::new(dir)?.set_ev(control_pilot::State::B)?;
+    }
     let ifindex = sdp::interface_index(interface)?;
     if settings.slac && !run_slac(interface, settings)? {
         return Ok(false);
@@ -207,10 +211,15 @@ fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session:
         None => None,
     };
     let behaviour = Behaviour { connector: settings.connector.into(), stop_after: settings.stop_after(), renegotiate_after: settings.renegotiate_after, renegotiate_schedule_after: settings.renegotiate_schedule_after, stop_when_rescheduled: settings.stop_when_rescheduled, pause_after };
+    // The control pilot: the cable shared with the simulated charger.
+    let pilot = match &settings.control_pilot_wire {
+        Some(dir) => Some(PilotHost { wire: evcc_linux::pilot::Wire::new(dir)?, emergency_after: settings.pilot_emergency_after }),
+        None => None,
+    };
     let outcome = match &settings.tls {
         None => {
             let mut stream = tcp;
-            run_car_live(&mut stream, false, config, behaviour, log, live.clone(), settings.limits, contract)?
+            run_car_pilot(&mut stream, false, config, behaviour, log, live.clone(), settings.limits, contract, pilot)?
         }
         Some(t) => {
             let (chain, key, trust) = (
@@ -238,7 +247,7 @@ fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session:
                 stream.ssl().version_str(),
                 stream.ssl().current_cipher().map_or("?", |c| c.name())
             );
-            run_car_live(&mut stream, true, config, behaviour, log, live.clone(), settings.limits, contract)?
+            run_car_pilot(&mut stream, true, config, behaviour, log, live.clone(), settings.limits, contract, pilot)?
         }
     };
     eprintln!("session: {outcome:?}");

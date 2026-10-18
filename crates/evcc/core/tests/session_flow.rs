@@ -453,6 +453,21 @@ fn session_stop_res(code: ResponseCode) -> std::vec::Vec<u8> {
     })
 }
 
+/// The vehicle ends the session for a reason of its own before the power is on (V2G20-2644): it says so with
+/// `SessionStopReq` (Terminate, the reason as the termination code), and ends with the reason once the answer is in
+/// (or does not come).
+fn ends_after_a_session_stop(s: &mut Sess<'_>, step: &Step, code: &str, reason: EndReason) {
+    assert_eq!(step.end, None);
+    sent_common(s, step, |m| {
+        let common::Message::SessionStopReq(r) = m else { panic!("{m:?}") };
+        assert_eq!(r.charging_session, common::ChargingSession::Terminate);
+        assert_eq!(r.ev_termination_code, Some(code));
+    });
+    assert_eq!(s.state(), State::AwaitSessionStopRes);
+    // The answer: the end with the reason of the vehicle.
+    assert_eq!(deliver(s, &session_stop_res(ResponseCode::Ok)).end, Some(reason));
+}
+
 fn loop_timer() -> Timers {
     Timers::one(TimerCmd::Arm { timer: Timer::Response, ms: 500 })
 }
@@ -818,7 +833,7 @@ fn service_negotiation_failures_end_the_session() {
     let mut rig = Rig::new();
     let mut s = up_to_service_discovery(&mut rig, Capture::default());
     let step = deliver(&mut s, &discovery_res(ResponseCode::Ok, &[1]));
-    assert_eq!(step.end, Some(EndReason::NoCompatibleService));
+    ends_after_a_session_stop(&mut s, &step, "NoCompatibleService", EndReason::NoCompatibleService);
 
     let mut rig = Rig::new();
     let mut s = up_to_service_discovery(&mut rig, Capture::default());
@@ -829,7 +844,7 @@ fn service_negotiation_failures_end_the_session() {
     let mut rig = Rig::new();
     let mut s = up_to_service_detail(&mut rig, Capture::default());
     let step = deliver(&mut s, &detail_res(ResponseCode::Ok, 2, &[(1, SCHEDULED)]));
-    assert_eq!(step.end, Some(EndReason::NoCompatibleParameterSet));
+    ends_after_a_session_stop(&mut s, &step, "NoCompatibleParameterSet", EndReason::NoCompatibleParameterSet);
 
     let mut rig = Rig::new();
     let mut s = up_to_service_detail(&mut rig, Capture::default());
@@ -1069,7 +1084,12 @@ fn authorization_failures_end_the_session() {
     let mut rig = Rig::new();
     let mut s = up_to_authorization_setup(&mut rig, Capture::default());
     let step = deliver(&mut s, &auth_setup_res(ResponseCode::Ok, &[Authorization::PnC]));
-    assert_eq!(step.end, Some(EndReason::NoCompatibleAuthorization));
+    ends_after_a_session_stop(&mut s, &step, "NoCompatibleAuthorization", EndReason::NoCompatibleAuthorization);
+    // Without an answer the vehicle ends with the same reason.
+    let mut rig = Rig::new();
+    let mut s = up_to_authorization_setup(&mut rig, Capture::default());
+    deliver(&mut s, &auth_setup_res(ResponseCode::Ok, &[Authorization::PnC]));
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Response)).end, Some(EndReason::NoCompatibleAuthorization));
 
     // AuthorizationSetupRes with a failing code.
     let mut rig = Rig::new();

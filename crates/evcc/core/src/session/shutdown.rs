@@ -59,6 +59,17 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
 
     /// `SessionStopReq` of the kind the shutdown under way ends in.
+    /// The vehicle ends the session for a non-critical reason of its own (nothing fits its needs, say) before the
+    /// power is on: `SessionStopReq` with `Terminate` and the reason as the termination code, then the answer
+    /// (V2G20-2644), and only then the end with this reason.
+    pub(super) fn end_politely(&mut self, reason: EndReason, tx: &mut [u8]) -> Step {
+        self.stop_kind = StopKind::Terminate;
+        self.termination_code = Some(reason.termination_code());
+        self.pending_end = Some(reason);
+        self.ongoing_armed = false;
+        self.send_session_stop_req(tx)
+    }
+
     fn send_session_stop_req(&mut self, tx: &mut [u8]) -> Step {
         self.pilot.set_stopping(true);
         let msg = common::SessionStopReq {
@@ -68,7 +79,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 StopKind::Pause => common::ChargingSession::Pause,
                 StopKind::ServiceRenegotiation => common::ChargingSession::ServiceRenegotiation,
             },
-            ev_termination_code: None,
+            ev_termination_code: self.termination_code,
             ev_termination_explanation: None,
         };
         let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));

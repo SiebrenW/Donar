@@ -43,6 +43,10 @@ pub(crate) struct SimDin {
 }
 
 impl SimDin {
+    pub(crate) fn loops_seen(&self) -> u32 {
+        self.loops_seen
+    }
+
     pub(crate) fn new(config: Config, live: Option<Arc<EvseLive>>) -> Self {
         let mut s = Self { id: Vec::new(), config: config.clone(), live, log: Vec::new(), authorization_reqs_seen: 0, schedule_reqs_seen: 0, cable_reqs_seen: 0, precharge_reqs_seen: 0, loops_seen: 0 };
         s.set_config(config);

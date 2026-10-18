@@ -339,6 +339,13 @@ pub struct Settings {
     /// Where the simulated control pilot leaves one octet per toggle (a path relative to the
     /// artifacts directory in a scenario).
     pub control_pilot_file: Option<String>,
+    /// A directory shared with the simulated charger that stands for the control pilot (the cable, see
+    /// `evcc_linux::pilot::Wire`): the car holds its state there, reads the charger's oscillator, and reacts to
+    /// the pilot like a real vehicle (IEC 61851-23, DIN SPEC 70121 V2G-DC-647, 655, 656).
+    pub control_pilot_wire: Option<String>,
+    /// With the wire: after this many charge loop answers the car has an emergency of its own and drops the
+    /// connection with its pilot at B (IEC 61851-23 CC.3.4.3, scenario 1).
+    pub pilot_emergency_after: Option<u32>,
     /// Without it the session is unsecured (SDP asks for `NoTls`).
     pub tls: Option<Tls>,
     /// Charge loop rounds before the car stops; 0 charges until the charger ends the session.
@@ -399,6 +406,8 @@ impl Default for Settings {
             slac_toggles: 0,
             slac_attenuation_correction_db: Vec::new(),
             control_pilot_file: None,
+            control_pilot_wire: None,
+            pilot_emergency_after: None,
             tls: None,
             stop_after: 3,
             connector: Connector::Core,
@@ -503,7 +512,7 @@ impl Settings {
             (true, true) => evcc_core::session::Config::AC_BPT_20,
         };
         let base = if self.ac && self.scheduled { base.scheduled() } else if self.mobility_needs_by_secc { base.mobility_needs_by_secc() } else { base };
-        let mut config = evcc_core::session::Config { allow_unsecured: self.tls.is_none(), prefer_pnc: self.pnc.is_some(), state_tolerance_always: self.state_tolerance_always, request_meter_info: self.request_meter_info, ..base };
+        let mut config = evcc_core::session::Config { allow_unsecured: self.tls.is_none(), prefer_pnc: self.pnc.is_some(), state_tolerance_always: self.state_tolerance_always, request_meter_info: self.request_meter_info, control_pilot: self.control_pilot_wire.is_some(), ..base };
         if let Some(ms) = self.poll_interval_ms {
             config.poll_interval_ms = ms;
         }

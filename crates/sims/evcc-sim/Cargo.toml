@@ -8,6 +8,7 @@ description = "A simulated vehicle (EVCC with a fake battery) for tests, scenari
 [dependencies]
 evcc-core = { path = "../../evcc/core" }
 evcc-linux = { path = "../../evcc/linux" }
+control-pilot = { path = "../../pilot" }
 iso15118-20 = { path = "../../codec/iso15118-20" }
 v2gtp = { path = "../../codec/v2gtp" }
 

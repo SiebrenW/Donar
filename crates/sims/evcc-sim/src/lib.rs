@@ -292,6 +292,32 @@ pub fn run_car_live(
     limits: Limits,
     contract: Option<Arc<dyn evcc_core::ev::Contract>>,
 ) -> io::Result<Outcome> {
+    run_car_pilot(stream, secured, config, behaviour, log, live, limits, contract, None)
+}
+
+/// The simulated car's end of the control pilot: the cable it shares with the charger, and a fault of its own.
+pub struct PilotHost {
+    pub wire: evcc_linux::pilot::Wire,
+    /// After this many charge loop answers the car has an emergency of its own: its pilot leaves state C without
+    /// a word, and it drops the connection (IEC 61851-23 CC.3.4.3, scenario 1).
+    pub emergency_after: Option<u32>,
+}
+
+/// [`run_car_live`] with the control pilot: the car sets the state on the cable as the session asks (C before the
+/// cable check, B after the contactors opened), reports what the cable shows to the session, and may have an
+/// emergency of its own.
+#[allow(clippy::too_many_arguments)]
+pub fn run_car_pilot(
+    stream: &mut impl Transport,
+    secured: bool,
+    config: impl Into<SessionConfig>,
+    behaviour: Behaviour,
+    log: impl LogSink,
+    live: Option<Arc<EvLive>>,
+    limits: Limits,
+    contract: Option<Arc<dyn evcc_core::ev::Contract>>,
+    pilot: Option<PilotHost>,
+) -> io::Result<Outcome> {
     let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
     let open = Rc::new(Cell::new(false));
     let config = config.into();
@@ -311,6 +337,11 @@ pub fn run_car_live(
     // What the car does after a charge loop answer, DC or AC; `reached` is the battery model's wish to stop.
     let mut on_loop = |reached: bool| {
         loops += 1;
+        if let Some(p) = pilot.as_ref().filter(|p| Some(loops) == p.emergency_after) {
+            // The car's own emergency: its pilot is B, and the session machine learns it the way it would from hardware.
+            let _ = p.wire.set_ev(control_pilot::State::B);
+            return Some(Event::Pilot(control_pilot::Reading::CONNECTED));
+        }
         if reached || Some(loops) == behaviour.stop_after {
             Some(Event::StopRequested)
         } else if let Some(action) = live.as_ref().and_then(|l| l.take_action()) {
@@ -340,8 +371,16 @@ pub fn run_car_live(
             open.set(true);
             Some(Event::ContactorsOpened)
         }
-        // The control pilot follows at once (DIN SPEC 70121).
-        Notice::ControlPilot(_) => Some(Event::ControlPilotChanged),
+        // The control pilot follows at once.
+        Notice::ControlPilot(to) => {
+            if let Some(p) = &pilot {
+                let _ = p.wire.set_ev(match to {
+                    evcc_core::session::ControlPilot::B => control_pilot::State::B,
+                    evcc_core::session::ControlPilot::C => control_pilot::State::C,
+                });
+            }
+            Some(Event::ControlPilotChanged)
+        }
         // The charger's output is on again for the next pre-charge.
         Notice::ServicesRenegotiating => {
             open.set(false);
@@ -369,18 +408,19 @@ pub fn run_car_live(
         }
         _ => None,
     };
+    let mut source = pilot.as_ref().map(|p| p.wire.source());
     let outcome = match config {
         SessionConfig::Iso20(config) => {
             let mut session = Session::new(config, car, log, buffers);
-            evcc_linux::run_gated(stream, &mut session, secured, &mut host, &mut gate)
+            evcc_linux::run_with_pilot(stream, &mut session, secured, &mut host, &mut gate, source.as_mut().map(|s| s as &mut dyn evcc_linux::pilot::PilotSource))
         }
         SessionConfig::Din(config, _) => {
             let mut session = evcc_core::din::Session::new(config, car, log, buffers);
-            evcc_linux::run_gated(stream, &mut session, secured, &mut host, &mut gate)
+            evcc_linux::run_with_pilot(stream, &mut session, secured, &mut host, &mut gate, source.as_mut().map(|s| s as &mut dyn evcc_linux::pilot::PilotSource))
         }
         SessionConfig::Iso2(config, _) => {
             let mut session = evcc_core::iso2::Session::new(config, car, log, buffers);
-            evcc_linux::run_gated(stream, &mut session, secured, &mut host, &mut gate)
+            evcc_linux::run_with_pilot(stream, &mut session, secured, &mut host, &mut gate, source.as_mut().map(|s| s as &mut dyn evcc_linux::pilot::PilotSource))
         }
     };
     if let Some(live) = &live {

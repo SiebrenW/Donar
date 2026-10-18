@@ -82,7 +82,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         // V2G-DC-252: only external payment is used.
         if !res.payment_options.payment_option.contains(&PaymentOption::ExternalPayment) {
             self.log.record(&Record::DinNoPayment { offered: res.payment_options.payment_option });
-            return self.end(EndReason::NoCompatibleAuthorization);
+            return self.end_politely(EndReason::NoCompatibleAuthorization, tx);
         }
         let wanted = self.requested_transfer();
         let offered = res.charge_service.energy_transfer_type;
@@ -93,7 +93,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         );
         if !matches {
             self.log.record(&Record::DinNoEnergyService { wanted, offered });
-            return self.end(EndReason::NoCompatibleService);
+            return self.end_politely(EndReason::NoCompatibleService, tx);
         }
         self.service_id = res.charge_service.service_tag.service_id;
         self.next(tx, |m, tx| {

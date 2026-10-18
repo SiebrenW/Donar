@@ -85,6 +85,10 @@ pub(crate) struct SimIso2 {
 }
 
 impl SimIso2 {
+    pub(crate) fn loops_seen(&self) -> u32 {
+        self.loops_seen
+    }
+
     pub(crate) fn new(config: Config, live: Option<Arc<EvseLive>>) -> Self {
         let mut s = Self {
             session_id: config.session_id,

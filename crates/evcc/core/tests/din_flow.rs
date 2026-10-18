@@ -285,6 +285,8 @@ fn an_inlet_the_charger_does_not_offer_ends_the_session() {
     // The vehicle has a plain inlet (the core pins), the charger offers the extended pins.
     let r = run(DcConnector::Core, EvseConfig::default(), din(), None);
     assert_eq!(r.end, EndReason::NoCompatibleService);
+    // V2G-DC-648: a reason of its own before the power: the next request is the session stop.
+    assert_eq!(r.sent.last().map(String::as_str), Some("SessionStopReq"), "{:?}", r.sent);
     let r = run(DcConnector::Core, EvseConfig { din: evse_sim::Din { energy_transfer: evse_sim::DinEnergyTransfer::DcCore, ..Default::default() }, ..Default::default() }, din(), Some(1));
     assert_eq!(r.end, EndReason::Completed);
 }

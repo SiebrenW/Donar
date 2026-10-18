@@ -110,6 +110,10 @@ impl From<CertificateChecks> for evcc_linux::tls::CertificateChecks {
 pub struct Settings {
     /// Answer SLAC on the interface (the responder follows `slac`).
     pub slac_responder: bool,
+    /// A directory shared with the simulated vehicle that stands for the control pilot (the cable, see
+    /// `evcc_linux::pilot::Wire`): the charger switches its oscillator there and reads the vehicle's state, and
+    /// reacts to it like a real charger (IEC 61851-23 CC.4.3; V2G20-917 to 922).
+    pub control_pilot_wire: Option<String>,
     /// The TLS versions to speak (when the charger has certificates).
     pub tls_versions: TlsVersions,
     /// Also accept secp256r1 certificates (the ISO 15118-2 profile).
@@ -131,7 +135,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { slac_responder: false, tls_versions: TlsVersions::Tls13, backwards_compatible: false, disclose_secrets: false, certificate_checks: CertificateChecks::Off, control_pilot_file: None, sessions: 1, session: Config::default(), slac: Default::default() }
+        Self { slac_responder: false, control_pilot_wire: None, tls_versions: TlsVersions::Tls13, backwards_compatible: false, disclose_secrets: false, certificate_checks: CertificateChecks::Off, control_pilot_file: None, sessions: 1, session: Config::default(), slac: Default::default() }
     }
 }
 
@@ -535,6 +539,9 @@ pub struct Config {
     /// After this many `DC_ChargeLoopRes` the EVSE asks the EV to pause (`EVSENotification`
     /// Pause, `NotificationMaxDelay` 60 s, V2G20-1850) and repeats it until the EV reacts.
     pub pause_after_loops: Option<u32>,
+    /// With the control pilot wire: after this many charge loop requests the charger has an emergency of its own
+    /// (IEC 61851-23 CC.3.4.3, scenario 2): its oscillator goes off and it drops the connection without a word.
+    pub pilot_emergency_after_loops: Option<u32>,
     /// Accept `PowerDeliveryReq(Standby)`; otherwise answer `WARNING_StandbyNotAllowed`
     /// (V2G20-1387) and stop asking for the pause.
     pub standby_allowed: bool,
@@ -632,6 +639,7 @@ impl Default for Config {
             side_stream_silent: false,
             forget_paused_sessions: false,
             pause_after_loops: None,
+            pilot_emergency_after_loops: None,
             standby_allowed: true,
             standby_loops: 2,
             welding_code: ResponseCode::Ok,

@@ -85,6 +85,10 @@ trait Pump {
     fn state(&self) -> State;
     fn log(&mut self) -> &mut Vec<String>;
     fn set_config(&mut self, config: Config);
+    /// The host measured a change of the control pilot: the bytes to send (none) and whether the session ended.
+    fn pilot(&mut self, reading: control_pilot::Reading, mem: &mut Mem) -> (usize, bool);
+    /// Charge loop requests seen so far.
+    fn loops(&self) -> u32;
 }
 
 impl Pump for evse_core::Session<SimSecc> {
@@ -104,6 +108,14 @@ impl Pump for evse_core::Session<SimSecc> {
     }
     fn set_config(&mut self, config: Config) {
         self.secc_mut().set_config(config);
+    }
+    fn pilot(&mut self, reading: control_pilot::Reading, mem: &mut Mem) -> (usize, bool) {
+        let mut buffers = evse_core::Buffers { rx: &mut mem.rx, tx: &mut mem.tx, arena: &mut mem.arena, scratch: &mut mem.scratch };
+        let step = self.handle(evse_core::Event::Pilot(reading), &mut buffers);
+        (step.send, step.close)
+    }
+    fn loops(&self) -> u32 {
+        self.secc().loops_seen()
     }
 }
 
@@ -125,6 +137,14 @@ impl Pump for evse_core::din::Session<SimDin> {
     fn set_config(&mut self, config: Config) {
         self.secc_mut().set_config(config);
     }
+    fn pilot(&mut self, reading: control_pilot::Reading, mem: &mut Mem) -> (usize, bool) {
+        let mut buffers = evse_core::din::Buffers { rx: &mut mem.rx, tx: &mut mem.tx, arena: &mut mem.arena };
+        let step = self.handle(evse_core::Event::Pilot(reading), &mut buffers);
+        (step.send, step.close)
+    }
+    fn loops(&self) -> u32 {
+        self.secc().loops_seen()
+    }
 }
 
 impl Pump for evse_core::iso2::Session<SimIso2> {
@@ -145,6 +165,14 @@ impl Pump for evse_core::iso2::Session<SimIso2> {
     fn set_config(&mut self, config: Config) {
         self.secc_mut().set_config(config);
     }
+    fn pilot(&mut self, reading: control_pilot::Reading, mem: &mut Mem) -> (usize, bool) {
+        let mut buffers = evse_core::iso2::Buffers { rx: &mut mem.rx, tx: &mut mem.tx, arena: &mut mem.arena };
+        let step = self.handle(evse_core::Event::Pilot(reading), &mut buffers);
+        (step.send, step.close)
+    }
+    fn loops(&self) -> u32 {
+        self.secc().loops_seen()
+    }
 }
 
 /// The session machine of the protocol the vehicle chose, and its memory.
@@ -164,6 +192,8 @@ pub struct Evse {
     run: Option<Run>,
     live: Option<Arc<EvseLive>>,
     log: Vec<String>,
+    /// The last control pilot reading, for a session machine that is not started yet.
+    pilot: Option<control_pilot::Reading>,
 }
 
 impl From<evse_core::State> for State {
@@ -236,7 +266,7 @@ impl From<evse_core::iso2::State> for State {
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), protocol: Protocol::Iso20, run: None, live: None, log: Vec::new() }
+        Self { config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), protocol: Protocol::Iso20, run: None, live: None, log: Vec::new(), pilot: None }
     }
 
     /// Reports the charge loop measurements to a test platform and takes its edits.
@@ -247,6 +277,31 @@ impl Evse {
 
     pub fn state(&self) -> State {
         self.run.as_ref().map_or(self.state, |r| r.pump.state())
+    }
+
+    /// The host measured the control pilot: a change (also before the session machine exists, which is told at once
+    /// when it starts). The output is the end of the session if the reading means an emergency: nothing to send.
+    pub fn pilot(&mut self, reading: control_pilot::Reading) -> Vec<Output> {
+        self.pilot = Some(reading);
+        let Some(run) = &mut self.run else { return Vec::new() };
+        let (len, close) = run.pump.pilot(reading, &mut run.mem);
+        let sent = run.mem.tx[..len].to_vec();
+        if close || len > 0 { vec![Output { send: (!sent.is_empty()).then_some(sent), close }] } else { Vec::new() }
+    }
+
+    /// Whether the charger is to have an emergency of its own now (`pilot_emergency_after_loops`).
+    pub fn pilot_emergency_due(&self) -> bool {
+        match (&self.run, self.config.pilot_emergency_after_loops) {
+            (Some(run), Some(n)) => run.pump.loops() >= n,
+            _ => false,
+        }
+    }
+
+    /// A session machine that starts learns the pilot at once.
+    fn replay_pilot(&mut self) {
+        if let (Some(reading), Some(run)) = (self.pilot, &mut self.run) {
+            run.pump.pilot(reading, &mut run.mem);
+        }
     }
 
     /// What the charger did since the last call, one line each: what it received, what it
@@ -280,6 +335,7 @@ impl Evse {
             // The vehicle chose ISO 15118-20: its session machine takes over from the first frame on.
             self.protocol = Protocol::Iso20;
             self.run = Some(Run { pump: Box::new(evse_core::Session::new(SimSecc::new(self.config.clone(), self.live.clone()))), mem: Mem::new() });
+            self.replay_pilot();
             let all = std::mem::take(&mut self.rx);
             return self.handle_run(&all);
         }
@@ -408,6 +464,7 @@ impl Evse {
                     _ => Box::new(evse_core::iso2::Session::new(SimIso2::new(config, live))),
                 };
                 self.run = Some(Run { pump, mem: Mem::new() });
+                self.replay_pilot();
                 let res = SupportedAppProtocolRes { response_code: SapCode::OkSuccessfulNegotiation, schema_id: Some(p.schema_id) };
                 Output { send: frame(PayloadType::SAP, |out| res.encode(out)), close: false }
             }

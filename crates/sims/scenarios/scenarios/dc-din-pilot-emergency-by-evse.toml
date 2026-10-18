@@ -1,0 +1,23 @@
+name = "dc-din-pilot-emergency-by-evse"
+description = "DIN SPEC 70121: after two current demand requests the charger has an emergency of its own: its CP oscillator goes off and it drops the connection without a word. The vehicle ends the session at once (V2G-DC-656, IEC 61851-23 CC.3.4.3) and sends nothing more."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session]
+pilot_emergency_after_loops = 2
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+protocol = "din70121"
+connector = "extended"
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+stop_after = 0
+
+[expect]
+evcc_exit = 1
+secc_exit = 1
+evcc_log = ["Emergency(Reading { state: C, pwm: Off })"]
+secc_log = ["an emergency of its own"]

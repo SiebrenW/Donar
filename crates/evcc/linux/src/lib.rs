@@ -11,6 +11,7 @@ pub mod certificates;
 pub mod ocsp;
 #[cfg(feature = "tls")]
 pub mod pnc;
+pub mod pilot;
 pub mod sdp;
 #[cfg(feature = "tls")]
 pub mod tls;
@@ -77,7 +78,22 @@ pub fn run_gated(
     host: &mut impl FnMut(&Notice) -> Option<Event>,
     gate: &mut impl FnMut(State) -> bool,
 ) -> io::Result<Outcome> {
-    match drive(stream, session, secured, host, gate) {
+    run_with_pilot(stream, session, secured, host, gate, None)
+}
+
+/// Like [`run_gated`], with a source of control pilot readings. The host waits for the socket in slices of
+/// [`pilot::POLL_INTERVAL`] and reports every change as [`Event::Pilot`] (IEC 61851-23 asks the vehicle for
+/// 50 ms to react to an emergency); when the session ends because of it ([`EndReason::Emergency`],
+/// [`EndReason::PilotFault`]) the caller drops the connection without waiting for anything.
+pub fn run_with_pilot(
+    stream: &mut impl Transport,
+    session: &mut impl Machine,
+    secured: bool,
+    host: &mut impl FnMut(&Notice) -> Option<Event>,
+    gate: &mut impl FnMut(State) -> bool,
+    mut pilot: Option<&mut dyn pilot::PilotSource>,
+) -> io::Result<Outcome> {
+    match drive(stream, session, secured, host, gate, &mut pilot) {
         Err(e) if is_hang_up(&e) => Ok(Outcome::ConnectionClosed),
         other => other,
     }
@@ -96,6 +112,7 @@ fn drive(
     secured: bool,
     host: &mut impl FnMut(&Notice) -> Option<Event>,
     gate: &mut impl FnMut(State) -> bool,
+    pilot: &mut Option<&mut dyn pilot::PilotSource>,
 ) -> io::Result<Outcome> {
     let mut deadlines = Deadlines::default();
     let mut step = session.handle(Event::Start { secured });
@@ -122,7 +139,7 @@ fn drive(
                 continue;
             }
         }
-        match next_step(stream, session, &mut deadlines)? {
+        match next_step(stream, session, &mut deadlines, pilot)? {
             Next::Step(next) => step = next,
             Next::PeerClosed => return Ok(Outcome::ConnectionClosed),
         }
@@ -200,6 +217,69 @@ enum Next {
 
 /// Waits for the next socket data or timer expiry and feeds it to the session.
 fn next_step(
+    stream: &mut impl Transport,
+    session: &mut impl Machine,
+    deadlines: &mut Deadlines,
+    pilot: &mut Option<&mut dyn pilot::PilotSource>,
+) -> io::Result<Next> {
+    match pilot {
+        None => next_step_plain(stream, session, deadlines),
+        Some(pilot) => next_step_with_pilot(stream, session, deadlines, &mut **pilot),
+    }
+}
+
+/// As [`next_step_plain`], but the wait is cut into slices of [`pilot::POLL_INTERVAL`] and the pilot is looked at
+/// between them.
+fn next_step_with_pilot(
+    stream: &mut impl Transport,
+    session: &mut impl Machine,
+    deadlines: &mut Deadlines,
+    pilot: &mut dyn pilot::PilotSource,
+) -> io::Result<Next> {
+    loop {
+        if let Some(reading) = pilot.poll() {
+            return Ok(Next::Step(session.handle(Event::Pilot(reading))));
+        }
+        let mut timeout = pilot::POLL_INTERVAL;
+        if let Some((timer, d)) = deadlines.next() {
+            let left = d.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                deadlines.clear(timer);
+                return Ok(Next::Step(session.handle(Event::TimerExpired(timer))));
+            }
+            timeout = timeout.min(left.max(Duration::from_millis(1)));
+        }
+        match stream.set_read_timeout(Some(timeout)) {
+            Err(e) if e.kind() == ErrorKind::InvalidInput => return Err(ErrorKind::ConnectionAborted.into()),
+            other => other?,
+        }
+        let space = session.rx_space();
+        if space.is_empty() {
+            return Err(io::Error::new(ErrorKind::OutOfMemory, "RX buffer full"));
+        }
+        match stream.read(space) {
+            Ok(0) => {
+                // The charger that has an emergency turns the oscillator off and may drop the connection at once: the pilot
+                // is what tells an emergency from a hang-up.
+                if let Some(reading) = pilot.poll() {
+                    return Ok(Next::Step(session.handle(Event::Pilot(reading))));
+                }
+                return Ok(Next::PeerClosed);
+            }
+            Err(e) if is_hang_up(&e) => {
+                if let Some(reading) = pilot.poll() {
+                    return Ok(Next::Step(session.handle(Event::Pilot(reading))));
+                }
+                return Err(e);
+            }
+            Ok(n) => return Ok(Next::Step(session.handle(Event::Received(n)))),
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => continue,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn next_step_plain(
     stream: &mut impl Transport,
     session: &mut impl Machine,
     deadlines: &mut Deadlines,

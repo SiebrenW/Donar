@@ -11,6 +11,7 @@ sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 iso15118-20 = { path = "../../codec/iso15118-20" }
 evse-core = { path = "../../evse/core" }
+control-pilot = { path = "../../pilot" }
 din70121 = { path = "../../codec/din70121" }
 iso15118-2 = { path = "../../codec/iso15118-2" }
 app-protocol = { path = "../../codec/app-protocol" }

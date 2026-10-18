@@ -323,6 +323,7 @@ dependencies = [
 name = "evcc-linux"
 version = "0.1.0"
 dependencies = [
+ "control-pilot",
  "evcc-core",
  "exi",
  "homeplug",
@@ -338,6 +339,7 @@ dependencies = [
 name = "evcc-sim"
 version = "0.1.0"
 dependencies = [
+ "control-pilot",
  "evcc-core",
  "evcc-linux",
  "iso15118-20",
@@ -387,6 +389,7 @@ name = "evse-sim"
 version = "0.1.0"
 dependencies = [
  "app-protocol",
+ "control-pilot",
  "din70121",
  "evcc-linux",
  "evse-core",

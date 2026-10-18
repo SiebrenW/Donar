@@ -84,7 +84,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             _ if self.eim_offered => self.authorization = Authorization::Eim,
             _ => {
                 self.log.record(&Record::NoAuthorization { wanted: Authorization::Eim, offered: res.authorization_services });
-                return self.end(EndReason::NoCompatibleAuthorization);
+                return self.end_politely(EndReason::NoCompatibleAuthorization, tx);
             }
         }
         self.log.record(&Record::AuthorizationSelected { service: self.authorization });
@@ -148,7 +148,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         let wanted = self.config.energy_service;
         if !res.energy_transfer_service_list.service.iter().any(|s| s.service_id == wanted) {
             self.log.record(&Record::NoService { wanted, offered: res.energy_transfer_service_list.service });
-            return self.end(EndReason::NoCompatibleService);
+            return self.end_politely(EndReason::NoCompatibleService, tx);
         }
         let msg = ServiceDetailReq { header: self.header(), service_id: wanted };
         let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
@@ -168,7 +168,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 filter: self.config.parameter_filter,
                 offered: res.service_parameter_list.parameter_set,
             });
-            return self.end(EndReason::NoCompatibleParameterSet);
+            return self.end_politely(EndReason::NoCompatibleParameterSet, tx);
         };
         let selected = SelectedService { service_id: res.service_id, parameter_set_id };
         self.selected = selected;

@@ -11,6 +11,7 @@ Implemented and tested (in memory, as scenarios in network namespaces, and again
 - **Vehicle** (`evcc-core`): ISO 15118-20 DC and AC, Dynamic and Scheduled, BPT (including the V2X energy range), EIM and Plug & Charge, mobility needs by the charger, `EVEnergyOffer`, schedule and price evaluation, standby, pause and resume, `GoToPause`, service and schedule renegotiation, metering confirmation, welding detection with the welded-contactor outcome; ISO 15118-2 DC and AC (PnC, pause, renegotiation, value-added service details, metering receipt, sales tariffs); DIN SPEC 70121 DC; SDP; SLAC (attenuation correction per carrier group, validation by control pilot).
 - **Charger** (`evse-core`): the same three protocols behind the `Secc`, `Iso2Secc` and `DinSecc` traits.
 - **Hosts** (`evcc-linux`): sockets, OpenSSL TLS (1.3 mutual authentication, 1.2 for -2), certificate profile and OCSP checks, message signatures, QCA7000 family modem driver.
+- **Control pilot**: `Event::Pilot` on both sides (the `control-pilot` crate has the rules); emergencies end the session at once without a word, the charger checks C/D and B at the cable check and the stop; vehicle faults of its own before the power (nothing compatible offered) are announced with `SessionStopReq`; the simulators share a pilot "wire".
 - **Tooling**: a `capture.pcap` of the cable per scenario run, with the TLS secrets disclosed for dsV2Gshark; generated EXI codecs checked against EXIficient, simulators with fault injection, a sandbox of network namespaces and a scenario runner, interop against the Python `iso15118` SECC and `pyslac`, and a web UI with browser tests.
 
 Independent checks exist against the Python `iso15118` library (-20 DC, AC, BPT, PnC, mobility needs; -2; DIN; the vehicle side only) and `pyslac` (SLAC, vehicle side), and on a Heliox board with a QCA7005 modem (frames, key, network id).
@@ -24,8 +25,9 @@ Independent checks exist against the Python `iso15118` library (-20 DC, AC, BPT,
 - Reactive power setpoints (sent as 0), the BPT service parameter `GridCodeIslandingDetectionMethod`, the target frequency (V2G20-1555), separated channel and grid forming BPT.
 - ACDP and WPT (not generated either).
 - Hash binding of the certificates on a resumed session (V2G20-2539, 2545), the schedule tuple elapsed-time rules (V2G20-1840, 1841).
-- `SessionStopReq` on error exits before `Start` (V2G20-2644): check what is built.
-- On a welded contactor, tell the charger (a failing code or termination code in a `SessionStopReq`) before the session ends.
+- Control pilot: the pilot outputs of the -20 vehicle exist for DC only and only with `Config::control_pilot` (off by default so that hosts that set the pilot themselves are unaffected; DIN and ISO 15118-2 always ask); AC has none. ISO 15118-2 AC sets its pilot (C) in the host. The vehicle does not wait for a pilot reading before it sends the first `CPDReq` in AC (V2G20-930 asks for 5 %, with a NOTE that a session may start with 100 %).
+- A `FAILED` response before the charge parameter discovery: DIN says `SessionStopReq` if the oscillator is still on and an error shutdown if it is off (V2G-DC-649, 652); the vehicle ends with `Rejected` either way.
+- On a welded contactor, tell the charger before the session ends: the pilot is B by then, so a `SessionStopReq` with an `EVTerminationCode` is possible (like the local faults, `end_politely`).
 - Plug & Charge: contract revocation, `SupportedProviders` filtering, a second contract chain, other remedies of V2G20-1583. Certificate installation and update are left out on purpose (messages are in the codecs).
 - DIN: `NotificationMaxDelay` (V2G-DC-636) and the other status codes (637); ramping the current down through `CurrentDemandReq` with 0 A; the EVSE id is not parsed.
 - ISO 15118-2: certificate installation and update; the consumption cost (`RelativePricePercentage`), description and `NumEPriceLevels` of a sales tariff.
@@ -33,7 +35,9 @@ Independent checks exist against the Python `iso15118` library (-20 DC, AC, BPT,
 ### Protocol, charger
 
 - `evse-core` -20: value-added services; an end-to-end test of a failing metering signature. A `SessionStopReq` is taken in every state after the setup except the charge loop (as in the DIN and ISO 15118-2 cores); the charger does not check the control pilot (V2G20-920 to 922).
-- DIN: the 60 s `V2G_SECC_Sequence_Timeout`, watching the control pilot.
+- DIN: the 60 s `V2G_SECC_Sequence_Timeout`.
+- The charger does not debounce or deliver the cable check and stop checks of the pilot with a wait: it answers at once with what it last measured, where the standards give it up to `V2G_SECC_Msg_Performance_Time` to see C/D or B appear (V2G20-916, 920 to 922). A host that measures slowly should report the pilot before it passes the request on (the simulators read the cable before each request).
+- The charger's own emergencies (oscillator off, current down, contactors open) are the host's; the core only learns of the vehicle's.
 - Charger simulator: acting on an `EVEnergyOffer` (it only logs it), an offer with several rules per stack, live mobility-needs changes in the loop, a cable voltage drop (V2G20-2185 note 2), the early-stop and pause paths of -2, certificate revocation for the contract.
 
 ### Vehicle simulator
@@ -94,6 +98,8 @@ The standard is silent or ambiguous, and no independent implementation settles i
 - `GoToPause` is followed by `PowerDeliveryReq(Stop)` (the schema has no "Pause" progress) and `SessionStopReq(Pause)`.
 - The MMTYPEs of `CM_VALIDATE` (0x6044/0x6045) are those of the open HomePlug implementations.
 - After a wake-up from pause the vehicle goes to the charge parameter discovery (V2G20-1032, 2098), not to a new service selection.
+- After an emergency the standards let both sides "try to maintain digital communication" (IEC 61851-23 CC.3.4.3: requests then carry `EVReady = False`, responses `FAILED`). The cores do the stricter thing: the session ends and nothing more is sent or answered.
+- A static duty cycle (100 % or oscillator off) in an AC session is the supply stopping (IEC 61851-1 state x1), not an emergency; in DC it is (V2G-DC-656, CC.3.4.3). 5 % is taken as 4 to 6 % of the host's rounded measurement.
 - Ed448 SECC certificates carry keyAgreement as Table B.6 says, although an Ed448 key cannot do key agreement.
 
 ## Architecture

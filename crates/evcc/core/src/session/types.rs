@@ -139,6 +139,19 @@ pub enum EndReason {
     PilotFault(control_pilot::Reading),
 }
 
+impl EndReason {
+    /// The `EVTerminationCode` of the `SessionStopReq` the vehicle sends when it ends the session for this
+    /// non-critical reason of its own (V2G20-2644, V2G-DC-648).
+    pub(crate) fn termination_code(self) -> &'static str {
+        match self {
+            EndReason::NoCompatibleAuthorization => "NoCompatibleAuthorization",
+            EndReason::NoCompatibleService => "NoCompatibleService",
+            EndReason::NoCompatibleParameterSet => "NoCompatibleParameterSet",
+            _ => "Terminated",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
     /// The transport is connected. `secured` is true for TLS.

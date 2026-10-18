@@ -59,7 +59,7 @@ Documented at the top of [`session/mod.rs`](crates/evcc/core/src/session/mod.rs)
 | `CloseContactors` (DC, after pre-charge) | close the contactors | `Event::ContactorsClosed` |
 | `StopEnergyTransfer` | ramp the current to zero | `Event::EnergyTransferStopped` |
 | `OpenContactors` (DC) | open them | `Event::ContactorsOpened` |
-| `ControlPilot(state)` (DIN) | change the control pilot | `Event::ControlPilotChanged` |
+| `ControlPilot(state)` (DIN, ISO 15118-2; -20 with `Config::control_pilot`) | change the control pilot | `Event::ControlPilotChanged` |
 | `ChargeLoop(status)` / `AcChargeLoop(status)` | apply the charger's current / target power | nothing |
 
 Informational notices (`SessionSetUp`, `Authorized`, `ChargeParametersDiscovered`, `EnergyTransferStarted`, `StandbyEntered`, …) need no answer. You can also push events yourself while the charge loop runs: `StopRequested`, `PauseRequested`, `RenegotiateSchedule`, `RenegotiateServices`.
@@ -76,6 +76,13 @@ let outcome = evcc_linux::run(&mut stream, &mut session, true, &mut |notice| mat
 ```
 
 On an MCU, write the same loop around your own sockets and timers; `crates/evcc/linux/src/lib.rs` is about 200 lines and is the reference.
+
+**The control pilot is an input too.** The CP can change at any moment and has to be acted on at once: the standards give the vehicle 50 ms to react to an emergency (IEC 61851-23 CC.4.3) and the charger 10 ms. Measure it (voltage state and PWM duty cycle) and send **every change** as `Event::Pilot(control_pilot::Reading { state, pwm })`, also before `Start`. The rules are in the small crate [`control-pilot`](crates/pilot/src/lib.rs), shared with the charger:
+
+- the vehicle: state E, F or A closes the connection (DIN V2G-DC-655, ISO 15118-2 V2G2-737); in a DC session a duty cycle that is not 5 % after the charge parameter discovery (V2G-DC-656), the oscillator turned off (IEC 61851-23 CC.3.4.3) or a change away from C/D that the vehicle did not ask for (CC.4.3) is an emergency. The session ends at once, **nothing is sent**, `EndReason::Emergency` / `EndReason::PilotFault`; the host opens its contactors, sets the pilot to B and drops the connection. In an AC session a constant duty cycle (state x1) is no emergency but the end of the supply (IEC 61851-1 Table A.5): an orderly stop. During the shutdown the pilot may change and the oscillator go off as the sequences say.
+- the charger (`Event::Pilot` on `evse_core::Session` and the DIN and ISO 15118-2 machines): a change from C/D that nothing explains (the power delivery stop, `SessionStopReq`, the charger's own shutdown) is an emergency, and E, F or A end the session, again without a word (`Ended::Emergency`, `Ended::PilotFault`). The charger answers the cable check `FAILED` unless it measured C or D and the welding detection and the session stop after the DC stop unless it measured B (V2G20-917 to 922). Without a single reading none of this is checked, so a host that does not report the pilot is unaffected.
+
+On Linux `evcc_linux::run_with_pilot` takes a `PilotSource` and looks at it every 2 ms while it waits for the socket. For the simulators `evcc_linux::pilot::Wire` is a cable made of two small files (the vehicle's state, the charger's oscillator), which the scenario runner gives to both.
 
 ### 4. Bring-up around the session
 

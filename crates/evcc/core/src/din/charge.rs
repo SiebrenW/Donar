@@ -294,6 +294,14 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         Step { timers: merge(step.timers, next.timers), ..next }
     }
 
+    /// The vehicle ends the session for a non-critical reason of its own (nothing fits its needs, say) before the power
+    /// is on: `SessionStopReq` as the next request, then the answer (V2G-DC-648), and only then the end with this reason.
+    pub(super) fn end_politely(&mut self, reason: EndReason, tx: &mut [u8]) -> Step {
+        self.pending_end = Some(reason);
+        self.phase_timed = false;
+        self.send_session_stop(tx)
+    }
+
     pub(super) fn send_session_stop(&mut self, tx: &mut [u8]) -> Step {
         self.pilot.set_stopping(true);
         let body = BodyElementChoice::SessionStopReq(SessionStop {});

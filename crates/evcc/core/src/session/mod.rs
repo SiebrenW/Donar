@@ -58,6 +58,10 @@ struct Machine<E, L> {
     state: State,
     /// What the control pilot means to the session (the host reports it with `Event::Pilot`).
     pilot: control_pilot::EvWatch,
+    /// The vehicle ends the session for a non-critical reason of its own: it says so with `SessionStopReq` and ends
+    /// with this reason when the answer is in (or does not come).
+    pending_end: Option<EndReason>,
+    termination_code: Option<&'static str>,
     secured: bool,
     session_id: [u8; 8],
     /// The `Ongoing` timer is armed once, when the first `Ongoing` response arrives.
@@ -136,6 +140,8 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 log,
                 state: State::Idle,
                 pilot: control_pilot::EvWatch::new(ac),
+                pending_end: None,
+                termination_code: None,
                 secured: false,
                 session_id: [0; 8],
                 ongoing_armed: false,
@@ -463,6 +469,12 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
 
     fn end(&mut self, reason: EndReason) -> Step {
+        // The end that was announced with a `SessionStopReq` is the reason, whatever came instead of the answer; the
+        // pilot overrides it.
+        let reason = match self.pending_end.take() {
+            Some(pending) if !matches!(reason, EndReason::Emergency(_) | EndReason::PilotFault(_)) => pending,
+            _ => reason,
+        };
         self.goto(State::Ended);
         self.log.record(&Record::Ended { reason });
         Step {
