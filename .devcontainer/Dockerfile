@@ -13,6 +13,10 @@ RUN apt-get update -qq \
 # open-source `iso15118` Python library, which brings its own EXI codec (needs the JDK).
 RUN python3 -m venv /opt/iso15118 && /opt/iso15118/bin/pip install --quiet iso15118==0.31.2
 
+# An independent SLAC implementation for the EVSE side, `cargo xtask interop`: pyslac (ISO 15118-3), pinned.
+RUN python3 -m venv /opt/pyslac \
+ && /opt/pyslac/bin/pip install --quiet "marshmallow<4" "git+https://github.com/ecog-io/pyslac@134cb15dfca6381892ef8e30d15e615dc9c61c50"
+
 # Everything runs as `developer`, who may use sudo without a password.
 RUN useradd --create-home --uid 1000 --shell /bin/bash developer \
  && echo 'developer ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/developer \

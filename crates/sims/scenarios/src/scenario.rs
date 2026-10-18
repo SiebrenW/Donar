@@ -98,6 +98,9 @@ pub enum Kind {
     /// The SECC of the open-source Python `iso15118` library.
     #[serde(rename = "iso15118-python")]
     Iso15118Python,
+    /// The EVSE side of SLAC of the open-source `pyslac` library (no charging session behind it).
+    #[serde(rename = "pyslac")]
+    PySlac,
 }
 
 #[derive(Debug, Clone, Deserialize)]

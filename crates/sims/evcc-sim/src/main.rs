@@ -154,6 +154,9 @@ fn run(interface: &str, settings: &Settings, control: Option<&str>) -> io::Resul
     if settings.slac && !run_slac(interface, settings)? {
         return Ok(false);
     }
+    if settings.slac && settings.slac_only {
+        return Ok(true);
+    }
     let mut outcome = attempt(ifindex, settings, None, settings.pause_after, &live)?;
     // A paused session is resumed on a new connection (V2G20-2073); the data link stays up.
     while let (Outcome::Ended(EndReason::Paused(resume)), Some(ms)) = (outcome, settings.resume_after_ms) {

@@ -107,6 +107,22 @@ pub fn iso15118_python(sb: &Sandbox, node: &Node, tls: bool, protocols: &str, au
     Ok(Partner { process, vehicle_tls, contract })
 }
 
+/// The log line that says the SLAC partner waits for the vehicle.
+pub const PYSLAC_READY: &str = "pyslac ready";
+
+/// The EVSE side of SLAC of the `pyslac` library (a virtual environment made by the dev container's Dockerfile; overridable
+/// with `PYSLAC_VENV`), driven by `partners/pyslac_secc.py`. It needs raw packet access.
+pub fn pyslac(sb: &Sandbox, node: &Node) -> io::Result<Process> {
+    let venv = std::env::var_os("PYSLAC_VENV").map_or_else(|| PathBuf::from("/opt/pyslac"), PathBuf::from);
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("partners/pyslac_secc.py");
+    let spawn = Spawn::new(venv.join("bin/python")).arg(script).arg(sandbox::INTERFACE).current_dir(sb.artifacts()).label("pyslac").net_raw();
+    let mut process = sb.spawn(node, spawn)?;
+    if !process.wait_for_log(PYSLAC_READY, Duration::from_secs(20))? {
+        return Err(io::Error::other(format!("pyslac did not start in time:\n{}", process.log())));
+    }
+    Ok(process)
+}
+
 /// Path of a binary built by cargo: next to the running executable, or one level up when the
 /// running one is a test (`target/debug/deps/x`). Cargo puts all binaries of a workspace
 /// build in the same directory; `cargo test -p scenarios` alone does not build them.

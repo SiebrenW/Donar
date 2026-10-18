@@ -115,6 +115,7 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
             }
             sb.spawn(&secc, spawn)?
         }
+        Kind::PySlac => partners::pyslac(&sb, &secc)?,
         Kind::EvccSim => unreachable!("rejected on load"),
     };
     if let Some(tls) = partner_tls.filter(|_| scenario.evcc.tls) {
@@ -134,6 +135,7 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
     }
     let ready = match scenario.secc.kind {
         Kind::EvseSim => "ready:",
+        Kind::PySlac => partners::PYSLAC_READY,
         _ => partners::READY,
     };
     // An error here is a charger that ended before it was ready.

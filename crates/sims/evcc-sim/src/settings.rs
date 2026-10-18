@@ -311,6 +311,8 @@ pub struct Settings {
     pub iso2: Iso2,
     /// Run SLAC on the interface before looking for a charger.
     pub slac: bool,
+    /// Stop once SLAC has matched (a test of the matching alone against a partner that has no charging session behind it).
+    pub slac_only: bool,
     /// Configure a Qualcomm QCA7000 family modem on the interface with the charger's key once SLAC
     /// has matched (CM_SET_KEY); without it the interface is taken as the link already.
     pub qca_modem: bool,
@@ -375,6 +377,7 @@ impl Default for Settings {
             din: Din::default(),
             iso2: Iso2::default(),
             slac: false,
+            slac_only: false,
             slac_repetition_ms: None,
             slac_validation: SlacValidation::Never,
             qca_modem: false,

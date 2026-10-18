@@ -1,0 +1,16 @@
+name = "interop-pyslac"
+description = "The simulated vehicle matches against the EVSE side of the pyslac library (ISO 15118-3 SLAC): CM_SLAC_PARM, the sounds, CM_ATTEN_CHAR and CM_SLAC_MATCH. There is no charging session behind it."
+timeout_s = 60
+
+[secc]
+kind = "pyslac"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+slac = true
+slac_only = true
+
+[expect]
+evcc_log = ["slac: Matched"]
+secc_log = ["PEV-EVSE MATCHED Successfully"]
