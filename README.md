@@ -4,9 +4,9 @@ An open-source EV communication controller (EVCC, the vehicle side) for **ISO 15
 
 The core is `no_std`, allocation-free and **sans-IO**: it never touches a socket, a clock or a thread. You feed it events (bytes received, a timer fired, the vehicle did something) and carry out what it returns (bytes to send, timers to arm, things the vehicle should do). Your platform decides how.
 
-- Getting a checkout to build and test: [GETTING_STARTED.md](GETTING_STARTED.md)
+- Getting a checkout to build and test: [docs/getting-started.md](docs/getting-started.md)
 - Design, status and what is verified against what: [PLAN.md](PLAN.md)
-- Where the standards contradict themselves, disagree with their schemas or are silent, and what we decided: [STANDARDS_NOTES.md](STANDARDS_NOTES.md)
+- Where the standards contradict themselves, disagree with their schemas or are silent, and what we decided: [docs/standards-notes.md](docs/standards-notes.md)
 
 ## Building your own EVCC
 
