@@ -312,8 +312,10 @@ name = "evse-core"
 version = "0.1.0"
 dependencies = [
  "app-protocol",
+ "din70121",
  "evcc-core",
  "exi",
+ "iso15118-2",
  "iso15118-20",
  "v2gtp",
 ]
