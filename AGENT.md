@@ -52,6 +52,10 @@ cargo xtask web [PORT]          # the web UI (evcc-web) in the container, defaul
 
 **Crypto stays at the edge.** Plug & Charge, certificate profile/OCSP checks and signing live in `evcc-linux`/the sims (OpenSSL); the cores take a `Contract` trait for the vehicle's keys and hand the host the stream a signature covers. Certificate installation/update is deliberately out of scope.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` (clippy with `-D warnings`, the `no_std` build for a bare-metal target, the whole workspace on Linux as root, macOS, the interop scenarios; see `docs/getting-started.md`). Keep `cargo clippy --workspace --all-targets -- -D warnings` clean. The Linux job runs the tests natively on the runner, not in the container, so a change that needs a new tool needs it installed in the workflow as well as in `.devcontainer/Dockerfile`.
+
 ## Working conventions
 
 - Cite requirement ids (`V2G20-…`, `V2G-DC-…`) in comments only if checked against the standard text; the source is `standards/` (PDFs, gitignored; extract the text to search it).

@@ -83,6 +83,11 @@ Independent checks exist against the Python `iso15118` library (-20 DC, AC, BPT,
 - Fault injection to drop the connection or delay a response.
 - A browser test that clicks through a session (the browser tests check that the page builds, every choice can be made and no script errors); forms for PnC.
 
+### CI
+
+- The workflows were written without a run on GitHub's runners: expect to fix the first run (AppArmor around `tcpdump`, the namespaces and raw sockets on the hosted runners, the Chrome path, the Python 3.11 partners). Not covered: a Windows build (the sandbox is Linux-only), a coverage report, `cargo deny` for licences, building the web UI's `index.html` in a browser matrix, a nightly run of the Python partners against their newest versions.
+- The code is not formatted with rustfmt (about 2100 differences), so `cargo fmt --check` is not a check.
+
 ### Code layout
 
 - `crates/evcc/core/tests/session_flow.rs` could be split per phase like the code; `exi-gen/src/emit.rs` mixes type and codec emission; `evcc-linux/src/lib.rs` carries both the `Transport` trait and the run loop; `evse::on_frame` is one long match.

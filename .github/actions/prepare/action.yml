@@ -1,0 +1,39 @@
+name: Prepare
+description: Rust, the schemas, the generated codecs and (optionally) the EXIficient reference vectors.
+inputs:
+  vectors:
+    description: Also make the reference vectors (needs a JDK and the network).
+    default: "true"
+  targets:
+    description: Extra Rust targets to install.
+    default: ""
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+        targets: ${{ inputs.targets }}
+    - uses: Swatinem/rust-cache@v2
+      with:
+        # The xtask binary and the generator are part of every build; the schemas and the generated code are not committed.
+        shared-key: ${{ runner.os }}
+    - uses: actions/setup-java@v4
+      if: inputs.vectors == 'true'
+      with:
+        distribution: temurin
+        java-version: "21"
+    # The schemas (ISO, DIN) and the EXIficient jars are downloaded; the vectors take a while to make, and the
+    # download of the XML schema DTD at w3.org is rate limited, so what was made once is kept.
+    - uses: actions/cache@v4
+      with:
+        path: data
+        key: data-${{ hashFiles('crates/xtask/**') }}
+        restore-keys: data-
+    - name: Schemas and generated codecs
+      shell: bash
+      run: cargo xtask setup
+    - name: Reference vectors (EXIficient)
+      if: inputs.vectors == 'true'
+      shell: bash
+      run: cargo xtask vectors

@@ -697,11 +697,10 @@ impl<S: Iso2Secc> Machine<S> {
                 let mut c = ResponseCode::Ok;
                 if !self.offers_tuple(req.sa_schedule_tuple_id) {
                     c = ResponseCode::FailedTariffSelectionInvalid;
-                } else if let Some(profile) = &req.charging_profile {
-                    if profile.profile_entry.iter().any(|e| e.charging_profile_entry_max_power.to_f64() > self.p_max_w * 1.0001) {
+                } else if let Some(profile) = &req.charging_profile
+                    && profile.profile_entry.iter().any(|e| e.charging_profile_entry_max_power.to_f64() > self.p_max_w * 1.0001) {
                         c = ResponseCode::FailedChargingProfileInvalid;
                     }
-                }
                 if is_ok(c) {
                     c = self.secc.power_delivery(req);
                 }

@@ -218,7 +218,7 @@ impl SimSecc {
         let terminate = c.terminate_after_loops.is_some_and(|n| self.loops_seen >= n);
         let confirmation = self.pnc
             && !self.confirmation_outstanding
-            && c.metering_confirmation_every_loops.is_some_and(|n| n > 0 && self.loops_seen > 0 && self.loops_seen % n == 0);
+            && c.metering_confirmation_every_loops.is_some_and(|n| n > 0 && self.loops_seen > 0 && self.loops_seen.is_multiple_of(n));
         if terminate {
             return Some((EvseNotification::Terminate, 5));
         }
@@ -256,7 +256,7 @@ impl SimSecc {
             }
         }
         let every = self.config.receipt_every_loops;
-        self.receipt_due.set(every.is_some_and(|n| n > 0 && self.loops_seen % n == 0));
+        self.receipt_due.set(every.is_some_and(|n| n > 0 && self.loops_seen.is_multiple_of(n)));
     }
 
     // ---- DC
@@ -643,19 +643,17 @@ impl Secc for SimSecc {
     }
 
     fn schedule_requested(&mut self, request: &common::ScheduleExchangeReq<'_>) -> MobilityNeeds {
-        if let common::SeReqControlModeChoice::Dynamic(m) = &request.se_req_control_mode {
-            if let (Some(max), Some(min)) = (m.ev_maximum_v2x_energy_request, m.ev_minimum_v2x_energy_request) {
+        if let common::SeReqControlModeChoice::Dynamic(m) = &request.se_req_control_mode
+            && let (Some(max), Some(min)) = (m.ev_maximum_v2x_energy_request, m.ev_minimum_v2x_energy_request) {
                 self.note(format!("the vehicle prefers to cycle between {} and {} Wh from its present energy", min.to_f64(), max.to_f64()));
             }
-        }
-        if let common::SeReqControlModeChoice::Scheduled(m) = &request.se_req_control_mode {
-            if let Some(offer) = &m.ev_energy_offer {
+        if let common::SeReqControlModeChoice::Scheduled(m) = &request.se_req_control_mode
+            && let Some(offer) = &m.ev_energy_offer {
                 let entries = offer.ev_power_schedule.ev_power_schedule_entries.ev_power_schedule_entry;
                 let peak = entries.iter().map(|e| e.power.to_f64()).fold(f64::MIN, f64::max);
                 let seconds: u32 = entries.iter().map(|e| e.duration).sum();
                 self.note(format!("the vehicle offers energy: {} entries, up to {peak} W for {seconds} s, prices in {}", entries.len(), offer.ev_absolute_price_schedule.currency));
             }
-        }
         if !self.mobility_by_secc {
             return MobilityNeeds::default();
         }

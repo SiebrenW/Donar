@@ -122,21 +122,19 @@ fn drive_host(vehicle: &mut dyn Machine, mut feed: impl FnMut(ToCharger<'_>) -> 
                     evcc_core::session::ControlPilot::B => (control_pilot::State::B, host.skip_b),
                     evcc_core::session::ControlPilot::C => (control_pilot::State::C, host.skip_c),
                 };
-                if host.report && !skip {
-                    if feed(ToCharger::Pilot(control_pilot::Reading { state, pwm: control_pilot::Pwm::Duty(5) })).1 {
+                if host.report && !skip
+                    && feed(ToCharger::Pilot(control_pilot::Reading { state, pwm: control_pilot::Pwm::Duty(5) })).1 {
                         return (None, loops, true);
                     }
-                }
                 Some(Event::ControlPilotChanged)
             }
             Some(Notice::ChargeLoop(_) | Notice::AcChargeLoop(_)) => {
                 loops += 1;
-                if let Some((_, reading)) = host.inject.filter(|(n, _)| *n == loops) {
-                    if feed(ToCharger::Pilot(reading)).1 {
+                if let Some((_, reading)) = host.inject.filter(|(n, _)| *n == loops)
+                    && feed(ToCharger::Pilot(reading)).1 {
                         // The charger closed the connection: the vehicle gets nothing more.
                         return (None, loops, true);
                     }
-                }
                 (loops == stop_after).then_some(Event::StopRequested)
             }
             _ => None,

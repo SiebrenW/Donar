@@ -137,10 +137,6 @@ mod tests {
     use iso15118_20::common::{AbsolutePriceSchedule, PowerSchedule, PowerScheduleEntry, PowerScheduleEntryList, PriceRule, PriceRuleStack, PriceRuleStackList};
     use iso15118_20::common_types::RationalNumber;
 
-    fn rn(exponent: i8, value: i16) -> RationalNumber {
-        RationalNumber { exponent, value }
-    }
-
     /// A tuple of the given power entries under the given prices (EUR).
     fn tuple(id: u32, entries: &'static [PowerScheduleEntry], stacks: &'static [PriceRuleStack<'static>]) -> ScheduleTuple<'static> {
         ScheduleTuple {

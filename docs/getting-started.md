@@ -107,6 +107,20 @@ These scenarios run `evcc-sim` against an independent ISO 15118-20 charger in an
 
 Tests that need root are compiled only on Linux, so `cargo test --workspace` on macOS simply does not contain them.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `master` and every pull request, on GitHub's hosted runners:
+
+| Job | What | Where it differs from your machine |
+|---|---|---|
+| `lint` | `cargo clippy --workspace --all-targets -- -D warnings` | |
+| `no-std` | the cores, the codecs and `control-pilot` build for `thumbv7em-none-eabihf` | catches `std` that crept into the portable parts |
+| `linux` | `cargo xtask grammars`, then every test of the workspace as root through `.github/ci-runner.sh`: the scenarios in network namespaces (each with its `capture.pcap`), TLS, SLAC, the web page in headless Chrome | the same as `cargo xtask linux-test`, without the container |
+| `macos` | the tests that need no privileges | the Linux-only tests are `cfg`'d out |
+| `interop` | the interop scenarios against the Python `iso15118` SECC and `pyslac` | the partners are installed into virtual environments below `target/venv` (`ISO15118_PYTHON_VENV`, `PYSLAC_VENV`) |
+
+The schemas and the EXIficient jars are downloaded in the run (`.github/actions/prepare`), and the vectors made once are cached (`data/`). When a scenario fails, the logs, settings and captures of the runs are uploaded as an artifact (`scenario-artifacts`, `interop-artifacts`; open the `.pcap` with Wireshark). `.github/workflows/audit.yml` checks `Cargo.lock` against the RustSec database weekly, and Dependabot proposes updates of the crates and the actions.
+
 ## Layout
 
 ```

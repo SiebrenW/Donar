@@ -613,12 +613,11 @@ impl<S: Secc> Machine<S> {
     fn on_main(&mut self, request: Request<'_>, scratch: &mut [u8], out: &mut [u8]) -> Reply {
         use common::Message as C;
         let main = PayloadType::MAINSTREAM;
-        if let Request::Common(C::SessionStopReq(req)) = &request {
-            if self.takes_session_stop(req) {
+        if let Request::Common(C::SessionStopReq(req)) = &request
+            && self.takes_session_stop(req) {
                 let req = *req;
                 return self.session_stop(req, out);
             }
-        }
         match (self.state, request) {
             (State::AwaitSessionSetupReq, Request::Common(C::SessionSetupReq(req))) => {
                 let asked = req.header.session_id;

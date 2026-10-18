@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  # Clippy over everything, warnings are errors. (The code is not formatted with rustfmt; the generator formats its output.)
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare
+        with:
+          vectors: "false"
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  # The cores, the codecs and the control pilot rules are `no_std`: they must build for a bare-metal target.
+  no-std:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare
+        with:
+          vectors: "false"
+          targets: thumbv7em-none-eabihf
+      - run: >
+          cargo build --locked --target thumbv7em-none-eabihf
+          -p evcc-core -p evse-core -p control-pilot -p v2gtp -p homeplug
+          -p exi -p app-protocol -p iso15118-20 -p iso15118-2 -p din70121
+
+  # Everything, on Linux, with the privileges the network tests need: the scenarios (two vehicles and chargers in network
+  # namespaces joined by a virtual cable, a pcap of each), TLS, SLAC, the web page in a headless Chrome.
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/.github/ci-runner.sh
+      SANDBOX_ARTIFACTS: ${{ github.workspace }}/target/sandbox
+      EVCC_REQUIRE_BROWSER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare
+      - name: tcpdump
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tcpdump
+          # Ubuntu confines tcpdump with AppArmor; the scenarios write their captures into the workspace.
+          sudo aa-complain /usr/bin/tcpdump 2>/dev/null || sudo aa-complain /usr/sbin/tcpdump 2>/dev/null || true
+      - name: The derived grammars equal EXIficient's
+        run: cargo xtask grammars
+      - name: Build the simulators
+        run: cargo build --workspace --bins --locked
+      - name: Tests
+        env:
+          CHROME: /usr/bin/google-chrome
+        run: cargo test --workspace --locked
+      - name: Logs and captures of the scenarios
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-artifacts
+          path: target/sandbox
+          retention-days: 7
+
+  # Without the Linux-only tests (namespaces, raw sockets): the codecs, the cores and the simulators on a Mac.
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      CHROME: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare
+      - run: cargo test --workspace --locked
+
+  # The vehicle against independent implementations: the open-source Python `iso15118` SECC (ISO 15118-2, -20, DIN SPEC 70121)
+  # and `pyslac` (SLAC), as in `cargo xtask interop`.
+  interop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SANDBOX_ARTIFACTS: ${{ github.workspace }}/target/sandbox
+      ISO15118_PYTHON_VENV: ${{ github.workspace }}/target/venv/iso15118
+      PYSLAC_VENV: ${{ github.workspace }}/target/venv/pyslac
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Partners
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tcpdump
+          sudo aa-complain /usr/bin/tcpdump 2>/dev/null || sudo aa-complain /usr/sbin/tcpdump 2>/dev/null || true
+          python -m venv "$ISO15118_PYTHON_VENV"
+          "$ISO15118_PYTHON_VENV/bin/pip" install --quiet iso15118==0.31.2
+          python -m venv "$PYSLAC_VENV"
+          "$PYSLAC_VENV/bin/pip" install --quiet "marshmallow<4" "git+https://github.com/ecog-io/pyslac@134cb15dfca6381892ef8e30d15e615dc9c61c50"
+      - run: cargo build --workspace --bins --locked
+      - name: Scenarios against the partners
+        run: sudo -E env "PATH=$PATH" target/debug/scenario crates/sims/scenarios/scenarios/interop/*.toml
+      - name: Logs and captures of the scenarios
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interop-artifacts
+          path: target/sandbox
+          retention-days: 7
