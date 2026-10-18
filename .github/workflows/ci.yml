@@ -31,8 +31,11 @@ jobs:
       - name: Clippy
         shell: bash
         run: |
-          set -o pipefail
-          cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee ci.log
+          # To a file, not through a pipe: a child a test leaves behind (a browser, a simulator) keeps a pipe open and the step would not end.
+          status=0
+          cargo clippy --workspace --all-targets --locked -- -D warnings > ci.log 2>&1 || status=$?
+          cat ci.log
+          exit $status
       - uses: ./.github/actions/annotate
         if: failure()
 
@@ -78,8 +81,11 @@ jobs:
         env:
           CHROME: /usr/bin/google-chrome
         run: |
-          set -o pipefail
-          cargo test --workspace --locked --no-fail-fast 2>&1 | tee ci.log
+          # To a file, not through a pipe: a child a test leaves behind (a browser, a simulator) keeps a pipe open and the step would not end.
+          status=0
+          cargo test --workspace --locked --no-fail-fast > ci.log 2>&1 || status=$?
+          cat ci.log
+          exit $status
       - uses: ./.github/actions/annotate
         if: failure()
       - name: Logs and captures of the scenarios
@@ -102,8 +108,11 @@ jobs:
       - name: Tests
         shell: bash
         run: |
-          set -o pipefail
-          cargo test --workspace --locked --no-fail-fast 2>&1 | tee ci.log
+          # To a file, not through a pipe: a child a test leaves behind (a browser, a simulator) keeps a pipe open and the step would not end.
+          status=0
+          cargo test --workspace --locked --no-fail-fast > ci.log 2>&1 || status=$?
+          cat ci.log
+          exit $status
       - uses: ./.github/actions/annotate
         if: failure()
 
@@ -135,8 +144,11 @@ jobs:
       - name: Scenarios against the partners
         shell: bash
         run: |
-          set -o pipefail
-          sudo -E env "PATH=$PATH" target/debug/scenario crates/sims/scenarios/scenarios/interop/*.toml 2>&1 | tee ci.log
+          # To a file, not through a pipe: a child a test leaves behind (a browser, a simulator) keeps a pipe open and the step would not end.
+          status=0
+          sudo -E env "PATH=$PATH" target/debug/scenario crates/sims/scenarios/scenarios/interop/*.toml > ci.log 2>&1 || status=$?
+          cat ci.log
+          exit $status
       - uses: ./.github/actions/annotate
         if: failure()
       - name: Logs and captures of the scenarios
