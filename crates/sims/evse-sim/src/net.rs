@@ -71,7 +71,8 @@ pub fn serve_wired<T: evcc_linux::Transport>(stream: &mut T, config: crate::Conf
     }
     let mut source = wire.source();
     let mut buf = [0u8; 2048];
-    // Writes what the machine answered; true when the session is over.
+    // Writes what the machine answered; true when the session is over. A vehicle that is gone (its connection reset) ends the
+    // session like a close does.
     fn emit<W: Write>(stream: &mut W, evse: &mut Evse, outputs: Vec<crate::Output>, live: Option<&std::sync::Arc<crate::EvseLive>>) -> std::io::Result<bool> {
         for line in evse.take_log() {
             eprintln!("[evse] {line}");
@@ -84,13 +85,30 @@ pub fn serve_wired<T: evcc_linux::Transport>(stream: &mut T, config: crate::Conf
         }
         for out in outputs {
             if let Some(bytes) = out.send {
-                stream.write_all(&bytes)?;
+                match stream.write_all(&bytes) {
+                    Ok(()) => {}
+                    Err(e) if hang_up(&e) => return Ok(true),
+                    Err(e) => return Err(e),
+                }
             }
             if out.close {
                 return Ok(true);
             }
         }
         Ok(false)
+    }
+    fn hang_up(e: &std::io::Error) -> bool {
+        use std::io::ErrorKind::{BrokenPipe, ConnectionAborted, ConnectionReset, UnexpectedEof};
+        matches!(e.kind(), ConnectionReset | ConnectionAborted | BrokenPipe | UnexpectedEof)
+    }
+    // The vehicle is gone: what it did to the pilot comes first (an emergency drops the connection at once).
+    fn gone<W: Write>(stream: &mut W, evse: &mut Evse, source: &mut evcc_linux::pilot::WireSource, live: Option<&std::sync::Arc<crate::EvseLive>>) -> std::io::Result<State> {
+        use evcc_linux::pilot::PilotSource;
+        if let Some(reading) = source.poll() {
+            let outputs = evse.pilot(reading);
+            let _ = emit(stream, evse, outputs, live)?;
+        }
+        Ok(evse.state())
     }
     loop {
         if let Some(reading) = source.poll() {
@@ -101,14 +119,7 @@ pub fn serve_wired<T: evcc_linux::Transport>(stream: &mut T, config: crate::Conf
         }
         stream.set_read_timeout(Some(evcc_linux::pilot::POLL_INTERVAL))?;
         match stream.read(&mut buf) {
-            Ok(0) => {
-                // A vehicle that has an emergency drops the connection at once: what it did to the pilot comes first.
-                if let Some(reading) = source.poll() {
-                    let outputs = evse.pilot(reading);
-                    emit(stream, &mut evse, outputs, live)?;
-                }
-                return Ok(evse.state());
-            }
+            Ok(0) => return gone(stream, &mut evse, &mut source, live),
             Ok(n) => {
                 // What the pilot showed before the request came is what it is judged by.
                 if let Some(reading) = source.poll() {
@@ -119,7 +130,7 @@ pub fn serve_wired<T: evcc_linux::Transport>(stream: &mut T, config: crate::Conf
                 }
                 let outputs = evse.handle(&buf[..n]);
                 if emit(stream, &mut evse, outputs, live)? {
-                    return Ok(evse.state());
+                    return gone(stream, &mut evse, &mut source, live);
                 }
                 if evse.pilot_emergency_due() {
                     eprintln!("[evse] an emergency of its own: the oscillator goes off, the connection is dropped");
@@ -128,6 +139,7 @@ pub fn serve_wired<T: evcc_linux::Transport>(stream: &mut T, config: crate::Conf
                 }
             }
             Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
+            Err(e) if hang_up(&e) => return gone(stream, &mut evse, &mut source, live),
             Err(e) => return Err(e),
         }
     }

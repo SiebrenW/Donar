@@ -94,7 +94,14 @@ pub fn run_with_pilot(
     mut pilot: Option<&mut dyn pilot::PilotSource>,
 ) -> io::Result<Outcome> {
     match drive(stream, session, secured, host, gate, &mut pilot) {
-        Err(e) if is_hang_up(&e) => Ok(Outcome::ConnectionClosed),
+        Err(e) if is_hang_up(&e) => {
+            // A charger that has an emergency turns the oscillator off and drops the connection: whether our write or our read
+            // found it out first, the pilot is what tells an emergency from a hang-up.
+            if let Some(reason) = pilot.as_mut().and_then(|p| p.poll()).and_then(|reading| session.handle(Event::Pilot(reading)).end) {
+                return Ok(Outcome::Ended(reason));
+            }
+            Ok(Outcome::ConnectionClosed)
+        }
         other => other,
     }
 }
