@@ -32,6 +32,23 @@ fn mode(m: Iso2Mode) -> t::EnergyTransferMode {
     }
 }
 
+/// Two tuples of 11 kW for a day with sales tariffs (`Iso2::sales_tariffs`): dear first / cheap first.
+const DAY: t::TimeIntervalChoice = t::TimeIntervalChoice::Relative(t::RelativeTimeInterval { start: 0, duration: Some(86_400) });
+static P_MAX: [t::PMaxScheduleEntry; 1] = [t::PMaxScheduleEntry { time_interval: DAY, p_max: PhysicalValue { multiplier: 3, unit: UnitSymbol::W, value: 11 } }];
+const fn level(start: u32, level: u8) -> t::SalesTariffEntry<'static> {
+    t::SalesTariffEntry { time_interval: t::TimeIntervalChoice::Relative(t::RelativeTimeInterval { start, duration: None }), e_price_level: Some(level), consumption_cost: &[] }
+}
+static DEAR_FIRST: [t::SalesTariffEntry<'static>; 2] = [level(0, 3), level(14_400, 0)];
+static CHEAP_FIRST: [t::SalesTariffEntry<'static>; 2] = [level(0, 0), level(14_400, 3)];
+const fn tuple(id: u8, entries: &'static [t::SalesTariffEntry<'static>]) -> t::SaScheduleTuple<'static> {
+    t::SaScheduleTuple {
+        sa_schedule_tuple_id: id,
+        p_max_schedule: t::PMaxSchedule { p_max_schedule_entry: &P_MAX },
+        sales_tariff: Some(t::SalesTariff { id: None, sales_tariff_id: id, sales_tariff_description: None, num_e_price_levels: Some(4), sales_tariff_entry: entries }),
+    }
+}
+static TARIFF_TUPLES: [t::SaScheduleTuple<'static>; 2] = [tuple(1, &DEAR_FIRST), tuple(2, &CHEAP_FIRST)];
+
 /// The two parameter sets of a value-added service: port 80 and port 443.
 static HTTP: [t::Parameter<'static>; 1] = [t::Parameter { name: "Port", value: t::ValueChoice::Int(80) }];
 static HTTPS: [t::Parameter<'static>; 1] = [t::Parameter { name: "Port", value: t::ValueChoice::Int(443) }];
@@ -219,6 +236,7 @@ impl Iso2Secc for SimIso2 {
         let l = self.limits();
         let iso2 = &self.config.iso2;
         let ac_status = t::AcEvseStatus { notification_max_delay: 0, evse_notification: t::EvseNotification::None, rcd: false };
+        // The most power a tuple allows is what the profile of the vehicle is held to.
         let (parameter, max_w) = if ac {
             (
                 EvseChargeParameterChoice::Ac(t::AcEvseChargeParameter {
@@ -246,6 +264,9 @@ impl Iso2Secc for SimIso2 {
         };
         Progress::Done((code(self.config.cpd_code), Offer { parameter, p_max: pv(max_w, UnitSymbol::W) }))
     }
+    fn schedule_tuples(&self) -> &[t::SaScheduleTuple<'_>] {
+        if self.config.iso2.sales_tariffs { &TARIFF_TUPLES } else { &[] }
+    }
     fn cable_check(&mut self) -> Progress<ResponseCode> {
         self.cable_reqs_seen += 1;
         if self.cable_reqs_seen <= self.config.cable_check_ongoing_responses { Progress::Ongoing } else { Progress::Done(code(self.config.cable_check_code)) }
@@ -257,7 +278,12 @@ impl Iso2Secc for SimIso2 {
         pv(if settled { target } else { (target - 100.0).max(0.0) }, UnitSymbol::V)
     }
     fn power_delivery(&mut self, request: &PowerDeliveryReq<'_>) -> ResponseCode {
-        if request.charge_progress == t::ChargeProgress::Start { code(self.config.power_delivery_code) } else { ResponseCode::Ok }
+        if request.charge_progress == t::ChargeProgress::Start {
+            self.log.push(format!("schedule tuple {} selected", request.sa_schedule_tuple_id));
+            code(self.config.power_delivery_code)
+        } else {
+            ResponseCode::Ok
+        }
     }
     fn renegotiation(&mut self) {
         self.schedule_reqs_seen = 0;

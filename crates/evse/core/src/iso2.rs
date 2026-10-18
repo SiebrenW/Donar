@@ -164,6 +164,11 @@ pub trait Iso2Secc {
     }
     /// The charge parameters for the request (`renegotiating` when the vehicle asked for new ones during the charge), or `Ongoing`.
     fn charge_parameters(&mut self, request: &ChargeParameterDiscoveryReq, renegotiating: bool) -> Progress<(ResponseCode, Offer)>;
+    /// The schedule tuples to offer (at most the vehicle asked for) with their sales tariffs; empty: one tuple with the
+    /// offer's maximum power for 24 hours.
+    fn schedule_tuples(&self) -> &[t::SaScheduleTuple<'_>] {
+        &[]
+    }
     fn cable_check(&mut self) -> Progress<ResponseCode> {
         Progress::Done(ResponseCode::Ok)
     }
@@ -416,6 +421,12 @@ impl<S: Iso2Secc> Machine<S> {
         self.send("response", c, body, true, out)
     }
 
+    /// Whether the tuple id is one of those offered (the one tuple 1 when the host offers none).
+    fn offers_tuple(&self, id: u8) -> bool {
+        let offered = self.secc.schedule_tuples();
+        if offered.is_empty() { id == 1 } else { offered.iter().any(|t| t.sa_schedule_tuple_id == id) }
+    }
+
     fn on_frame(&mut self, payload_type: PayloadType, payload: &[u8], arena: &Arena<'_>, out: &mut [u8]) -> Reply {
         let closed = Reply { len: 0, close: true };
         if payload_type != PayloadType::SAP {
@@ -571,17 +582,27 @@ impl<S: Iso2Secc> Machine<S> {
                 self.p_max_w = p_max.to_f64();
                 let entry = [t::PMaxScheduleEntry { time_interval: t::TimeIntervalChoice::Relative(t::RelativeTimeInterval { start: 0, duration: Some(86_400) }), p_max }];
                 let tuple = [t::SaScheduleTuple { sa_schedule_tuple_id: 1, p_max_schedule: t::PMaxSchedule { p_max_schedule_entry: &entry }, sales_tariff: None }];
+                let offered = self.secc.schedule_tuples();
+                let tuples: &[t::SaScheduleTuple<'_>] = if offered.is_empty() { &tuple } else { offered };
                 let body = B::ChargeParameterDiscoveryRes(ChargeParameterDiscoveryRes {
                     response_code: c,
                     evse_processing: processing,
-                    sa_schedules: (!ongoing).then_some(SaSchedulesChoice::SaScheduleList(t::SaScheduleList { sa_schedule_tuple: &tuple })),
+                    sa_schedules: (!ongoing).then_some(SaSchedulesChoice::SaScheduleList(t::SaScheduleList { sa_schedule_tuple: tuples })),
                     evse_charge_parameter: parameter,
                 });
                 if !ongoing && is_ok(c) {
                     // After a renegotiation the cable is checked already: power is asked for again.
                     self.state = if ac || self.renegotiating { State::AwaitPowerDeliveryReq } else { State::AwaitCableCheckReq };
                 }
-                self.send("ChargeParameterDiscoveryRes", c, body, !ongoing && !is_ok(c), out)
+                // The answer borrows the charger's tuples; the log line is written after it is framed.
+                let message = V2gMessage { header: MessageHeader { session_id: &self.session_id, notification: None, signature: None }, body: Body { body_element: Some(body) } };
+                let framed = frame(out, |o| message.encode(o));
+                let close = !ongoing && !is_ok(c);
+                self.secc.note(format_args!("tx ChargeParameterDiscoveryRes {}{}", c.xml_name(), if close { ", then closing" } else { "" }));
+                match framed {
+                    Ok(len) => Reply { len, close },
+                    Err(()) => closed,
+                }
             }
             (State::AwaitCableCheckReq, B::CableCheckReq(_)) if session_ok => {
                 let (c, ongoing) = match self.secc.cable_check() {
@@ -611,7 +632,7 @@ impl<S: Iso2Secc> Machine<S> {
             (State::AwaitPreChargeReq | State::AwaitPowerDeliveryReq, B::PowerDeliveryReq(req)) if session_ok && req.charge_progress == t::ChargeProgress::Start => {
                 // The tuple the vehicle follows must be one of those offered; the profile within the schedule.
                 let mut c = ResponseCode::Ok;
-                if req.sa_schedule_tuple_id != 1 {
+                if !self.offers_tuple(req.sa_schedule_tuple_id) {
                     c = ResponseCode::FailedTariffSelectionInvalid;
                 } else if let Some(profile) = &req.charging_profile {
                     if profile.profile_entry.iter().any(|e| e.charging_profile_entry_max_power.to_f64() > self.p_max_w * 1.0001) {

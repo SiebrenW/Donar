@@ -371,6 +371,9 @@ pub struct Iso2 {
     /// Value-added services (ids) listed in `ServiceDiscoveryRes`; `ServiceDetailReq` for one gets
     /// two parameter sets (port 80 and 443).
     pub value_added_services: Vec<u16>,
+    /// Offer two schedule tuples (11 kW) with sales tariffs: tuple 1 is dear in the first four hours (price level 3, then 0),
+    /// tuple 2 is cheap in the first four hours (0, then 3). A vehicle that compares them takes tuple 2.
+    pub sales_tariffs: bool,
 }
 
 impl Default for Iso2 {
@@ -386,6 +389,7 @@ impl Default for Iso2 {
             renegotiate_after_loops: None,
             receipt_every_loops: None,
             value_added_services: Vec::new(),
+            sales_tariffs: false,
         }
     }
 }

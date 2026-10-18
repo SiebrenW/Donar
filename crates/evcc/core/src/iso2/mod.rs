@@ -31,6 +31,7 @@ mod charge;
 mod config;
 mod convert;
 mod setup;
+mod tariff;
 
 pub use config::{Config, Mode, MAX_VALUE_ADDED};
 

@@ -78,6 +78,7 @@ mod run {
         dc_delay => "dc-delay",
         dc_din => "dc-din",
         dc_iso2 => "dc-iso2",
+        dc_iso2_sales_tariff => "dc-iso2-sales-tariff",
         dc_iso2_renegotiation_by_car => "dc-iso2-renegotiation-by-car",
         ac3_iso2_renegotiation_by_charger => "ac3-iso2-renegotiation-by-charger",
         dc_iso2_pause_resume => "dc-iso2-pause-resume",

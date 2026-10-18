@@ -305,9 +305,26 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             // The charger answered with the other kind of parameters.
             _ => return self.end(EndReason::UnexpectedMessage),
         }
-        // The first tuple is the default schedule.
+        // The first tuple is the default schedule; with price levels on every tuple the vehicle takes the cheapest that
+        // delivers what it needs before it leaves.
         let Some(SaSchedulesChoice::SaScheduleList(list)) = res.sa_schedules else { return self.end(EndReason::UnexpectedMessage) };
-        let Some(tuple) = list.sa_schedule_tuple.first() else { return self.end(EndReason::UnexpectedMessage) };
+        if list.sa_schedule_tuple.is_empty() {
+            return self.end(EndReason::UnexpectedMessage);
+        }
+        let request = self.ev.schedule_request();
+        let max_watts = if self.ac {
+            let l = self.ev.ac_limits();
+            let phases = if self.config.mode == Mode::AcThreePhase { 3.0 } else { 1.0 };
+            let volts = self.evse.map_or(l.maximum_voltage.to_f64(), |e| e.max_voltage.to_f64());
+            let amps = self.evse.map_or(l.maximum_current.to_f64(), |e| e.max_current.to_f64().min(l.maximum_current.to_f64()));
+            volts * amps * phases
+        } else {
+            self.ev.dc_limits().maximum_charge_power.to_f64()
+        };
+        let need_wh = request.target_energy.to_f64().max(0.0);
+        let chosen = super::tariff::choose(list.sa_schedule_tuple, need_wh, max_watts, f64::from(request.departure_time));
+        let tuple = &list.sa_schedule_tuple[chosen];
+        self.log.record(&Record::ScheduleSelected { tuple_id: u32::from(tuple.sa_schedule_tuple_id), offered: list.sa_schedule_tuple.len(), need_wh: need_wh as u32, departure_s: request.departure_time });
         let mut schedule = Schedule { id: tuple.sa_schedule_tuple_id, entries: [(0, 0.0); MAX_ENTRIES], len: 0 };
         for entry in tuple.p_max_schedule.p_max_schedule_entry.iter().take(MAX_ENTRIES) {
             let TimeIntervalChoice::Relative(interval) = entry.time_interval;

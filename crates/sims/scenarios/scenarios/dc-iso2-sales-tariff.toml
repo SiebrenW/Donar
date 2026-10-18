@@ -1,0 +1,26 @@
+name = "dc-iso2-sales-tariff"
+description = "ISO 15118-2 dc: the charger offers two schedule tuples with sales tariffs (price levels), tuple 1 dear in the first four hours and tuple 2 cheap in them. The vehicle needs 5 kWh and has eight hours; both deliver, so it compares the cost and takes tuple 2 (the first is only the default)."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session.iso2]
+sales_tariffs = true
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+protocol = "iso15118-2"
+connector = "dual2"
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+[evcc.settings.iso2]
+mode = "dc"
+[evcc.settings.limits]
+target_energy_wh = 5000
+departure_time_s = 28800
+
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)", "ScheduleSelected"]
+secc_log = ["schedule tuple 2 selected", "session: Stopped"]
