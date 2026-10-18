@@ -101,6 +101,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             _ => return self.end(EndReason::UnexpectedMessage),
         };
         self.check_evse_loop_limits(&mode);
+        let mobility_needs = self.take_mobility_needs(mode.departure_time, mode.minimum_soc, mode.target_soc);
         let status = ChargeLoopStatus {
             present_current: res.evse_present_current,
             present_voltage: res.evse_present_voltage,
@@ -111,6 +112,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             maximum_charge_current: mode.evse_maximum_charge_current,
             maximum_voltage: mode.evse_maximum_voltage,
             meter: res.meter_info.as_ref().map(reading),
+            mobility_needs,
         };
         self.after_charge_loop_res(res.evse_status, Notice::ChargeLoop(status), res.meter_info.as_ref(), res.receipt.as_ref(), tx)
     }
@@ -233,7 +235,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         if self.config.ac() {
             return self.send_ac_charge_loop_req(tx);
         }
-        let r = self.ev.schedule_request();
+        let r = self.request();
         let l = self.loop_limits();
         let control_mode = if self.config.bpt() {
             let d = self.loop_discharge_limits();
@@ -280,7 +282,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         self.send_then(State::AwaitChargeLoopRes, MsgKind::DcChargeLoopReq, framed)
     }
     fn send_ac_charge_loop_req(&mut self, tx: &mut [u8]) -> Step {
-        let r = self.ev.schedule_request();
+        let r = self.request();
         let l = self.loop_ac_limits();
         let l = AcPowerLimits { maximum_charge_power: self.lines(l.maximum_charge_power), minimum_charge_power: self.lines(l.minimum_charge_power) };
         let p = self.ev.ac_present_power();
@@ -453,6 +455,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             },
             _ => return self.end(EndReason::UnexpectedMessage),
         };
+        let mobility_needs = self.take_mobility_needs(mode.departure_time, mode.minimum_soc, mode.target_soc);
         let status = AcChargeLoopStatus {
             target_active_power: crate::ev::Phases { l1: mode.evse_target_active_power, l2: mode.evse_target_active_power_l2, l3: mode.evse_target_active_power_l3 },
             target_reactive_power: [mode.evse_target_reactive_power, mode.evse_target_reactive_power_l2, mode.evse_target_reactive_power_l3],
@@ -460,23 +463,34 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             target_frequency: res.evse_target_frequency,
             target_from_schedule: from_schedule,
             meter: res.meter_info.as_ref().map(reading),
+            mobility_needs,
         };
         self.after_charge_loop_res(res.evse_status, Notice::AcChargeLoop(status), res.meter_info.as_ref(), res.receipt.as_ref(), tx)
     }
 
-    /// The vehicle's `DisplayParameters` for a charge loop request.
+    /// The vehicle's `DisplayParameters` for a charge loop request: the present state of charge and
+    /// what [`Ev::display`] adds; with `MobilityNeedsMode` 2 also the minimum and target state of
+    /// charge in force, since the charger shows them to the driver.
     fn display_parameters(&self) -> Option<common_types::DisplayParameters> {
-        self.ev.present_soc().map(|soc| common_types::DisplayParameters {
-            present_soc: Some(soc.min(100) as i8),
-            minimum_soc: None,
-            target_soc: None,
-            maximum_soc: None,
-            remaining_time_to_minimum_soc: None,
-            remaining_time_to_target_soc: None,
-            remaining_time_to_maximum_soc: None,
-            charging_complete: None,
-            battery_energy_capacity: None,
-            inlet_hot: None,
+        let d = self.ev.display();
+        let present = self.ev.present_soc();
+        if present.is_none() && d == crate::ev::Display::default() && !self.config.mobility_needs_by_secc {
+            return None;
+        }
+        let percent = |v: u8| v.min(100) as i8;
+        let r = self.request();
+        let (minimum_soc, target_soc) = if self.config.mobility_needs_by_secc { (r.minimum_soc, r.target_soc) } else { (None, None) };
+        Some(common_types::DisplayParameters {
+            present_soc: present.map(percent),
+            minimum_soc: minimum_soc.map(percent),
+            target_soc: target_soc.map(percent),
+            maximum_soc: d.maximum_soc.map(percent),
+            remaining_time_to_minimum_soc: d.remaining_time_to_minimum_soc,
+            remaining_time_to_target_soc: d.remaining_time_to_target_soc,
+            remaining_time_to_maximum_soc: d.remaining_time_to_maximum_soc,
+            charging_complete: d.charging_complete,
+            battery_energy_capacity: d.battery_energy_capacity,
+            inlet_hot: d.inlet_hot,
         })
     }
 
@@ -505,7 +519,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     /// `PowerDeliveryReq` with the vehicle's power profile; on the side stream it ends a schedule
     /// renegotiation (V2G20-2317).
     pub(super) fn frame_power_delivery_req(&mut self, progress: common::ChargeProgress, payload_type: PayloadType, tx: &mut [u8]) -> Result<usize, ()> {
-        let r = self.ev.schedule_request();
+        let r = self.request();
         // Dynamic control mode (8.3.4.3.8.2): the fastest charging the vehicle can think of up to
         // its maximum energy request, at the lower of its own and the charger's maximum power,
         // both as announced in the charge parameter discovery.

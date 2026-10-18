@@ -107,6 +107,10 @@ pub enum Record<'a> {
     /// The schedule tuple the vehicle selected of those the charger offered (Scheduled mode), given the
     /// energy it needs and the seconds until it leaves.
     ScheduleSelected { tuple_id: u32, offered: usize, need_wh: u32, departure_s: u32 },
+    /// The charger provided mobility needs (`MobilityNeedsMode` 2); what it named, which the vehicle now uses.
+    MobilityNeedsFromSecc { needs: crate::ev::MobilityNeeds },
+    /// The charger named mobility needs although the vehicle did not choose `MobilityNeedsMode` 2.
+    MobilityNeedsIgnored { needs: crate::ev::MobilityNeeds },
     /// The energy transfer service and parameter set the EVSE accepted.
     ServiceSelected { service_id: u16, parameter_set_id: u16 },
     RxPayload { payload_type: u16, payload: &'a [u8] },
@@ -148,6 +152,8 @@ impl Record<'_> {
             | Record::AuthorizationSelected { .. }
             | Record::Iso2ServiceDetail { .. }
             | Record::ScheduleSelected { .. }
+            | Record::MobilityNeedsFromSecc { .. }
+            | Record::MobilityNeedsIgnored { .. }
             | Record::ServiceSelected { .. } => Level::Info,
             Record::Response { code, .. } if !crate::session::is_ok(*code) => Level::Info,
             Record::DinResponse { code, .. } if !crate::din::is_ok(*code) => Level::Info,

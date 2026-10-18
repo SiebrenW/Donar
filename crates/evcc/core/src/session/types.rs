@@ -244,6 +244,8 @@ pub struct ChargeLoopStatus {
     pub maximum_voltage: iso15118_20::common_types::RationalNumber,
     /// The meter reading of this answer, if it had one.
     pub meter: Option<MeterReading>,
+    /// The mobility needs this answer named, with `MobilityNeedsMode` 2 (and only what changed).
+    pub mobility_needs: Option<crate::ev::MobilityNeeds>,
 }
 
 /// The EVSE's side of one AC charge loop exchange (Dynamic control mode). A negative target
@@ -262,6 +264,8 @@ pub struct AcChargeLoopStatus {
     pub target_from_schedule: bool,
     /// The meter reading of this answer, if it had one.
     pub meter: Option<MeterReading>,
+    /// The mobility needs this answer named, with `MobilityNeedsMode` 2 (and only what changed).
+    pub mobility_needs: Option<crate::ev::MobilityNeeds>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

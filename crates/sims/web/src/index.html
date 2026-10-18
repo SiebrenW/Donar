@@ -907,7 +907,7 @@ function buildSim() {
     b.onclick = () => {
       for (const [k, v] of Object.entries(p.set)) setPath(sim.evcc, [k], v);
       // The other protocols' options go back to what they were.
-      if (p.id !== "iso20") { delete sim.evcc.bpt; delete sim.evcc.ac; delete sim.evcc.scheduled; }
+      if (p.id !== "iso20") { delete sim.evcc.bpt; delete sim.evcc.ac; delete sim.evcc.scheduled; delete sim.evcc.mobility_needs_by_secc; }
       if (p.set.protocol !== "iso15118-2") delete sim.evcc.iso2;
       if (p.id === "iso20") delete sim.evcc.connector;
       buildSim();
@@ -929,6 +929,10 @@ function buildSim() {
   const scheduled = $("input", { type: "checkbox", id: "sim-scheduled", checked: !!sim.evcc.scheduled });
   scheduled.onchange = () => { if (scheduled.checked) sim.evcc.scheduled = true; else delete sim.evcc.scheduled; };
   const scheduledLabel = $("label", { className: "inline ac-only", title: "Scheduled control mode: the car selects one of the charger's schedules and follows it" }, scheduled, "Scheduled");
+
+  const needs = $("input", { type: "checkbox", id: "sim-mobility-needs", checked: !!sim.evcc.mobility_needs_by_secc });
+  needs.onchange = () => { if (needs.checked) sim.evcc.mobility_needs_by_secc = true; else delete sim.evcc.mobility_needs_by_secc; };
+  const needsLabel = $("label", { className: "inline iso20-only", title: "MobilityNeedsMode 2: the charger may provide the departure time and the state of charge limits" }, needs, "Needs from charger");
 
   const primary = $("button", { id: "primary", className: "big", type: "button" });
   primary.onclick = () => (sim.view.running ? simCmd("ev", { cmd: "advance", to: "ended" }) : startSession(false));
@@ -984,7 +988,7 @@ function buildSim() {
 
   view.replaceChildren(
     $("div", { className: "bar" },
-      protocol, energy, v2gLabel, scheduledLabel,
+      protocol, energy, v2gLabel, scheduledLabel, needsLabel,
       $("div", { className: "row tight", style: "margin:0" }, checkbox("sim-tls", "tls", "TLS", "encrypt the connection"), checkbox("sim-slac", "slac", "SLAC", "match the vehicle to the charger over the powerline first"), $("label", { className: "inline" }, "Certificates", pki)),
       $("span", { className: "spacer" }),
       $("span", { id: "sim-status", className: "pill" }), primary, stepStart, close),
@@ -1067,7 +1071,7 @@ function applyView() {
   $id("step-start").disabled = busy;
   $id("sim-close").disabled = !v.open || v.opening;
   for (const id of ["sim-tls", "sim-slac", "sim-pki"]) $id(id).disabled = v.open || v.opening;
-  for (const b of [...$id("sim-protocol").children, ...$id("sim-energy").children, $id("sim-v2g"), $id("sim-scheduled")]) b.disabled = !!v.running;
+  for (const b of [...$id("sim-protocol").children, ...$id("sim-energy").children, $id("sim-v2g"), $id("sim-scheduled"), $id("sim-mobility-needs")]) b.disabled = !!v.running;
   $id("sim-held").textContent = !ev ? "" : ev.held ? `held before ${phaseName(ev.phase)}: click a phase to go on` : !v.running ? "" : ev.free_run ? "" : ev.stay && ev.phase === ev.target ? `staying in ${phaseName(ev.phase)}` : `running ${ev.stay ? "into" : "up to"} ${phaseName(ev.target)}`;
   if (document.activeElement !== $id("real-timers")) $id("real-timers").checked = !!ev?.real_timers;
   for (const [target, side] of [["ev", ev], ["evse", evse]]) {

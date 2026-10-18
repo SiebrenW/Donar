@@ -17,6 +17,8 @@ fn rn(exponent: i8, value: i16) -> RationalNumber {
 
 struct TestEv {
     clock: std::cell::Cell<u64>,
+    /// Offer energy in Scheduled mode.
+    offer: bool,
 }
 
 impl Ev for TestEv {
@@ -50,6 +52,9 @@ impl Ev for TestEv {
     fn schedule_request(&self) -> ScheduleRequest {
         ScheduleRequest { departure_time: 3600, minimum_soc: None, target_soc: Some(80), target_energy: rn(3, 40), maximum_energy: rn(3, 60), minimum_energy: rn(0, 0) }
     }
+    fn energy_offer(&self) -> Option<evcc_core::ev::EnergyOffer> {
+        self.offer.then(|| evcc_core::ev::EnergyOffer::new("EUR").power(1800, rn(3, 3)).power(1800, rn(3, 1)).price(3600, rn(-2, 30)))
+    }
 }
 
 static DC_PARAMS: [Parameter<'static>; 4] = [
@@ -72,7 +77,13 @@ static AC_SCHEDULED_PARAMS: [Parameter<'static>; 5] = [
     Parameter { name: "MobilityNeedsMode", choice: ParameterChoice::IntValue(1) },
     Parameter { name: "Pricing", choice: ParameterChoice::IntValue(0) },
 ];
-static DC_SETS: [ParameterSet<'static>; 1] = [ParameterSet { parameter_set_id: 1, parameter: &DC_PARAMS }];
+static DC_BY_SECC_PARAMS: [Parameter<'static>; 4] = [
+    Parameter { name: "Connector", choice: ParameterChoice::IntValue(1) },
+    Parameter { name: "ControlMode", choice: ParameterChoice::IntValue(2) },
+    Parameter { name: "MobilityNeedsMode", choice: ParameterChoice::IntValue(2) },
+    Parameter { name: "Pricing", choice: ParameterChoice::IntValue(0) },
+];
+static DC_SETS: [ParameterSet<'static>; 2] = [ParameterSet { parameter_set_id: 1, parameter: &DC_PARAMS }, ParameterSet { parameter_set_id: 2, parameter: &DC_BY_SECC_PARAMS }];
 static AC_SETS: [ParameterSet<'static>; 2] = [ParameterSet { parameter_set_id: 1, parameter: &AC_PARAMS }, ParameterSet { parameter_set_id: 2, parameter: &AC_SCHEDULED_PARAMS }];
 static SERVICES: [Service; 4] = [
     Service { service_id: 1, free_service: false },
@@ -99,6 +110,12 @@ struct TestCharger {
     confirmations: u32,
     ended: Option<evse_core::secc::Ended>,
     meter_id: String,
+    /// The parameter set with MobilityNeedsMode 2 was selected.
+    by_secc: bool,
+    /// What the charger saw of the vehicle: the energy offer (entries, price entries, the first fee) and the
+    /// display parameters of the last charge loop request.
+    offer: Option<(usize, usize, RationalNumber)>,
+    display: Option<iso15118_20::common_types::DisplayParameters>,
 }
 
 impl Secc for TestCharger {
@@ -203,6 +220,22 @@ impl Secc for TestCharger {
             ac::AcCpdResEnergyTransferModeChoice::Base(base)
         })
     }
+    fn service_selected(&mut self, selection: &iso15118_20::common::ServiceSelectionReq<'_>) {
+        self.by_secc = selection.selected_energy_transfer_service.service_id == 2 && selection.selected_energy_transfer_service.parameter_set_id == 2;
+    }
+    fn schedule_requested(&mut self, request: &iso15118_20::common::ScheduleExchangeReq<'_>) -> evse_core::MobilityNeeds {
+        if let iso15118_20::common::SeReqControlModeChoice::Scheduled(m) = &request.se_req_control_mode {
+            self.offer = m.ev_energy_offer.as_ref().map(|o| {
+                let stacks = o.ev_absolute_price_schedule.ev_price_rule_stacks.ev_price_rule_stack;
+                (o.ev_power_schedule.ev_power_schedule_entries.ev_power_schedule_entry.len(), stacks.len(), stacks[0].ev_price_rule[0].energy_fee)
+            });
+        }
+        if self.by_secc {
+            evse_core::MobilityNeeds { departure_time: Some(7200), minimum_soc: Some(20), target_soc: Some(90) }
+        } else {
+            evse_core::MobilityNeeds::default()
+        }
+    }
     fn schedule_tuples(&self) -> &[ScheduleTuple<'_>] {
         &TUPLES
     }
@@ -217,6 +250,7 @@ impl Secc for TestCharger {
     }
     fn dc_loop(&mut self, request: &dc::DcChargeLoopReq<'_>, bpt: bool) -> Option<DcLoopAnswer> {
         self.loops += 1;
+        self.display = request.display_parameters;
         let _ = bpt;
         let (maximum_current, mode) = match &request.cl_req_control_mode {
             dc::ClReqControlModeChoice::DynamicDc(m) => (m.ev_maximum_charge_current, dc::ClResControlModeChoice::DynamicDc(dc::DynamicDcClResControlMode {
@@ -458,7 +492,7 @@ fn config(base: Config) -> Config {
 
 #[test]
 fn a_dc_session_runs_to_the_stop() {
-    let (end, charger, state) = run(config(Config::DC_20), TestEv { clock: 1.into() }, 3);
+    let (end, charger, state) = run(config(Config::DC_20), TestEv { clock: 1.into(), offer: false }, 3);
     assert_eq!(end, EndReason::Completed);
     assert_eq!(state, State::Stopped);
     assert_eq!(charger.loops, 3);
@@ -468,21 +502,21 @@ fn a_dc_session_runs_to_the_stop() {
 
 #[test]
 fn a_bidirectional_dc_session() {
-    let (end, charger, state) = run(config(Config::DC_BPT_20), TestEv { clock: 1.into() }, 2);
+    let (end, charger, state) = run(config(Config::DC_BPT_20), TestEv { clock: 1.into(), offer: false }, 2);
     assert_eq!((end, state), (EndReason::Completed, State::Stopped));
     assert_eq!(charger.loops, 2);
 }
 
 #[test]
 fn an_ac_session_skips_the_dc_steps() {
-    let (end, charger, state) = run(config(Config::AC_20), TestEv { clock: 1.into() }, 3);
+    let (end, charger, state) = run(config(Config::AC_20), TestEv { clock: 1.into(), offer: false }, 3);
     assert_eq!((end, state), (EndReason::Completed, State::Stopped));
     assert_eq!((charger.loops, charger.cable_checks), (3, 0));
 }
 
 #[test]
 fn a_scheduled_ac_session_selects_the_offered_tuple() {
-    let (end, charger, state) = run(config(Config::AC_20.scheduled()), TestEv { clock: 1.into() }, 2);
+    let (end, charger, state) = run(config(Config::AC_20.scheduled()), TestEv { clock: 1.into(), offer: false }, 2);
     assert_eq!((end, state), (EndReason::Completed, State::Stopped));
     assert_eq!(charger.loops, 2);
 }
@@ -490,8 +524,39 @@ fn a_scheduled_ac_session_selects_the_offered_tuple() {
 #[test]
 fn a_plug_and_charge_session_confirms_the_metering() {
     let cfg = Config { prefer_pnc: true, request_meter_info: true, ..config(Config::DC_20) };
-    let (end, charger, state) = run(cfg, PnCEv(TestEv { clock: 1.into() }, FakeContract), 4);
+    let (end, charger, state) = run(cfg, PnCEv(TestEv { clock: 1.into(), offer: false }, FakeContract), 4);
     assert_eq!((end, state), (EndReason::Completed, State::Stopped));
     // The notification came with the second answer; the vehicle signed and the charger took it.
     assert_eq!(charger.confirmations, 1);
+}
+
+#[test]
+fn the_vehicle_offers_energy_in_the_scheduled_mode() {
+    let (end, charger, state) = run(config(Config::AC_20.scheduled()), TestEv { clock: 1.into(), offer: true }, 2);
+    assert_eq!((end, state), (EndReason::Completed, State::Stopped));
+    // Two power entries, one price: 0.30.
+    assert_eq!(charger.offer, Some((2, 1, rn(-2, 30))));
+}
+
+#[test]
+fn without_an_offer_the_vehicle_sends_none() {
+    let (_, charger, _) = run(config(Config::AC_20.scheduled()), TestEv { clock: 1.into(), offer: false }, 2);
+    assert_eq!(charger.offer, None);
+}
+
+#[test]
+fn the_charger_provides_the_mobility_needs_and_the_vehicle_takes_them() {
+    let (end, charger, state) = run(config(Config::DC_20.mobility_needs_by_secc()), TestEv { clock: 1.into(), offer: false }, 2);
+    assert_eq!((end, state), (EndReason::Completed, State::Stopped));
+    assert!(charger.by_secc);
+    // What the charger named is what the vehicle reports as its limits in the display parameters.
+    let display = charger.display.expect("display parameters in mode 2");
+    assert_eq!((display.minimum_soc, display.target_soc), (Some(20), Some(90)));
+}
+
+#[test]
+fn with_mobility_needs_from_the_vehicle_nothing_is_taken_from_the_charger() {
+    let (_, charger, _) = run(config(Config::DC_20), TestEv { clock: 1.into(), offer: false }, 2);
+    assert!(!charger.by_secc);
+    assert_eq!(charger.display, None);
 }

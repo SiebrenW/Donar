@@ -154,6 +154,23 @@ impl Ev for SimulatedEv {
     fn present_soc(&self) -> Option<u8> {
         self.live.as_ref().map(|l| l.present_soc().round_ties_even().clamp(0.0, 100.0) as u8)
     }
+    fn display(&self) -> evcc_core::ev::Display {
+        let l = self.limits();
+        let soc = self.live.as_ref().map(|live| live.present_soc());
+        evcc_core::ev::Display {
+            maximum_soc: Some(100),
+            // The XSD makes every element optional; the Python library insists on this one.
+            charging_complete: Some(soc.is_some_and(|s| s >= f64::from(l.target_soc))),
+            battery_energy_capacity: self.live.as_ref().map(|_| rn(live::CAPACITY_WH as u32)),
+            ..Default::default()
+        }
+    }
+    fn energy_offer(&self) -> Option<evcc_core::ev::EnergyOffer> {
+        let l = self.limits();
+        let watts = l.energy_offer_w?;
+        // The fee in cents per kWh is a RationalNumber of euros.
+        Some(evcc_core::ev::EnergyOffer::new("EUR").power(l.energy_offer_s.max(1), rn(watts)).price(l.energy_offer_s.max(1), RationalNumber { exponent: -2, value: l.energy_offer_fee_cents.min(i16::MAX as u32) as i16 }))
+    }
     fn dc_connector(&self) -> DcConnector {
         self.connector
     }

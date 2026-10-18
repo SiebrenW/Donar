@@ -71,6 +71,16 @@ pub struct DcLoopAnswer {
     pub status: Option<EvseStatus>,
 }
 
+/// What the charger names of the vehicle's mobility needs (`MobilityNeedsMode` 2): in the answer to the
+/// schedule exchange, and in the control mode of a charge loop answer. A field is left out when it is
+/// `None`. `departure_time` is seconds from the answer's time stamp.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MobilityNeeds {
+    pub departure_time: Option<u32>,
+    pub minimum_soc: Option<i8>,
+    pub target_soc: Option<i8>,
+}
+
 /// The same for an AC charge loop request.
 pub struct AcLoopAnswer {
     pub response_code: ResponseCode,
@@ -162,6 +172,13 @@ pub trait Secc {
     /// stream of a schedule renegotiation.
     fn schedule_ready(&mut self, _renegotiation: bool) -> Progress<()> {
         Progress::Done(())
+    }
+    /// The vehicle's energy request has been answered as `Finished`: its `ScheduleExchangeReq` (in Scheduled
+    /// mode with the `EVEnergyOffer`, if there is one). For the Dynamic control mode the return is what the
+    /// charger names of the mobility needs in the answer; with `MobilityNeedsMode` 2 it provides or
+    /// changes them (V2G20-1291), otherwise leave it at the default.
+    fn schedule_requested(&mut self, _request: &common::ScheduleExchangeReq<'_>) -> MobilityNeeds {
+        MobilityNeeds::default()
     }
     /// Scheduled control mode: the schedule tuples to offer (ids 1 to 255, V2G20-773), at most three.
     /// Empty in Dynamic mode.

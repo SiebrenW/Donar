@@ -174,6 +174,11 @@ pub struct Limits {
     /// In a BPT session: discharge (a negative `EVTargetEnergyRequest`) until the battery is at
     /// this state of charge (percent), then charge to `target_soc`. Needs the battery model.
     pub discharge_to_soc: Option<u8>,
+    /// Scheduled mode: offer this power (watts, fed back) for `energy_offer_s` seconds in the
+    /// `EVEnergyOffer`, asking `energy_offer_fee_cents` per kWh (in EUR). Needs `scheduled`.
+    pub energy_offer_w: Option<u32>,
+    pub energy_offer_s: u32,
+    pub energy_offer_fee_cents: u32,
 }
 
 impl Default for Limits {
@@ -201,6 +206,9 @@ impl Default for Limits {
             ac_min_discharge_power_w: 500,
             ac_phases: 3,
             discharge_to_soc: None,
+            energy_offer_w: None,
+            energy_offer_s: 3600,
+            energy_offer_fee_cents: 30,
         }
     }
 }
@@ -291,6 +299,10 @@ pub struct Settings {
     /// ISO 15118-20: ask the charger for its meter reading in every charge loop answer
     /// (`MeterInfoRequested`, V2G20-1081).
     pub request_meter_info: bool,
+    /// ISO 15118-20 Dynamic: select `MobilityNeedsMode` 2, the charger provides the mobility needs
+    /// (departure time, minimum and target state of charge), and the vehicle reports its display
+    /// parameters in full.
+    pub mobility_needs_by_secc: bool,
     /// ISO 15118-20: charge with the AC service (offering the AC schema) instead of DC.
     pub ac: bool,
     /// DIN SPEC 70121.
@@ -359,6 +371,7 @@ impl Default for Settings {
             scheduled: false,
             state_tolerance_always: false,
             request_meter_info: false,
+            mobility_needs_by_secc: false,
             din: Din::default(),
             iso2: Iso2::default(),
             slac: false,
@@ -458,7 +471,7 @@ impl Settings {
             (true, false) => evcc_core::session::Config::AC_20,
             (true, true) => evcc_core::session::Config::AC_BPT_20,
         };
-        let base = if self.ac && self.scheduled { base.scheduled() } else { base };
+        let base = if self.ac && self.scheduled { base.scheduled() } else if self.mobility_needs_by_secc { base.mobility_needs_by_secc() } else { base };
         let mut config = evcc_core::session::Config { allow_unsecured: self.tls.is_none(), prefer_pnc: self.pnc.is_some(), state_tolerance_always: self.state_tolerance_always, request_meter_info: self.request_meter_info, ..base };
         if let Some(ms) = self.poll_interval_ms {
             config.poll_interval_ms = ms;

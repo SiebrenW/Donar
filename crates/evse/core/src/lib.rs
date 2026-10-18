@@ -22,7 +22,7 @@
 pub mod secc;
 pub mod session;
 
-pub use secc::{Action, DcLoopAnswer, AcLoopAnswer, Progress, Secc};
+pub use secc::{Action, DcLoopAnswer, AcLoopAnswer, MobilityNeeds, Progress, Secc};
 pub use session::{Buffers, Session};
 
 /// The one timer of the machine: `V2G_SECC_Sequence_Timeout` (Table 215), the time the charger waits

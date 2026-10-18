@@ -1,0 +1,22 @@
+name = "dc-mobility-needs-evse"
+description = "ISO 15118-20 DC with MobilityNeedsMode 2: the vehicle selects the parameter set where the charger provides the mobility needs. The charger names a departure time and the minimum and target state of charge in its ScheduleExchangeRes; the vehicle takes them, and reports its display parameters in full in the charge loop."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session]
+mobility_departure_s = 7200
+mobility_minimum_soc = 20
+mobility_target_soc = 90
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+mobility_needs_by_secc = true
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)", "MobilityNeedsFromSecc"]
+secc_log = ["service 2 selected, parameter set 5", "mobility needs provided by the charger: departure Some(7200) s, minimum Some(20) %, target Some(90) %", "display parameters of the vehicle", "session: Stopped"]

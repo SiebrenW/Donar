@@ -485,6 +485,13 @@ pub struct Config {
     /// Scheduled control mode: offer prices with the schedules (tuple 1: 0.40 per kWh, tuple 2: 0.20), so that a
     /// vehicle that compares them has something to choose from.
     pub schedule_prices: bool,
+    /// With `MobilityNeedsMode` 2 the charger provides the mobility needs (a driver told it on a display
+    /// there): the departure time in seconds from the answer, the minimum and the target state of charge
+    /// in percent, named in the `ScheduleExchangeRes`. Left out when `None`. Parameter sets with that
+    /// mode are offered after the others (DC ids 5 to 8, AC ids 5 and 6).
+    pub mobility_departure_s: Option<u32>,
+    pub mobility_minimum_soc: Option<u8>,
+    pub mobility_target_soc: Option<u8>,
     /// Scheduled control mode: how long one entry of an offered power schedule lasts, in seconds.
     pub schedule_entry_s: u32,
     /// Response code of the `ServiceSelectionRes` for a valid selection.
@@ -572,20 +579,27 @@ impl Default for Config {
             // One set per inlet (Connector 1 to 4), ControlMode 2 (Dynamic), MobilityNeedsMode 1,
             // Pricing 0, so that any vehicle finds its own; the numbers are those of
             // ISO 15118-20:2022 Table 207.
-            parameter_sets: (1..=4)
-                .map(|connector| OfferedSet::new(connector as u16, [("Connector", connector), ("ControlMode", 2), ("MobilityNeedsMode", 1), ("Pricing", 0)]))
+            // Then the same with MobilityNeedsMode 2 (ids 5 to 8, V2G20-2663: Dynamic only).
+            parameter_sets: [1, 2]
+                .into_iter()
+                .flat_map(|mobility| (1..=4).map(move |connector| (mobility, connector)))
+                .enumerate()
+                .map(|(i, (mobility, connector))| OfferedSet::new(i as u16 + 1, [("Connector", connector), ("ControlMode", 2), ("MobilityNeedsMode", mobility), ("Pricing", 0)]))
                 .collect(),
             // Dynamic control for each connection (ids 1 and 2), then Scheduled (3 and 4).
-            ac_parameter_sets: [2, 1]
+            ac_parameter_sets: [(2, 1), (1, 1), (2, 2)]
                 .into_iter()
-                .flat_map(|mode| (1..=2).map(move |connector| (mode, connector)))
+                .flat_map(|(mode, mobility)| (1..=2).map(move |connector| (mode, mobility, connector)))
                 .enumerate()
-                .map(|(i, (mode, connector))| OfferedSet::new(i as u16 + 1, [("Connector", connector), ("EVSENominalVoltage", 400), ("ControlMode", mode), ("MobilityNeedsMode", 1), ("Pricing", 0)]))
+                .map(|(i, (mode, mobility, connector))| OfferedSet::new(i as u16 + 1, [("Connector", connector), ("EVSENominalVoltage", 400), ("ControlMode", mode), ("MobilityNeedsMode", mobility), ("Pricing", 0)]))
                 .collect(),
             meter_id: "DE*SIM*M0001".to_string(),
             meter_info_always: false,
             metering_confirmation_every_loops: None,
             receipt_every_loops: None,
+            mobility_departure_s: None,
+            mobility_minimum_soc: None,
+            mobility_target_soc: None,
             schedule_prices: false,
             schedule_entry_s: 3600,
             selection_code: ResponseCode::Ok,

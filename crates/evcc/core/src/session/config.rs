@@ -85,6 +85,8 @@ pub struct Config {
     /// Set `MeterInfoRequested` in the charge loop requests (V2G20-1081): the charger then sends its
     /// meter reading in every answer ([`super::MeterReading`] in the status).
     pub request_meter_info: bool,
+    /// `MobilityNeedsMode` 2 was selected ([`Config::mobility_needs_by_secc`]).
+    pub mobility_needs_by_secc: bool,
 }
 
 impl Config {
@@ -163,12 +165,21 @@ impl Config {
         scheduled: false,
         state_tolerance_always: false,
         request_meter_info: false,
+        mobility_needs_by_secc: false,
     };
 
     /// The same session in Scheduled control mode (ISO 15118-20:2022 Table 205: `ControlMode` 1
     /// with the mobility needs from the EVCC).
     pub const fn scheduled(self) -> Config {
         Config { scheduled: true, parameter_filter: &[("ControlMode", 1), ("MobilityNeedsMode", 1)], ..self }
+    }
+
+    /// The same session with `MobilityNeedsMode` 2: the charger may provide or change the mobility
+    /// needs (departure time and the state of charge limits), for instance from a display the driver
+    /// uses there. Only offered with Dynamic control mode (V2G20-2663). The vehicle reports its
+    /// display parameters in full and takes what the charger names.
+    pub const fn mobility_needs_by_secc(self) -> Config {
+        Config { mobility_needs_by_secc: true, scheduled: false, parameter_filter: &[("ControlMode", 2), ("MobilityNeedsMode", 2)], ..self }
     }
 }
 

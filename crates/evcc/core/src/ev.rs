@@ -91,6 +91,99 @@ pub struct ScheduleRequest {
     pub minimum_energy: RationalNumber,
 }
 
+/// The mobility needs the charger provided or changed (`MobilityNeedsMode` 2), as it states them in
+/// `ScheduleExchangeRes` and the charge loop answers; a field is `None` when it did not name it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MobilityNeeds {
+    /// Seconds from the time stamp of the answer that named it.
+    pub departure_time: Option<u32>,
+    pub minimum_soc: Option<u8>,
+    pub target_soc: Option<u8>,
+}
+
+/// The rest of the vehicle's `DisplayParameters` (8.3.5.3.28), which a charger that shows the
+/// charging state to the driver needs; mandatory for `MobilityNeedsMode` 2. The present, minimum and
+/// target state of charge come from [`Ev::present_soc`] and the mobility needs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Display {
+    pub maximum_soc: Option<u8>,
+    pub remaining_time_to_minimum_soc: Option<u32>,
+    pub remaining_time_to_target_soc: Option<u32>,
+    pub remaining_time_to_maximum_soc: Option<u32>,
+    pub charging_complete: Option<bool>,
+    pub battery_energy_capacity: Option<RationalNumber>,
+    pub inlet_hot: Option<bool>,
+}
+
+/// `EVEnergyOffer` of the Scheduled control mode (8.3.5.3.20): what the vehicle is prepared to
+/// feed back, as a power schedule and the prices it asks for it. The time anchor of both is the
+/// moment the message is sent. Built with [`EnergyOffer::new`], [`power`](EnergyOffer::power) and
+/// [`price`](EnergyOffer::price); at most [`EnergyOffer::CAPACITY`] of each go on the wire, and each
+/// price is one rule stack with a single rule from power range start 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnergyOffer {
+    /// ISO 4217 currency code of the prices.
+    pub currency: &'static str,
+    /// For instance [`EnergyOffer::PRICE_PER_POWER`].
+    pub price_algorithm: &'static str,
+    power: [iso15118_20::common::EvPowerScheduleEntry; Self::CAPACITY],
+    power_len: usize,
+    prices: [OfferedPrice; Self::CAPACITY],
+    prices_len: usize,
+}
+
+/// One price of an [`EnergyOffer`]: the fee per kWh for a duration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OfferedPrice {
+    pub duration: u32,
+    pub energy_fee: RationalNumber,
+}
+
+impl EnergyOffer {
+    pub const CAPACITY: usize = 8;
+    /// The price algorithm of ISO 15118-20 Table 76 that prices energy by power range.
+    pub const PRICE_PER_POWER: &'static str = "urn:iso:std:iso:15118:-20:PriceAlgorithm:1-Power";
+
+    const NONE: RationalNumber = RationalNumber { exponent: 0, value: 0 };
+
+    pub const fn new(currency: &'static str) -> Self {
+        Self {
+            currency,
+            price_algorithm: Self::PRICE_PER_POWER,
+            power: [iso15118_20::common::EvPowerScheduleEntry { duration: 0, power: Self::NONE }; Self::CAPACITY],
+            power_len: 0,
+            prices: [OfferedPrice { duration: 0, energy_fee: Self::NONE }; Self::CAPACITY],
+            prices_len: 0,
+        }
+    }
+
+    /// Offers `power` (positive: fed back) for `duration` seconds after the previous entry.
+    pub fn power(mut self, duration: u32, power: RationalNumber) -> Self {
+        if self.power_len < Self::CAPACITY {
+            self.power[self.power_len] = iso15118_20::common::EvPowerScheduleEntry { duration, power };
+            self.power_len += 1;
+        }
+        self
+    }
+
+    /// Asks `energy_fee` per kWh for `duration` seconds after the previous price.
+    pub fn price(mut self, duration: u32, energy_fee: RationalNumber) -> Self {
+        if self.prices_len < Self::CAPACITY {
+            self.prices[self.prices_len] = OfferedPrice { duration, energy_fee };
+            self.prices_len += 1;
+        }
+        self
+    }
+
+    pub fn power_entries(&self) -> &[iso15118_20::common::EvPowerScheduleEntry] {
+        &self.power[..self.power_len]
+    }
+
+    pub fn prices(&self) -> &[OfferedPrice] {
+        &self.prices[..self.prices_len]
+    }
+}
+
 /// Value of the DC service parameter `Connector` (ISO 15118-20:2022 Table 207).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -246,6 +339,14 @@ pub trait Ev {
     /// The present state of charge in percent, reported in the charge loop (`DisplayParameters`)
     /// when the vehicle knows it.
     fn present_soc(&self) -> Option<u8> {
+        None
+    }
+    /// The other display parameters ([`Display`]), sent next to the present state of charge.
+    fn display(&self) -> Display {
+        Display::default()
+    }
+    /// The energy the vehicle offers in Scheduled control mode (`EVEnergyOffer`); `None` offers none.
+    fn energy_offer(&self) -> Option<EnergyOffer> {
         None
     }
 }

@@ -102,6 +102,10 @@ struct Machine<E, L> {
     /// first entry (what the vehicle draws when the charger names no target).
     selected_tuple: u32,
     schedule: schedule::Schedule,
+    /// `MobilityNeedsMode` 2: what the charger named of the departure time, the minimum and the target
+    /// state of charge, and the vehicle's clock (microseconds) when it did.
+    mobility: crate::ev::MobilityNeeds,
+    mobility_at: u64,
     /// The connector of the selected AC parameter set is ThreePhase (V2G20-1815 to 1818: the
     /// phase specific elements are used, or not, accordingly).
     ac_three_phase: bool,
@@ -152,6 +156,8 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 evse_announced: None,
                 selected_tuple: 0,
                 schedule: schedule::Schedule::NONE,
+                mobility: crate::ev::MobilityNeeds::default(),
+                mobility_at: 0,
                 ac_three_phase: false,
                 tolerance_offered: false,
                 ev_announced_ac: None,
@@ -170,6 +176,12 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
     /// The outgoing message buffer; valid up to `Step::send` after a step.
     pub fn tx(&self) -> &[u8] {
         self.tx
+    }
+
+    /// The mobility needs the charger named (`MobilityNeedsMode` 2): the latest value of each field.
+    /// The departure time is as it was received.
+    pub fn mobility_needs(&self) -> crate::ev::MobilityNeeds {
+        self.m.mobility
     }
 
     pub fn state(&self) -> State {

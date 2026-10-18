@@ -64,6 +64,8 @@ mod run {
         ac_bpt => "ac-bpt",
         ac_scheduled => "ac-scheduled",
         ac_scheduled_prices => "ac-scheduled-prices",
+        ac_scheduled_energy_offer => "ac-scheduled-energy-offer",
+        dc_mobility_needs_evse => "dc-mobility-needs-evse",
         dc_slac => "dc-slac",
         slac_too_far => "slac-too-far",
         dc_tls_slac => "dc-tls-slac",

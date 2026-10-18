@@ -6,7 +6,7 @@ use std::cell::Cell;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use evse_core::secc::{AcLoopAnswer, Action, Authorize, DcLoopAnswer, Ended, Progress, Request, Secc, Signed};
+use evse_core::secc::{AcLoopAnswer, Action, MobilityNeeds, Authorize, DcLoopAnswer, Ended, Progress, Request, Secc, Signed};
 use iso15118_20::ResponseMessage;
 use iso15118_20::ac;
 use iso15118_20::common::{
@@ -121,6 +121,9 @@ pub(crate) struct SimSecc {
     /// The reading of the last `MeterInfo` sent, which a confirmation has to repeat.
     last_reading: Cell<Option<u64>>,
     receipt_due: Cell<bool>,
+    /// The selected parameter set has `MobilityNeedsMode` 2, and the vehicle's display parameters were noted.
+    mobility_by_secc: bool,
+    display_noted: bool,
 }
 
 impl SimSecc {
@@ -164,6 +167,8 @@ impl SimSecc {
             confirmation_outstanding: false,
             last_reading: Cell::new(None),
             receipt_due: Cell::new(false),
+            mobility_by_secc: false,
+            display_noted: false,
         };
         s.set_config(config);
         s
@@ -190,6 +195,17 @@ impl SimSecc {
     fn set_for(&self, service_id: u16, id: u16) -> Option<&OfferedSet> {
         let sets = if matches!(service_id, SERVICE_AC | SERVICE_AC_BPT) { &self.config.ac_parameter_sets } else { &self.config.parameter_sets };
         sets.iter().find(|s| s.id == id)
+    }
+
+    /// With `MobilityNeedsMode` 2 the vehicle has to show its display parameters (8.3.5.3.28): note the first.
+    fn note_display(&mut self, display: Option<&iso15118_20::common_types::DisplayParameters>) {
+        if self.mobility_by_secc && !self.display_noted {
+            self.display_noted = true;
+            match display {
+                Some(d) => self.note(format!("display parameters of the vehicle: {d:?}")),
+                None => self.note("the vehicle sent no display parameters although MobilityNeedsMode 2 needs them"),
+            }
+        }
     }
 
     /// The notification the next charge loop answer carries, if the config calls for one.
@@ -512,6 +528,7 @@ impl Secc for SimSecc {
         let set = self.set_for(service_id, parameter_set_id).cloned();
         self.scheduled = set.as_ref().and_then(|s| parameter(s, "ControlMode")) == Some(1);
         self.ac_three = set.as_ref().and_then(|s| parameter(s, "Connector")) == Some(2);
+        self.mobility_by_secc = set.as_ref().and_then(|s| parameter(s, "MobilityNeedsMode")) == Some(2);
         if let Some(volts) = set.as_ref().and_then(|s| parameter(s, "EVSENominalVoltage")) {
             self.ac_voltage = f64::from(volts);
         }
@@ -621,6 +638,26 @@ impl Secc for SimSecc {
         Progress::Done(())
     }
 
+    fn schedule_requested(&mut self, request: &common::ScheduleExchangeReq<'_>) -> MobilityNeeds {
+        if let common::SeReqControlModeChoice::Scheduled(m) = &request.se_req_control_mode {
+            if let Some(offer) = &m.ev_energy_offer {
+                let entries = offer.ev_power_schedule.ev_power_schedule_entries.ev_power_schedule_entry;
+                let peak = entries.iter().map(|e| e.power.to_f64()).fold(f64::MIN, f64::max);
+                let seconds: u32 = entries.iter().map(|e| e.duration).sum();
+                self.note(format!("the vehicle offers energy: {} entries, up to {peak} W for {seconds} s, prices in {}", entries.len(), offer.ev_absolute_price_schedule.currency));
+            }
+        }
+        if !self.mobility_by_secc {
+            return MobilityNeeds::default();
+        }
+        let c = &self.config;
+        let needs = MobilityNeeds { departure_time: c.mobility_departure_s, minimum_soc: c.mobility_minimum_soc.map(|v| v as i8), target_soc: c.mobility_target_soc.map(|v| v as i8) };
+        if needs != MobilityNeeds::default() {
+            self.note(format!("mobility needs provided by the charger: departure {:?} s, minimum {:?} %, target {:?} %", needs.departure_time, needs.minimum_soc, needs.target_soc));
+        }
+        needs
+    }
+
     fn schedule_tuples(&self) -> &[ScheduleTuple<'_>] {
         &self.tuples
     }
@@ -686,6 +723,7 @@ impl Secc for SimSecc {
 
     fn dc_loop(&mut self, request: &dc::DcChargeLoopReq<'_>, bpt: bool) -> Option<DcLoopAnswer> {
         self.loops_seen += 1;
+        self.note_display(request.display_parameters.as_ref());
         let notification = self.loop_notification();
         let rn = |value: u32| RationalNumber::from_f64(f64::from(value));
         let l = self.limits();
@@ -781,6 +819,7 @@ impl Secc for SimSecc {
     /// asks to discharge (a negative `EVTargetEnergyRequest`, as in DC).
     fn ac_loop(&mut self, request: &ac::AcChargeLoopReq<'_>, bpt: bool) -> Option<AcLoopAnswer> {
         self.loops_seen += 1;
+        self.note_display(request.display_parameters.as_ref());
         let notification = self.loop_notification();
         let l = self.limits();
         let mut code = ResponseCode::Ok;

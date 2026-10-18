@@ -983,10 +983,11 @@ impl<S: Secc> Machine<S> {
             // AC has no cable check or pre-charge: the power delivery follows.
             self.goto(if self.ac() { State::AwaitPowerDeliveryReq } else { State::AwaitCableCheckReq });
         }
+        let needs = if !ongoing && is_ok(code) { self.secc.schedule_requested(req) } else { Default::default() };
         let control = if self.scheduled {
             common::SeResControlModeChoice::Scheduled(common::ScheduledSeResControlMode { schedule_tuple: self.secc.schedule_tuples() })
         } else {
-            common::SeResControlModeChoice::Dynamic(common::DynamicSeResControlMode { departure_time: None, minimum_soc: None, target_soc: None, schedule: None })
+            common::SeResControlModeChoice::Dynamic(common::DynamicSeResControlMode { departure_time: needs.departure_time, minimum_soc: needs.minimum_soc, target_soc: needs.target_soc, schedule: None })
         };
         let res = common::ScheduleExchangeRes { header, response_code: code, evse_processing: processing, go_to_pause: None, se_res_control_mode: control };
         let framed = frame(out, payload_type, |o| res.encode(o));

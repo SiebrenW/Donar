@@ -419,6 +419,7 @@ mod tests {
             maximum_charge_current: rn(200.0),
             maximum_voltage: rn(450.0),
             meter: None,
+            mobility_needs: None,
         }
     }
 
@@ -473,6 +474,7 @@ mod tests {
             target_frequency: None,
             target_from_schedule: from_schedule,
             meter: None,
+            mobility_needs: None,
         };
         live.ac_charge_loop(&status(true));
         std::thread::sleep(std::time::Duration::from_millis(20));

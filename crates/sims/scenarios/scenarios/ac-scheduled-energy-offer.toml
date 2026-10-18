@@ -1,0 +1,21 @@
+name = "ac-scheduled-energy-offer"
+description = "ISO 15118-20 AC in Scheduled control mode with an EVEnergyOffer: the vehicle offers 3 kW back for an hour at 0.30 EUR per kWh next to its energy request, and the charger receives it."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+ac = true
+scheduled = true
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+[evcc.settings.limits]
+energy_offer_w = 3000
+
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)"]
+secc_log = ["the vehicle offers energy: 1 entries, up to 3000 W for 3600 s, prices in EUR", "session: Stopped"]

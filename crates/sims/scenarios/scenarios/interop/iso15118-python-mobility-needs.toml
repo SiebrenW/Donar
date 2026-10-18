@@ -1,0 +1,16 @@
+name = "interop-iso15118-python-mobility-needs"
+description = "The simulated vehicle selects MobilityNeedsMode 2 (the charger may provide the mobility needs) against the SECC of the Python iso15118 library: ISO 15118-20 AC, Dynamic control mode, with the display parameters in full."
+timeout_s = 60
+
+[secc]
+kind = "iso15118-python"
+protocols = "ISO_15118_20_AC"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+ac = true
+mobility_needs_by_secc = true
+
+[expect]
+evcc_log = ["session: Ended(Completed)"]
