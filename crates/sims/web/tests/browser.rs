@@ -235,7 +235,7 @@ fn every_choice_of_the_simulation_page_can_be_made() {
 fn the_scenarios_page_lists_the_scenarios() {
     let server = start();
     let Some(mut b) = open(&server, "") else { return };
-    b.wait_for("the scenario list", "document.body.innerText.includes('dc-plain')");
+    b.wait_for("the scenario list", "(document.body && document.body.innerText.includes('dc-plain'))");
     b.assert_no_errors("while building the scenarios page");
     // The tabs switch without errors.
     b.eval("location.hash = '#simulation'");
