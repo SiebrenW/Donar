@@ -37,11 +37,12 @@ impl Report {
     /// The failures with both logs, for a test failure or the command line.
     pub fn describe(&self) -> String {
         format!(
-            "{}\n----- secc log -----\n{}\n----- evcc log -----\n{}\nartifacts: {}",
+            "{}\n----- secc log -----\n{}\n----- evcc log -----\n{}\nartifacts: {}{}",
             self.failures.join("\n"),
             tail(&self.secc_log, 60),
             tail(&self.evcc_log, 60),
-            self.artifacts.display()
+            self.artifacts.display(),
+            self.pcap.as_ref().map_or(String::new(), |p| format!("\ncapture: {}", p.display()))
         )
     }
 }

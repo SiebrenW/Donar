@@ -38,7 +38,7 @@ fn main() -> std::process::ExitCode {
         };
         eprintln!("running {} ({file})", scenario.name);
         match scenarios::runner::run_with(&scenario, options.clone()) {
-            Ok(report) if report.passed() => println!("PASS {}  (artifacts: {})", scenario.name, report.artifacts.display()),
+            Ok(report) if report.passed() => println!("PASS {}  (artifacts: {}{})", scenario.name, report.artifacts.display(), report.pcap.as_ref().map_or(String::new(), |p| format!(", capture: {}", p.display()))),
             Ok(report) => {
                 failed += 1;
                 println!("FAIL {}\n{}", scenario.name, report.describe());

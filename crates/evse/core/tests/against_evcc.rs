@@ -437,6 +437,9 @@ struct Rig<'a, E: Ev> {
     loops: u32,
     stop_after: u32,
     closed: bool,
+    /// The vehicle's next request is held back when the charger is in this state.
+    halt_at: Option<State>,
+    halted: bool,
 }
 
 impl<E: Ev> Rig<'_, E> {
@@ -463,6 +466,10 @@ impl<E: Ev> Rig<'_, E> {
             }
         }
         if let Some(n) = step.send {
+            if self.halt_at == Some(self.charger.state()) {
+                self.halted = true;
+                return;
+            }
             let frames = self.vehicle.tx()[..n].to_vec();
             let space = self.charger.rx_space(self.charger_buffers.rx);
             space[..frames.len()].copy_from_slice(&frames);
@@ -494,7 +501,7 @@ fn run_with<E: Ev>(secc: TestCharger, config: Config, ev: E, stop_after: u32) ->
     let mut charger_buffers = Buffers { rx: &mut srx, tx: &mut stx, arena: &mut sarena, scratch: &mut sscratch };
     let mut charger = Session::new(secc);
     charger.handle(Event::Connected { secured: true }, &mut charger_buffers);
-    let mut rig = Rig { vehicle, charger, charger_buffers, ended: None, loops: 0, stop_after, closed: false };
+    let mut rig = Rig { vehicle, charger, charger_buffers, ended: None, loops: 0, stop_after, closed: false, halt_at: None, halted: false };
     let start = rig.vehicle.handle(EvEvent::Start { secured: true });
     rig.process(start);
     for _ in 0..200 {
@@ -610,4 +617,94 @@ fn a_charger_without_power_sends_the_vehicle_to_a_pause_before_the_cable_check()
     // A vehicle that does not follow it asks for the cable check anyway, which the charger does not expect now.
     let (end, _, _) = run_with(TestCharger { no_power: true, ..Default::default() }, Config { follow_go_to_pause: false, ..config(Config::DC_20) }, TestEv { clock: 1.into(), offer: false, v2x: false }, 2);
     assert!(matches!(end, EndReason::Rejected(_)), "{end:?}");
+}
+
+/// Runs the vehicle until the charger is in `state` and holds back its next request; then a `SessionStopReq`
+/// of the given kind (with the session's id, or another one) goes to the charger. Returns the charger's answer
+/// as response code and whether it closes, the charger's state, and how the session ended for the host.
+fn stop_request_at(state: State, kind: iso15118_20::common::ChargingSession, session_id: [u8; 8]) -> (Option<ResponseCode>, bool, State, Option<evse_core::secc::Ended>) {
+    use iso15118_20::common_types::MessageHeader;
+    let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
+    let ev = TestEv { clock: 1.into(), offer: false, v2x: false };
+    let vehicle = EvSession::new(config(Config::DC_20), ev, NoLog, EvBuffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
+    let (mut srx, mut stx, mut sarena, mut sscratch) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768], vec![0u8; 8192]);
+    let mut charger_buffers = Buffers { rx: &mut srx, tx: &mut stx, arena: &mut sarena, scratch: &mut sscratch };
+    let mut charger = Session::new(TestCharger::default());
+    charger.handle(Event::Connected { secured: true }, &mut charger_buffers);
+    let mut rig = Rig { vehicle, charger, charger_buffers, ended: None, loops: 0, stop_after: 1, closed: false, halt_at: Some(state), halted: false };
+    let start = rig.vehicle.handle(EvEvent::Start { secured: true });
+    rig.process(start);
+    for _ in 0..200 {
+        if rig.halted || rig.ended.is_some() || rig.closed {
+            break;
+        }
+        let s = rig.vehicle.handle(EvEvent::TimerExpired(evcc_core::Timer::Poll));
+        rig.process(s);
+    }
+    assert!(rig.halted, "the charger never reached {state:?}");
+    // The request, framed as the vehicle would send it.
+    let mut payload = [0u8; 64];
+    let n = iso15118_20::common::SessionStopReq { header: MessageHeader::new(session_id, 1), charging_session: kind, ev_termination_code: None, ev_termination_explanation: None }.encode(&mut payload).unwrap();
+    let mut frame = vec![0x01, 0xFE, 0x80, 0x02];
+    frame.extend_from_slice(&(n as u32).to_be_bytes());
+    frame.extend_from_slice(&payload[..n]);
+    let space = rig.charger.rx_space(rig.charger_buffers.rx);
+    space[..frame.len()].copy_from_slice(&frame);
+    let reply = rig.charger.handle(Event::Received(frame.len()), &mut rig.charger_buffers);
+    let code = (reply.send > 8).then(|| {
+        let arena_mem = &mut [0u8; 4096];
+        let arena = exi::Arena::new(arena_mem);
+        match iso15118_20::common::decode(&rig.charger_buffers.tx[8..reply.send], &arena).unwrap() {
+            iso15118_20::common::Message::SessionStopRes(r) => r.response_code,
+            // The failing response of another type (a request out of turn).
+            other => panic!("{other:?}"),
+        }
+    });
+    let ended = rig.charger.secc_mut().ended;
+    (code, reply.close, rig.charger.state(), ended)
+}
+
+#[test]
+fn a_session_stop_is_taken_wherever_the_power_is_not_on() {
+    use iso15118_20::common::ChargingSession::Terminate;
+    // V2G20-2645 and the stopping states (V2G20-920 to 922): every state after the setup but the charge loop.
+    for state in [
+        State::AwaitAuthorizationSetupReq,
+        State::AwaitAuthorizationReq,
+        State::AwaitServiceDiscoveryReq,
+        State::AwaitServiceSelectionReq,
+        State::AwaitChargeParameterDiscoveryReq,
+        State::AwaitScheduleExchangeReq,
+        State::AwaitCableCheckReq,
+        State::AwaitPreChargeReq,
+        State::AwaitPowerDeliveryReq,
+        State::AwaitWeldingReq,
+    ] {
+        let (code, close, now, ended) = stop_request_at(state, Terminate, [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(code, Some(ResponseCode::Ok), "{state:?}");
+        assert!(close, "{state:?}");
+        assert_eq!(now, State::Stopped, "{state:?}");
+        assert_eq!(ended, Some(evse_core::secc::Ended::Stopped(Terminate)), "{state:?}");
+    }
+}
+
+#[test]
+fn an_early_session_stop_can_pause_but_not_renegotiate_the_services() {
+    use iso15118_20::common::ChargingSession::{Pause, ServiceRenegotiation};
+    let (code, close, now, _) = stop_request_at(State::AwaitCableCheckReq, Pause, [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!((code, close, now), (Some(ResponseCode::Ok), true, State::Paused));
+    // A renegotiation follows the orderly stop only: elsewhere it is a request out of turn.
+    let (code, close, now, ended) = stop_request_at(State::AwaitCableCheckReq, ServiceRenegotiation, [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!((code, close, now, ended), (Some(ResponseCode::FailedSequenceError), true, State::Closed, None));
+}
+
+#[test]
+fn a_session_stop_with_another_session_id_is_refused_and_during_the_charge_loop_it_is_out_of_turn() {
+    use iso15118_20::common::ChargingSession::Terminate;
+    let (code, close, now, ended) = stop_request_at(State::AwaitPreChargeReq, Terminate, [9; 8]);
+    assert_eq!((code, close, ended), (Some(ResponseCode::FailedUnknownSession), true, None));
+    assert_eq!(now, State::Closed);
+    // The power is on: the power delivery has to stop first (V2G20-1546 ff.).
+    let (code, close, now, ended) = stop_request_at(State::ChargeLoop, Terminate, [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!((code, close, now, ended), (Some(ResponseCode::FailedSequenceError), true, State::Closed, None));
 }

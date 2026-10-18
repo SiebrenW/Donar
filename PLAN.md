@@ -32,7 +32,7 @@ Independent checks exist against the Python `iso15118` library (-20 DC, AC, BPT,
 
 ### Protocol, charger
 
-- `evse-core` -20: accept `SessionStopReq` from any state (now only after the power delivery stopped); value-added services; an end-to-end test of a failing metering signature.
+- `evse-core` -20: value-added services; an end-to-end test of a failing metering signature. A `SessionStopReq` is taken in every state after the setup except the charge loop (as in the DIN and ISO 15118-2 cores); the charger does not check the control pilot (V2G20-920 to 922).
 - DIN: the 60 s `V2G_SECC_Sequence_Timeout`, watching the control pilot.
 - Charger simulator: acting on an `EVEnergyOffer` (it only logs it), an offer with several rules per stack, live mobility-needs changes in the loop, a cable voltage drop (V2G20-2185 note 2), the early-stop and pause paths of -2, certificate revocation for the contract.
 
@@ -72,7 +72,7 @@ Independent checks exist against the Python `iso15118` library (-20 DC, AC, BPT,
 
 ### Web UI and simulation page
 
-- Captures: a download of `capture.pcap` from the web UI (runs and simulations); the simulation page does not capture yet; the charger simulator does not disclose in the runner (the vehicle's secrets suffice); a Python-partner TLS run is decryptable only because our vehicle is the client.
+- Captures: the simulation page does not capture yet (the runs of the Scenarios tab do: the path of `capture.pcap` is in the result); the charger simulator does not disclose in the runner (the vehicle's secrets suffice); a Python-partner TLS run is decryptable only because our vehicle is the client.
 - Stopping a run (killing the runner would leave namespaces behind), saving an edited scenario to a file, several runs at once, authentication (localhost only).
 - The Scenarios tab keeps its plain form; SLAC and SDP are not phases to hold at, and SLAC in the simulation is untested.
 - Fault injection to drop the connection or delay a response.

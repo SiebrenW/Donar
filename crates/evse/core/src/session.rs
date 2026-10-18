@@ -511,9 +511,53 @@ impl<S: Secc> Machine<S> {
         r
     }
 
+    /// Whether a `SessionStopReq` is taken in the current state. After `SessionSetupRes` the vehicle may end the
+    /// session at any point where the power is not on (V2G20-2645 from the setup until the power delivery starts,
+    /// V2G20-920 to 922 in the welding detection and after it), as the charger cores of the other protocols
+    /// do. During the charge loop the power delivery has to stop first, so a stop there is out of turn.
+    fn takes_session_stop(&self, req: &common::SessionStopReq<'_>) -> bool {
+        match self.state {
+            State::AwaitSessionStopReq => true,
+            State::AwaitSupportedAppProtocolReq | State::AwaitSessionSetupReq | State::ChargeLoop | State::Stopped | State::Paused | State::Closed => false,
+            // A renegotiation of the services follows the orderly stop only.
+            _ => req.charging_session != ChargingSession::ServiceRenegotiation,
+        }
+    }
+
+    fn session_stop(&mut self, req: common::SessionStopReq<'_>, out: &mut [u8]) -> Reply {
+        let main = PayloadType::MAINSTREAM;
+        let renegotiation = req.charging_session == ChargingSession::ServiceRenegotiation;
+        let mut code = if self.unknown_session(req.header.session_id) { ResponseCode::FailedUnknownSession } else { ResponseCode::Ok };
+        // V2G20-1643, V2G20-1955.
+        if renegotiation && is_ok(code) && !self.secc.accept_service_renegotiation() {
+            code = ResponseCode::FailedNoServiceRenegotiationSupported;
+        }
+        let code = self.code(M::SessionStop, code);
+        let header = self.header();
+        let res = common::SessionStopRes { header, response_code: code };
+        if is_ok(code) {
+            self.secc.session_ended(Ended::Stopped(req.charging_session));
+            if renegotiation {
+                // The connection and the authorization stay; the service flow starts over.
+                self.standby = false;
+                self.goto(State::AwaitServiceDiscoveryReq);
+                return reply(frame(out, main, |o| res.encode(o)), false);
+            }
+            self.goto(if req.charging_session == ChargingSession::Pause { State::Paused } else { State::Stopped });
+            return reply(frame(out, main, |o| res.encode(o)), true);
+        }
+        self.main_reply(out, main, |o| res.encode(o), true)
+    }
+
     fn on_main(&mut self, request: Request<'_>, scratch: &mut [u8], out: &mut [u8]) -> Reply {
         use common::Message as C;
         let main = PayloadType::MAINSTREAM;
+        if let Request::Common(C::SessionStopReq(req)) = &request {
+            if self.takes_session_stop(req) {
+                let req = *req;
+                return self.session_stop(req, out);
+            }
+        }
         match (self.state, request) {
             (State::AwaitSessionSetupReq, Request::Common(C::SessionSetupReq(req))) => {
                 let asked = req.header.session_id;
@@ -858,29 +902,6 @@ impl<S: Secc> Machine<S> {
                 }
                 let res = dc::DcWeldingDetectionRes { header, response_code: code, evse_present_voltage: voltage };
                 self.main_reply(out, PayloadType::DC_MAINSTREAM, |o| res.encode(o), !is_ok(code))
-            }
-            (State::AwaitSessionStopReq, Request::Common(C::SessionStopReq(req))) => {
-                let renegotiation = req.charging_session == ChargingSession::ServiceRenegotiation;
-                let mut code = if self.unknown_session(req.header.session_id) { ResponseCode::FailedUnknownSession } else { ResponseCode::Ok };
-                // V2G20-1643, V2G20-1955.
-                if renegotiation && is_ok(code) && !self.secc.accept_service_renegotiation() {
-                    code = ResponseCode::FailedNoServiceRenegotiationSupported;
-                }
-                let code = self.code(M::SessionStop, code);
-                let header = self.header();
-                let res = common::SessionStopRes { header, response_code: code };
-                if is_ok(code) {
-                    self.secc.session_ended(Ended::Stopped(req.charging_session));
-                    if renegotiation {
-                        // The connection and the authorization stay; the service flow starts over.
-                        self.standby = false;
-                        self.goto(State::AwaitServiceDiscoveryReq);
-                        return reply(frame(out, main, |o| res.encode(o)), false);
-                    }
-                    self.goto(if req.charging_session == ChargingSession::Pause { State::Paused } else { State::Stopped });
-                    return reply(frame(out, main, |o| res.encode(o)), true);
-                }
-                self.main_reply(out, main, |o| res.encode(o), true)
             }
             (_, other) => self.out_of_turn(&other, out),
         }
