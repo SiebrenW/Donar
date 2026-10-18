@@ -230,10 +230,7 @@ pub fn run_with_pilot(
                 break Some(Next::Link);
             }
             let pending = deadlines.next();
-            let mut wait = match pending {
-                Some((_, d)) => Some(d.saturating_duration_since(Instant::now())),
-                None => None,
-            };
+            let mut wait = pending.map(|(_, d)| d.saturating_duration_since(Instant::now()));
             if joining {
                 wait = Some(wait.map_or(LINK_POLL, |w| w.min(LINK_POLL)));
             }
@@ -244,12 +241,11 @@ pub fn run_with_pilot(
             if let Some(n) = socket.recv(&mut rx, wait)? {
                 break Some(Next::Frame(n));
             }
-            if let Some((timer, d)) = pending {
-                if d <= Instant::now() {
+            if let Some((timer, d)) = pending
+                && d <= Instant::now() {
                     deadlines.clear(timer);
                     break Some(Next::Timer(timer));
                 }
-            }
         };
     }
 }
