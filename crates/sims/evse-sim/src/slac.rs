@@ -13,9 +13,10 @@ pub struct Config {
     pub mac: Mac,
     /// The attenuation (dB) reported for every carrier group.
     pub attenuation: u8,
-    /// Correction (dB) added to the attenuation before it is reported to the vehicle: the modem measures through the
-    /// wiring between itself and the plug, which is no part of the path to the vehicle (negative where it costs).
-    pub attenuation_correction_db: i8,
+    /// Correction (dB) per carrier group added to the attenuation before it is reported to the vehicle: the modem measures
+    /// through the wiring between itself and the plug, which is no part of the path to the vehicle (negative where it
+    /// costs). One value for all groups, or one per group (58); none for no correction.
+    pub attenuation_correction_db: Vec<i8>,
     /// Requests of the first kind that are not answered, counted per message type.
     pub ignore_parm: u32,
     pub ignore_match: u32,
@@ -47,13 +48,22 @@ impl Default for Config {
         Self {
             mac: [0x02, 0, 0, 0, 0, 0x02],
             attenuation: 5,
-            attenuation_correction_db: 0,
+            attenuation_correction_db: Vec::new(),
             ignore_parm: 0,
             ignore_match: 0,
             no_report: false,
             nmk: [0x5A; 16],
             validation: Validation::Ready,
         }
+    }
+}
+
+/// The correction of group `g`: the one value for all, the value of the group, or none.
+pub fn correction(values: &[i8], g: usize) -> i8 {
+    match values.len() {
+        1 => values[0],
+        GROUPS => values[g],
+        _ => 0,
     }
 }
 
@@ -135,7 +145,7 @@ impl Evse {
                                 source: ev,
                                 run_id,
                                 num_sounds: received,
-                                groups: [(i16::from(self.config.attenuation) + i16::from(self.config.attenuation_correction_db)).clamp(0, 255) as u8; GROUPS],
+                                groups: std::array::from_fn(|g| (i16::from(self.config.attenuation) + i16::from(correction(&self.config.attenuation_correction_db, g))).clamp(0, 255) as u8),
                             },
                             ev,
                         ));

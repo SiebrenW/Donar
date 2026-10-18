@@ -323,9 +323,10 @@ pub struct Settings {
     pub slac_validation: SlacValidation,
     /// Toggles per validation (1 to 3); 0: chosen per run.
     pub slac_toggles: u8,
-    /// Correction (dB) added to the attenuation the charger reports (negative where the wiring between the inlet and the
-    /// modem costs): see `evcc_core::slac::Config::attenuation_correction_db`.
-    pub slac_attenuation_correction_db: i8,
+    /// Correction (dB) per carrier group added to the attenuation the charger reports (negative where the wiring between
+    /// the inlet and the modem costs): one value for all groups, or one per group (58); see
+    /// `evcc_core::slac::Config::attenuation_correction_db`. Any other number of values is no correction.
+    pub slac_attenuation_correction_db: Vec<i8>,
     /// Where the simulated control pilot leaves one octet per toggle (a path relative to the
     /// artifacts directory in a scenario).
     pub control_pilot_file: Option<String>,
@@ -385,7 +386,7 @@ impl Default for Settings {
             slac_validation: SlacValidation::Never,
             qca_modem: false,
             slac_toggles: 0,
-            slac_attenuation_correction_db: 0,
+            slac_attenuation_correction_db: Vec::new(),
             control_pilot_file: None,
             tls: None,
             stop_after: 3,
@@ -420,7 +421,11 @@ impl Settings {
             SlacValidation::Always => evcc_core::slac::Validation::Always,
         };
         config.toggles = self.slac_toggles;
-        config.attenuation_correction_db = self.slac_attenuation_correction_db;
+        config.attenuation_correction_db = std::array::from_fn(|g| match self.slac_attenuation_correction_db.len() {
+            1 => self.slac_attenuation_correction_db[0],
+            evcc_core::slac::GROUPS => self.slac_attenuation_correction_db[g],
+            _ => 0,
+        });
         config
     }
 

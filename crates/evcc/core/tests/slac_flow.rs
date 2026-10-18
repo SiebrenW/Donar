@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use evcc_core::slac::{Config, Event, Failure, Machine, Outcome, Toggle, Validation};
 use evcc_core::{Timer, TimerCmd};
 use evse_sim::slac::{Config as EvseConfig, Evse};
-use homeplug::{Frame, Mac, Message, mmtype};
+use homeplug::{Frame, GROUPS, Mac, Message, mmtype};
 
 const EV: Mac = [0x02, 0, 0, 0, 0, 0x01];
 const RUN: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 0];
@@ -202,14 +202,18 @@ fn a_correction_for_the_wiring_makes_a_charger_direct() {
     let r = drive(retry, &mut [evse_at(0, 15)], Some(10), &[]);
     assert_eq!(r.outcome, Outcome::Failed(Failure::NoDirectEvse));
     // ... but 6 dB of it are the vehicle's own wiring,
-    let r = drive(Config { attenuation_correction_db: -6, ..retry }, &mut [evse_at(0, 15)], Some(10), &[]);
+    let r = drive(Config { attenuation_correction_db: [-6; GROUPS], ..retry }, &mut [evse_at(0, 15)], Some(10), &[]);
     assert!(matches!(r.outcome, Outcome::Matched { .. }), "{:?}", r.outcome);
     // or the charger's.
-    let mut corrected = [Evse::new(EvseConfig { mac: [0x02, 0, 0, 0, 0, 0x10], attenuation: 15, attenuation_correction_db: -6, ..Default::default() })];
+    let mut corrected = [Evse::new(EvseConfig { mac: [0x02, 0, 0, 0, 0, 0x10], attenuation: 15, attenuation_correction_db: vec![-6], ..Default::default() })];
     let r = drive(retry, &mut corrected, Some(10), &[]);
     assert!(matches!(r.outcome, Outcome::Matched { .. }), "{:?}", r.outcome);
+    // The correction is per group: 6 dB off half of the groups is 3 dB off the average, not enough; off all of them it is.
+    let half: [i8; GROUPS] = std::array::from_fn(|g| if g < GROUPS / 2 { -6 } else { 0 });
+    let r = drive(Config { attenuation_correction_db: half, ..retry }, &mut [evse_at(0, 15)], Some(10), &[]);
+    assert_eq!(r.outcome, Outcome::Failed(Failure::NoDirectEvse));
     // A correction does not wrap around below zero.
-    let r = drive(Config { attenuation_correction_db: -100, ..retry }, &mut [evse_at(0, 15)], Some(10), &[]);
+    let r = drive(Config { attenuation_correction_db: [-100; GROUPS], ..retry }, &mut [evse_at(0, 15)], Some(10), &[]);
     assert!(matches!(r.outcome, Outcome::Matched { .. }), "{:?}", r.outcome);
 }
 

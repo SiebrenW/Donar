@@ -26,7 +26,8 @@
 //! other result moves on to the next candidate. Without validation a charger between the
 //! thresholds is only used when [`Config::accept_potential`] allows it (V2G3-A09-49).
 
-use homeplug::{BROADCAST, Frame, GROUPS, Mac, Message, RunId};
+pub use homeplug::GROUPS;
+use homeplug::{BROADCAST, Frame, Mac, Message, RunId};
 
 use crate::{Timer, TimerCmd, Timers};
 
@@ -55,10 +56,11 @@ pub struct Config {
     pub direct_db: u8,
     /// `C_EV_match_signalattn_indirect` (dB): above this no direct charger is found.
     pub indirect_db: u8,
-    /// Correction (dB) added to the attenuation a charger reports before it is compared with the thresholds. The
-    /// modem measures through the wiring between the plug and itself, which is no part of the path to the charger:
-    /// where that wiring costs, say, 6 dB, the correction is -6. Zero for a modem next to the inlet.
-    pub attenuation_correction_db: i8,
+    /// Correction (dB) per carrier group, added to the attenuation a charger reports for that group before the average is
+    /// compared with the thresholds. The wiring between the plug and the modem costs attenuation that is no part of the
+    /// path to the charger, and it costs more in the higher groups: where it costs 6 dB, the correction is -6. All zero for a
+    /// modem next to the inlet.
+    pub attenuation_correction_db: [i8; GROUPS],
     /// Use a charger between the thresholds without validating it by control pilot toggles.
     pub accept_potential: bool,
     /// Whether to validate the match by control pilot toggles (needs a host that can toggle).
@@ -94,7 +96,7 @@ impl Config {
         rate_ms: 400,
         direct_db: 10,
         indirect_db: 20,
-        attenuation_correction_db: 0,
+        attenuation_correction_db: [0; GROUPS],
         accept_potential: false,
         validation: Validation::Never,
         toggles: 0,
@@ -352,9 +354,10 @@ impl Machine {
             ) if run_id == self.run_id && source == self.mac && num_sounds > 0 => {
                 // A report from a charger that did not answer the parameter request is used too.
                 self.remember(src);
-                let sum: u32 = groups.iter().map(|&g| u32::from(g)).sum();
+                // The correction applies per group; the average of the corrected groups is what is compared.
+                let sum: u32 = groups.iter().zip(&self.config.attenuation_correction_db).map(|(&g, &c)| (i32::from(g) + i32::from(c)).clamp(0, 255) as u32).sum();
                 if let Some(c) = self.candidates.iter_mut().flatten().find(|c| c.mac == src) {
-                    c.attenuation = Some((i32::try_from(sum / GROUPS as u32).unwrap_or(i32::MAX) + i32::from(self.config.attenuation_correction_db)).clamp(0, 255) as u8);
+                    c.attenuation = Some((sum / GROUPS as u32) as u8);
                 }
                 let response = Message::AttenCharRsp { source: self.mac, run_id: self.run_id, result: 0 };
                 let step = self.send(response, src, tx);
