@@ -60,6 +60,7 @@ mod run {
     scenario_tests! {
         dc_plain => "dc-plain",
         dc_bpt => "dc-bpt",
+        dc_go_to_pause => "dc-go-to-pause",
         ac_plain => "ac-plain",
         ac_bpt => "ac-bpt",
         ac_scheduled => "ac-scheduled",

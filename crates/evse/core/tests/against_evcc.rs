@@ -115,6 +115,8 @@ struct TestCharger {
     delivering: bool,
     confirmations: u32,
     ended: Option<evse_core::secc::Ended>,
+    /// The charger has no power: it says `GoToPause`.
+    no_power: bool,
     meter_id: String,
     /// The parameter set with MobilityNeedsMode 2 was selected.
     by_secc: bool,
@@ -250,6 +252,9 @@ impl Secc for TestCharger {
     }
     fn schedule_tuples(&self) -> &[ScheduleTuple<'_>] {
         &TUPLES
+    }
+    fn no_power(&self) -> bool {
+        self.no_power
     }
     fn cable_check(&mut self) -> Progress<ResponseCode> {
         self.cable_checks += 1;
@@ -479,11 +484,15 @@ impl<E: Ev> Rig<'_, E> {
 
 /// Runs the vehicle against the charger until one of them is done; `stop_after` charge loop answers.
 fn run<E: Ev>(config: Config, ev: E, stop_after: u32) -> (EndReason, TestCharger, State) {
+    run_with(TestCharger::default(), config, ev, stop_after)
+}
+
+fn run_with<E: Ev>(secc: TestCharger, config: Config, ev: E, stop_after: u32) -> (EndReason, TestCharger, State) {
     let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
     let vehicle = EvSession::new(config, ev, NoLog, EvBuffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
     let (mut srx, mut stx, mut sarena, mut sscratch) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768], vec![0u8; 8192]);
     let mut charger_buffers = Buffers { rx: &mut srx, tx: &mut stx, arena: &mut sarena, scratch: &mut sscratch };
-    let mut charger = Session::new(TestCharger::default());
+    let mut charger = Session::new(secc);
     charger.handle(Event::Connected { secured: true }, &mut charger_buffers);
     let mut rig = Rig { vehicle, charger, charger_buffers, ended: None, loops: 0, stop_after, closed: false };
     let start = rig.vehicle.handle(EvEvent::Start { secured: true });
@@ -586,4 +595,19 @@ fn the_preferred_bpt_range_is_sent_in_order_in_a_bpt_session_only() {
     assert_eq!(charger.v2x_loop, Some((rn(3, 5), rn(0, 0))));
     let (_, charger, _) = run(config(Config::DC_20), TestEv { clock: 1.into(), offer: false, v2x: true }, 2);
     assert_eq!((charger.v2x_schedule, charger.v2x_loop), (None, None));
+}
+
+#[test]
+fn a_charger_without_power_sends_the_vehicle_to_a_pause_before_the_cable_check() {
+    // V2G20-2121 to 2123: GoToPause; no cable check, no pre-charge, the power delivery is a stop, the session pauses.
+    for base in [Config::DC_20, Config::AC_20] {
+        let (end, charger, state) = run_with(TestCharger { no_power: true, ..Default::default() }, config(base), TestEv { clock: 1.into(), offer: false, v2x: false }, 2);
+        assert!(matches!(end, EndReason::Paused(_)), "{end:?}");
+        assert_eq!(state, State::Paused);
+        assert_eq!((charger.cable_checks, charger.loops), (0, 0));
+        assert!(!charger.delivering);
+    }
+    // A vehicle that does not follow it asks for the cable check anyway, which the charger does not expect now.
+    let (end, _, _) = run_with(TestCharger { no_power: true, ..Default::default() }, Config { follow_go_to_pause: false, ..config(Config::DC_20) }, TestEv { clock: 1.into(), offer: false, v2x: false }, 2);
+    assert!(matches!(end, EndReason::Rejected(_)), "{end:?}");
 }

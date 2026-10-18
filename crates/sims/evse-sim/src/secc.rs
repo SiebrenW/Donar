@@ -663,6 +663,10 @@ impl Secc for SimSecc {
         needs
     }
 
+    fn no_power(&self) -> bool {
+        self.config.no_power
+    }
+
     fn schedule_tuples(&self) -> &[ScheduleTuple<'_>] {
         &self.tuples
     }

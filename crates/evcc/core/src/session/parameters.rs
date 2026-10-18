@@ -49,6 +49,18 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             Processing::Finished => {
                 self.ongoing_armed = false;
                 self.poll_pending = false;
+                if res.go_to_pause == Some(true) && self.config.follow_go_to_pause {
+                    // V2G20-2121 to 2123: no power at the charger. No cable check, no pre-charge, no power delivery start:
+                    // the power delivery is stopped and the session paused.
+                    self.log.record(&Record::GoToPause);
+                    self.stop_kind = StopKind::Pause;
+                    self.paused_at_start = true;
+                    let mut step = self.send_power_delivery(common::ChargeProgress::Stop, tx);
+                    if step.end.is_none() {
+                        step.notice = Some(Notice::ScheduleExchanged);
+                    }
+                    return step;
+                }
                 // AC has no cable check or pre-charge: the power delivery starts at once.
                 let mut step = if self.config.ac() { self.send_power_delivery(common::ChargeProgress::Start, tx) } else { self.send_cable_check_req(tx) };
                 if step.end.is_none() {

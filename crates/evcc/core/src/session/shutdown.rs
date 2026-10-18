@@ -17,6 +17,11 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         if let Some(end) = self.received(MsgKind::PowerDeliveryRes, res.response_code) {
             return end;
         }
+        if core::mem::take(&mut self.paused_at_start) {
+            // The power was never on: nothing to open or weld-check.
+            self.ongoing_armed = false;
+            return self.send_session_stop_req(tx);
+        }
         if self.config.ac() {
             // Nothing to open or weld-check on the AC side: the session stops.
             self.ongoing_armed = false;

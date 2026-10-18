@@ -180,6 +180,11 @@ pub trait Secc {
     fn schedule_requested(&mut self, _request: &common::ScheduleExchangeReq<'_>) -> MobilityNeeds {
         MobilityNeeds::default()
     }
+    /// The charger has no power (V2G20-2121): `GoToPause` is set in the answer to the schedule exchange, and the vehicle
+    /// may go straight to the power delivery (V2G20-2122). Asked when the answer is `Finished`.
+    fn no_power(&self) -> bool {
+        false
+    }
     /// Scheduled control mode: the schedule tuples to offer (ids 1 to 255, V2G20-773), at most three.
     /// Empty in Dynamic mode.
     fn schedule_tuples(&self) -> &[common::ScheduleTuple<'_>] {

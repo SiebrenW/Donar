@@ -1,0 +1,19 @@
+name = "dc-go-to-pause"
+description = "ISO 15118-20 DC: the charger has no power and says GoToPause in the schedule exchange (V2G20-2121). The vehicle skips the cable check and the pre-charge, stops the power delivery (V2G20-2123) and pauses the session; it does not come back, so it ends paused."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session]
+no_power = true
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+
+[expect]
+evcc_exit = 1
+evcc_log = ["GoToPause", "Paused"]
+secc_log = ["tx PowerDeliveryRes OK", "session: Paused"]

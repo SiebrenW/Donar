@@ -102,6 +102,8 @@ struct Machine<E, L> {
     /// first entry (what the vehicle draws when the charger names no target).
     selected_tuple: u32,
     schedule: schedule::Schedule,
+    /// The charger said `GoToPause`: the power delivery stop that is under way ends in a pause, with the power never on.
+    paused_at_start: bool,
     /// `MobilityNeedsMode` 2: what the charger named of the departure time, the minimum and the target
     /// state of charge, and the vehicle's clock (microseconds) when it did.
     mobility: crate::ev::MobilityNeeds,
@@ -155,6 +157,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 ev_announced_discharge: None,
                 evse_announced: None,
                 selected_tuple: 0,
+                paused_at_start: false,
                 schedule: schedule::Schedule::NONE,
                 mobility: crate::ev::MobilityNeeds::default(),
                 mobility_at: 0,

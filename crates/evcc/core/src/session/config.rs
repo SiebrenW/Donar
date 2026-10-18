@@ -85,6 +85,10 @@ pub struct Config {
     /// Set `MeterInfoRequested` in the charge loop requests (V2G20-1081): the charger then sends its
     /// meter reading in every answer ([`super::MeterReading`] in the status).
     pub request_meter_info: bool,
+    /// Follow `GoToPause` (V2G20-2121, 2122): when the charger has no power and says so in the `ScheduleExchangeRes`, the
+    /// vehicle skips the cable check and pre-charge, stops the power delivery (V2G20-2123) and pauses the session
+    /// (`SessionStopReq` Pause), to come back later. Off: the vehicle goes on as usual.
+    pub follow_go_to_pause: bool,
     /// `MobilityNeedsMode` 2 was selected ([`Config::mobility_needs_by_secc`]).
     pub mobility_needs_by_secc: bool,
 }
@@ -166,6 +170,7 @@ impl Config {
         state_tolerance_always: false,
         request_meter_info: false,
         mobility_needs_by_secc: false,
+        follow_go_to_pause: true,
     };
 
     /// The same session in Scheduled control mode (ISO 15118-20:2022 Table 205: `ControlMode` 1

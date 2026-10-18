@@ -81,6 +81,8 @@ struct Machine<S> {
     selected_tuple: u32,
     /// A standby period is on.
     standby: bool,
+    /// The schedule exchange said `GoToPause`: the power delivery that follows is a stop, the power never on.
+    no_power: bool,
     last_stamp: u64,
 }
 
@@ -107,6 +109,7 @@ impl<S: Secc> Session<S> {
                 authorization: None,
                 selected_tuple: 0,
                 standby: false,
+                no_power: false,
                 last_stamp: 0,
             },
         }
@@ -713,6 +716,17 @@ impl<S: Secc> Machine<S> {
                 let res = dc::DcPreChargeRes { header, response_code: code, evse_present_voltage: voltage };
                 self.main_reply(out, PayloadType::DC_MAINSTREAM, |o| res.encode(o), !is_ok(code))
             }
+            // After GoToPause the vehicle stops before it starts (V2G20-2123): nothing was on, the session stops or pauses.
+            (State::AwaitPowerDeliveryReq, Request::Common(C::PowerDeliveryReq(req))) if self.no_power && req.charge_progress == ChargeProgress::Stop => {
+                let code = if self.unknown_session(req.header.session_id) { ResponseCode::FailedUnknownSession } else { ResponseCode::Ok };
+                let code = self.code(M::PowerDelivery, code);
+                let header = self.header();
+                if is_ok(code) {
+                    self.goto(State::AwaitSessionStopReq);
+                }
+                let res = common::PowerDeliveryRes { header, response_code: code, evse_status: None };
+                self.main_reply(out, main, |o| res.encode(o), !is_ok(code))
+            }
             (State::AwaitPowerDeliveryReq, Request::Common(C::PowerDeliveryReq(req))) => {
                 let code = if self.unknown_session(req.header.session_id) {
                     ResponseCode::FailedUnknownSession
@@ -979,9 +993,12 @@ impl<S: Secc> Machine<S> {
         let code = self.code(M::ScheduleExchange, code);
         let header = self.header();
         let ongoing = processing == Processing::Ongoing;
+        // V2G20-2121, 2122: no power. GoToPause is set, and the vehicle may skip the cable check and the pre-charge.
+        let go_to_pause = !side && !ongoing && is_ok(code) && self.secc.no_power();
         if !side && !ongoing && is_ok(code) {
+            self.no_power = go_to_pause;
             // AC has no cable check or pre-charge: the power delivery follows.
-            self.goto(if self.ac() { State::AwaitPowerDeliveryReq } else { State::AwaitCableCheckReq });
+            self.goto(if self.ac() || go_to_pause { State::AwaitPowerDeliveryReq } else { State::AwaitCableCheckReq });
         }
         let needs = if !ongoing && is_ok(code) { self.secc.schedule_requested(req) } else { Default::default() };
         let control = if self.scheduled {
@@ -989,7 +1006,7 @@ impl<S: Secc> Machine<S> {
         } else {
             common::SeResControlModeChoice::Dynamic(common::DynamicSeResControlMode { departure_time: needs.departure_time, minimum_soc: needs.minimum_soc, target_soc: needs.target_soc, schedule: None })
         };
-        let res = common::ScheduleExchangeRes { header, response_code: code, evse_processing: processing, go_to_pause: None, se_res_control_mode: control };
+        let res = common::ScheduleExchangeRes { header, response_code: code, evse_processing: processing, go_to_pause: go_to_pause.then_some(true), se_res_control_mode: control };
         let framed = frame(out, payload_type, |o| res.encode(o));
         let close = !ongoing && !is_ok(code);
         if close && !side {

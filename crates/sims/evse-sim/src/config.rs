@@ -490,6 +490,8 @@ pub struct Config {
     /// in percent, named in the `ScheduleExchangeRes`. Left out when `None`. Parameter sets with that
     /// mode are offered after the others (DC ids 5 to 8, AC ids 5 and 6).
     pub mobility_departure_s: Option<u32>,
+    /// The charger has no power: `GoToPause` in the answer to the schedule exchange (V2G20-2121), ISO 15118-20 only.
+    pub no_power: bool,
     pub mobility_minimum_soc: Option<u8>,
     pub mobility_target_soc: Option<u8>,
     /// Scheduled control mode: how long one entry of an offered power schedule lasts, in seconds.
@@ -597,6 +599,7 @@ impl Default for Config {
             meter_info_always: false,
             metering_confirmation_every_loops: None,
             receipt_every_loops: None,
+            no_power: false,
             mobility_departure_s: None,
             mobility_minimum_soc: None,
             mobility_target_soc: None,

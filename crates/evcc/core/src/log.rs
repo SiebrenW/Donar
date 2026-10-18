@@ -107,6 +107,8 @@ pub enum Record<'a> {
     /// The schedule tuple the vehicle selected of those the charger offered (Scheduled mode), given the
     /// energy it needs and the seconds until it leaves.
     ScheduleSelected { tuple_id: u32, offered: usize, need_wh: u32, departure_s: u32 },
+    /// The charger has no power and said so (`GoToPause`, V2G20-2121): the vehicle pauses the session.
+    GoToPause,
     /// The charger provided mobility needs (`MobilityNeedsMode` 2); what it named, which the vehicle now uses.
     MobilityNeedsFromSecc { needs: crate::ev::MobilityNeeds },
     /// The charger named mobility needs although the vehicle did not choose `MobilityNeedsMode` 2.
@@ -153,6 +155,7 @@ impl Record<'_> {
             | Record::Iso2ServiceDetail { .. }
             | Record::ScheduleSelected { .. }
             | Record::MobilityNeedsFromSecc { .. }
+            | Record::GoToPause
             | Record::MobilityNeedsIgnored { .. }
             | Record::ServiceSelected { .. } => Level::Info,
             Record::Response { code, .. } if !crate::session::is_ok(*code) => Level::Info,
