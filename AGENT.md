@@ -2,7 +2,7 @@
 
 Guidelines for Claude Code and other AI agents working on this project. (`CLAUDE.md` only refers here.)
 
-Donar (the project was called `evcc-rs`) is an open-source toolkit for the vehicle-to-charger high level communication: ISO 15118-20, ISO 15118-2, DIN SPEC 70121 and SLAC, with a vehicle side (EVCC), a charger side (EVSE/SECC), generated EXI codecs, and simulators, scenarios and a web UI to test with. It is not only about the EVCC. The crates, binaries, container image and the repository directory still carry the old `evcc-rs`/`evcc-*` names. Documents: `README.md` (how to build your own EVCC/EVSE), `docs/getting-started.md` (setup, what the tests cover), `PLAN.md` (design log and status of every requirement), `docs/standards-notes.md` (where the standards contradict themselves or are silent, and the decision taken). Read the relevant ones before larger changes. `docs/` is meant to hold Typst documents in the future; `AGENT.md` and `README.md` stay in the root.
+Donar (the project was called `evcc-rs`) is an open-source toolkit for the vehicle-to-charger high level communication: ISO 15118-20, ISO 15118-2, DIN SPEC 70121 and SLAC, with a vehicle side (EVCC), a charger side (EVSE/SECC), generated EXI codecs, and simulators, scenarios and a web UI to test with. It is not only about the EVCC. The crates, binaries, container image and the repository directory still carry the old `evcc-rs`/`evcc-*` names. Documents: `README.md` (how to build your own EVCC/EVSE), `docs/getting-started.md` (setup, what the tests cover), `PLAN.md` (design decisions, unchecked assumptions and the open work; what is done is in git history), `docs/standards-notes.md` (where the standards contradict themselves or are silent, and the decision taken). Read the relevant ones before larger changes. `docs/` is meant to hold Typst documents in the future; `AGENT.md` and `README.md` stay in the root.
 
 ## Commits
 
@@ -53,6 +53,6 @@ cargo xtask web [PORT]          # the web UI (evcc-web) in the container, defaul
 ## Working conventions
 
 - Cite requirement ids (`V2G20-…`, `V2G-DC-…`) in comments only if checked against the standard text; the source is `standards/` (PDFs, gitignored; extract the text to search it).
-- After protocol changes add: a session-flow/against-evcc test, and where behaviour crosses the wire a scenario (plus a Python interop scenario if the partner supports it) and a PLAN.md entry. When the standard contradicts itself or is silent, record the decision in `docs/standards-notes.md`.
+- After protocol changes add: a session-flow/against-evcc test, and where behaviour crosses the wire a scenario (plus a Python interop scenario if the partner supports it) and update PLAN.md (remove what is now done from the open work, record new assumptions). When the standard contradicts itself or is silent, record the decision in `docs/standards-notes.md`.
 - In `docs/standards-notes.md` list only real contradictions, silences and impossible requirements. An element that is optional in the schema but required in some cases by the text is normal use of optional elements, not an inconsistency. Record the decision taken, not the earlier wrong state.
 - Scenario `expect.evcc_log` cannot match `MsgTx` lines (Debug level); charger log lines come from the core's `note` calls.

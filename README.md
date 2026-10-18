@@ -5,7 +5,7 @@ Donar (the Germanic god of thunder) is an open-source toolkit for the high level
 The cores are `no_std`, allocation-free and **sans-IO**: it never touches a socket, a clock or a thread. You feed one events (bytes received, a timer fired, the vehicle did something) and carry out what it returns (bytes to send, timers to arm, things the host should do). Your platform decides how.
 
 - Getting a checkout to build and test: [docs/getting-started.md](docs/getting-started.md)
-- Design, status and what is verified against what: [PLAN.md](PLAN.md)
+- Design decisions and open work: [PLAN.md](PLAN.md)
 - Where the standards contradict themselves or are silent, and what we decided: [docs/standards-notes.md](docs/standards-notes.md)
 
 ## Building your own EVCC
