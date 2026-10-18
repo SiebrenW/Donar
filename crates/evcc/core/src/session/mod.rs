@@ -248,7 +248,8 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                     | State::AwaitCableCheckRes
                     | State::AwaitPreChargeRes,
                 ) => m.end(EndReason::Timeout),
-                (Timer::Ongoing, State::AwaitWeldingDetectionRes) => m.end(EndReason::ContactorWelded),
+                // The voltage never fell: the contactors are welded. The pilot is at B by now, so the vehicle says so (and ends).
+                (Timer::Ongoing, State::AwaitWeldingDetectionRes) => m.end_politely(EndReason::ContactorWelded, tx),
                 (Timer::Setup, State::AwaitSupportedAppProtocolRes | State::AwaitSessionSetupRes) => {
                     m.end(EndReason::Timeout)
                 }

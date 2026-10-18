@@ -99,7 +99,8 @@ pub enum EndReason {
     Completed,
     /// Welding detection never saw the charger's voltage fall below the limit: the vehicle's
     /// contactors did not open (or the charger kept its voltage up). Safety relevant: the host
-    /// should not release the connector lock and should report a fault.
+    /// should not release the connector lock and should report a fault. The vehicle has told
+    /// the charger with `SessionStopReq` (termination code `ContactorWelded`) by then.
     ContactorWelded,
     /// The EVSE rejected or did not accept our protocol offer.
     NoCommonProtocol,
@@ -147,6 +148,7 @@ impl EndReason {
             EndReason::NoCompatibleAuthorization => "NoCompatibleAuthorization",
             EndReason::NoCompatibleService => "NoCompatibleService",
             EndReason::NoCompatibleParameterSet => "NoCompatibleParameterSet",
+            EndReason::ContactorWelded => "ContactorWelded",
             _ => "Terminated",
         }
     }
