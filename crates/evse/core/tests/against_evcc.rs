@@ -19,6 +19,9 @@ struct TestEv {
     clock: std::cell::Cell<u64>,
     /// Offer energy in Scheduled mode.
     offer: bool,
+    /// Prefer cycling between 3 kWh below and 5 kWh above the present energy (a range that needs the clamp: the vehicle's
+    /// minimum energy request is 0 and the maximum 60 kWh).
+    v2x: bool,
 }
 
 impl Ev for TestEv {
@@ -51,6 +54,9 @@ impl Ev for TestEv {
     }
     fn schedule_request(&self) -> ScheduleRequest {
         ScheduleRequest { departure_time: 3600, minimum_soc: None, target_soc: Some(80), target_energy: rn(3, 40), maximum_energy: rn(3, 60), minimum_energy: rn(0, 0) }
+    }
+    fn v2x_energy_range(&self) -> Option<evcc_core::ev::V2xEnergyRange> {
+        self.v2x.then(|| evcc_core::ev::V2xEnergyRange { maximum: rn(3, 5), minimum: rn(3, -3) })
     }
     fn energy_offer(&self) -> Option<evcc_core::ev::EnergyOffer> {
         self.offer.then(|| evcc_core::ev::EnergyOffer::new("EUR").power(1800, rn(3, 3)).power(1800, rn(3, 1)).price(3600, rn(-2, 30)))
@@ -116,6 +122,9 @@ struct TestCharger {
     /// display parameters of the last charge loop request.
     offer: Option<(usize, usize, RationalNumber)>,
     display: Option<iso15118_20::common_types::DisplayParameters>,
+    /// The preferred BPT range (maximum, minimum) of the schedule exchange and of the last charge loop request.
+    v2x_schedule: Option<(RationalNumber, RationalNumber)>,
+    v2x_loop: Option<(RationalNumber, RationalNumber)>,
 }
 
 impl Secc for TestCharger {
@@ -224,6 +233,9 @@ impl Secc for TestCharger {
         self.by_secc = selection.selected_energy_transfer_service.service_id == 2 && selection.selected_energy_transfer_service.parameter_set_id == 2;
     }
     fn schedule_requested(&mut self, request: &iso15118_20::common::ScheduleExchangeReq<'_>) -> evse_core::MobilityNeeds {
+        if let iso15118_20::common::SeReqControlModeChoice::Dynamic(m) = &request.se_req_control_mode {
+            self.v2x_schedule = m.ev_maximum_v2x_energy_request.zip(m.ev_minimum_v2x_energy_request);
+        }
         if let iso15118_20::common::SeReqControlModeChoice::Scheduled(m) = &request.se_req_control_mode {
             self.offer = m.ev_energy_offer.as_ref().map(|o| {
                 let stacks = o.ev_absolute_price_schedule.ev_price_rule_stacks.ev_price_rule_stack;
@@ -251,6 +263,9 @@ impl Secc for TestCharger {
     fn dc_loop(&mut self, request: &dc::DcChargeLoopReq<'_>, bpt: bool) -> Option<DcLoopAnswer> {
         self.loops += 1;
         self.display = request.display_parameters;
+        if let dc::ClReqControlModeChoice::BptDynamicDc(m) = &request.cl_req_control_mode {
+            self.v2x_loop = m.ev_maximum_v2x_energy_request.zip(m.ev_minimum_v2x_energy_request);
+        }
         let _ = bpt;
         let (maximum_current, mode) = match &request.cl_req_control_mode {
             dc::ClReqControlModeChoice::DynamicDc(m) => (m.ev_maximum_charge_current, dc::ClResControlModeChoice::DynamicDc(dc::DynamicDcClResControlMode {
@@ -492,7 +507,7 @@ fn config(base: Config) -> Config {
 
 #[test]
 fn a_dc_session_runs_to_the_stop() {
-    let (end, charger, state) = run(config(Config::DC_20), TestEv { clock: 1.into(), offer: false }, 3);
+    let (end, charger, state) = run(config(Config::DC_20), TestEv { clock: 1.into(), offer: false, v2x: false }, 3);
     assert_eq!(end, EndReason::Completed);
     assert_eq!(state, State::Stopped);
     assert_eq!(charger.loops, 3);
@@ -502,21 +517,21 @@ fn a_dc_session_runs_to_the_stop() {
 
 #[test]
 fn a_bidirectional_dc_session() {
-    let (end, charger, state) = run(config(Config::DC_BPT_20), TestEv { clock: 1.into(), offer: false }, 2);
+    let (end, charger, state) = run(config(Config::DC_BPT_20), TestEv { clock: 1.into(), offer: false, v2x: false }, 2);
     assert_eq!((end, state), (EndReason::Completed, State::Stopped));
     assert_eq!(charger.loops, 2);
 }
 
 #[test]
 fn an_ac_session_skips_the_dc_steps() {
-    let (end, charger, state) = run(config(Config::AC_20), TestEv { clock: 1.into(), offer: false }, 3);
+    let (end, charger, state) = run(config(Config::AC_20), TestEv { clock: 1.into(), offer: false, v2x: false }, 3);
     assert_eq!((end, state), (EndReason::Completed, State::Stopped));
     assert_eq!((charger.loops, charger.cable_checks), (3, 0));
 }
 
 #[test]
 fn a_scheduled_ac_session_selects_the_offered_tuple() {
-    let (end, charger, state) = run(config(Config::AC_20.scheduled()), TestEv { clock: 1.into(), offer: false }, 2);
+    let (end, charger, state) = run(config(Config::AC_20.scheduled()), TestEv { clock: 1.into(), offer: false, v2x: false }, 2);
     assert_eq!((end, state), (EndReason::Completed, State::Stopped));
     assert_eq!(charger.loops, 2);
 }
@@ -524,7 +539,7 @@ fn a_scheduled_ac_session_selects_the_offered_tuple() {
 #[test]
 fn a_plug_and_charge_session_confirms_the_metering() {
     let cfg = Config { prefer_pnc: true, request_meter_info: true, ..config(Config::DC_20) };
-    let (end, charger, state) = run(cfg, PnCEv(TestEv { clock: 1.into(), offer: false }, FakeContract), 4);
+    let (end, charger, state) = run(cfg, PnCEv(TestEv { clock: 1.into(), offer: false, v2x: false }, FakeContract), 4);
     assert_eq!((end, state), (EndReason::Completed, State::Stopped));
     // The notification came with the second answer; the vehicle signed and the charger took it.
     assert_eq!(charger.confirmations, 1);
@@ -532,7 +547,7 @@ fn a_plug_and_charge_session_confirms_the_metering() {
 
 #[test]
 fn the_vehicle_offers_energy_in_the_scheduled_mode() {
-    let (end, charger, state) = run(config(Config::AC_20.scheduled()), TestEv { clock: 1.into(), offer: true }, 2);
+    let (end, charger, state) = run(config(Config::AC_20.scheduled()), TestEv { clock: 1.into(), offer: true, v2x: false }, 2);
     assert_eq!((end, state), (EndReason::Completed, State::Stopped));
     // Two power entries, one price: 0.30.
     assert_eq!(charger.offer, Some((2, 1, rn(-2, 30))));
@@ -540,13 +555,13 @@ fn the_vehicle_offers_energy_in_the_scheduled_mode() {
 
 #[test]
 fn without_an_offer_the_vehicle_sends_none() {
-    let (_, charger, _) = run(config(Config::AC_20.scheduled()), TestEv { clock: 1.into(), offer: false }, 2);
+    let (_, charger, _) = run(config(Config::AC_20.scheduled()), TestEv { clock: 1.into(), offer: false, v2x: false }, 2);
     assert_eq!(charger.offer, None);
 }
 
 #[test]
 fn the_charger_provides_the_mobility_needs_and_the_vehicle_takes_them() {
-    let (end, charger, state) = run(config(Config::DC_20.mobility_needs_by_secc()), TestEv { clock: 1.into(), offer: false }, 2);
+    let (end, charger, state) = run(config(Config::DC_20.mobility_needs_by_secc()), TestEv { clock: 1.into(), offer: false, v2x: false }, 2);
     assert_eq!((end, state), (EndReason::Completed, State::Stopped));
     assert!(charger.by_secc);
     // What the charger named is what the vehicle reports as its limits in the display parameters.
@@ -556,7 +571,19 @@ fn the_charger_provides_the_mobility_needs_and_the_vehicle_takes_them() {
 
 #[test]
 fn with_mobility_needs_from_the_vehicle_nothing_is_taken_from_the_charger() {
-    let (_, charger, _) = run(config(Config::DC_20), TestEv { clock: 1.into(), offer: false }, 2);
+    let (_, charger, _) = run(config(Config::DC_20), TestEv { clock: 1.into(), offer: false, v2x: false }, 2);
     assert!(!charger.by_secc);
     assert_eq!(charger.display, None);
+}
+
+#[test]
+fn the_preferred_bpt_range_is_sent_in_order_in_a_bpt_session_only() {
+    // The range is between the vehicle's minimum (0) and maximum (60 kWh) energy request: the minimum V2X request of -3 kWh is
+    // raised to the minimum (V2G20-2682).
+    let (end, charger, _) = run(config(Config::DC_BPT_20), TestEv { clock: 1.into(), offer: false, v2x: true }, 2);
+    assert_eq!(end, EndReason::Completed);
+    assert_eq!(charger.v2x_schedule, Some((rn(3, 5), rn(0, 0))));
+    assert_eq!(charger.v2x_loop, Some((rn(3, 5), rn(0, 0))));
+    let (_, charger, _) = run(config(Config::DC_20), TestEv { clock: 1.into(), offer: false, v2x: true }, 2);
+    assert_eq!((charger.v2x_schedule, charger.v2x_loop), (None, None));
 }

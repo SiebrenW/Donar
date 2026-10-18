@@ -236,6 +236,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             return self.send_ac_charge_loop_req(tx);
         }
         let r = self.request();
+        let v2x = self.v2x_range(&r);
         let l = self.loop_limits();
         let control_mode = if self.config.bpt() {
             let d = self.loop_discharge_limits();
@@ -252,8 +253,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 ev_maximum_discharge_power: d.maximum_discharge_power,
                 ev_minimum_discharge_power: d.minimum_discharge_power,
                 ev_maximum_discharge_current: d.maximum_discharge_current,
-                ev_maximum_v2x_energy_request: None,
-                ev_minimum_v2x_energy_request: None,
+                ev_maximum_v2x_energy_request: v2x.0,
+                ev_minimum_v2x_energy_request: v2x.1,
             })
         } else {
             dc::ClReqControlModeChoice::DynamicDc(dc::DynamicDcClReqControlMode {
@@ -283,6 +284,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
     fn send_ac_charge_loop_req(&mut self, tx: &mut [u8]) -> Step {
         let r = self.request();
+        let v2x = self.v2x_range(&r);
         let l = self.loop_ac_limits();
         let l = AcPowerLimits { maximum_charge_power: self.lines(l.maximum_charge_power), minimum_charge_power: self.lines(l.minimum_charge_power) };
         let p = self.ev.ac_present_power();
@@ -362,8 +364,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 ev_minimum_discharge_power: d.minimum_discharge_power.l1,
                 ev_minimum_discharge_power_l2: d.minimum_discharge_power.l2,
                 ev_minimum_discharge_power_l3: d.minimum_discharge_power.l3,
-                ev_maximum_v2x_energy_request: None,
-                ev_minimum_v2x_energy_request: None,
+                ev_maximum_v2x_energy_request: v2x.0,
+                ev_minimum_v2x_energy_request: v2x.1,
             })
         } else {
             ac::ClReqControlModeChoice::DynamicAc(ac::DynamicAcClReqControlMode {

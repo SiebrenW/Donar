@@ -154,6 +154,13 @@ impl Ev for SimulatedEv {
     fn present_soc(&self) -> Option<u8> {
         self.live.as_ref().map(|l| l.present_soc().round_ties_even().clamp(0.0, 100.0) as u8)
     }
+    fn v2x_energy_range(&self) -> Option<evcc_core::ev::V2xEnergyRange> {
+        let (low, high) = (self.limits().v2x_min_soc?, self.limits().v2x_max_soc?);
+        // The energy from the present state of charge to the ends of the range.
+        let soc = self.live.as_ref()?.present_soc();
+        let energy = |percent: u8| RationalNumber::from_f64(((f64::from(percent) - soc) / 100.0 * live::CAPACITY_WH).round());
+        Some(evcc_core::ev::V2xEnergyRange { minimum: energy(low), maximum: energy(high) })
+    }
     fn display(&self) -> evcc_core::ev::Display {
         let l = self.limits();
         let soc = self.live.as_ref().map(|live| live.present_soc());

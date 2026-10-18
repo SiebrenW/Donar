@@ -115,6 +115,17 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         r
     }
 
+    /// The vehicle's preferred BPT cycling range as it goes on the wire: both values or none (V2G20-2681), only in a BPT
+    /// session, and in the order minimum energy <= minimum V2X <= maximum V2X <= maximum energy (V2G20-2682).
+    pub(super) fn v2x_range(&self, r: &crate::ev::ScheduleRequest) -> (Option<RationalNumber>, Option<RationalNumber>) {
+        let Some(range) = self.ev.v2x_energy_range().filter(|_| self.config.bpt()) else { return (None, None) };
+        let value = super::config::rational_to_volts;
+        let (low, high) = (value(r.minimum_energy), value(r.maximum_energy));
+        let minimum = if value(range.minimum) < low { r.minimum_energy } else if value(range.minimum) > high { r.maximum_energy } else { range.minimum };
+        let maximum = if value(range.maximum) > high { r.maximum_energy } else if value(range.maximum) < value(minimum) { minimum } else { range.maximum };
+        (Some(maximum), Some(minimum))
+    }
+
     /// The mobility needs an answer named. With `MobilityNeedsMode` 2 they replace the vehicle's; the
     /// return is what changed. Otherwise the charger has no business naming them (V2G20-2663 offers
     /// the mode, and the vehicle did not choose it): they are ignored and logged.
@@ -152,6 +163,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
 
     pub(super) fn frame_schedule_exchange_req(&mut self, payload_type: PayloadType, tx: &mut [u8]) -> Result<usize, ()> {
         let r = self.request();
+        let v2x = self.v2x_range(&r);
         let header = self.header();
         let anchor = self.secc_now();
         // The energy offer (Scheduled mode): one rule stack per price, built here so that they can borrow
@@ -185,8 +197,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 ev_target_energy_request: r.target_energy,
                 ev_maximum_energy_request: r.maximum_energy,
                 ev_minimum_energy_request: r.minimum_energy,
-                ev_maximum_v2x_energy_request: None,
-                ev_minimum_v2x_energy_request: None,
+                ev_maximum_v2x_energy_request: v2x.0,
+                ev_minimum_v2x_energy_request: v2x.1,
             })
         };
         let msg = common::ScheduleExchangeReq { header, maximum_supporting_points: self.config.maximum_supporting_points, se_req_control_mode: mode };

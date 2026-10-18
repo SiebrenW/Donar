@@ -78,6 +78,18 @@ pub struct AcPresentPower {
     pub reactive: Phases,
 }
 
+/// The range of energy the vehicle prefers to cycle in with bidirectional power transfer (BPT), as the energy to the
+/// ends of the range from the present state of charge (8.3.5.3.13, V2G20-2681, 2682).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct V2xEnergyRange {
+    /// `EVMaximumV2XEnergyRequest`: energy that may be charged until the state of charge leaves the range at the top;
+    /// negative when the state of charge is above the range.
+    pub maximum: RationalNumber,
+    /// `EVMinimumV2XEnergyRequest`: energy needed to enter the range from below; positive when the state of charge is
+    /// below the range.
+    pub minimum: RationalNumber,
+}
+
 /// What the vehicle tells the EVSE about its energy needs (Dynamic control mode).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScheduleRequest {
@@ -339,6 +351,11 @@ pub trait Ev {
     /// The present state of charge in percent, reported in the charge loop (`DisplayParameters`)
     /// when the vehicle knows it.
     fn present_soc(&self) -> Option<u8> {
+        None
+    }
+    /// The range the vehicle prefers to cycle in with BPT; sent (in a BPT session) next to the energy requests, and the charger
+    /// may try to stay within it. Kept between the minimum and maximum energy request by the session (V2G20-2682).
+    fn v2x_energy_range(&self) -> Option<V2xEnergyRange> {
         None
     }
     /// The other display parameters ([`Display`]), sent next to the present state of charge.

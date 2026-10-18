@@ -176,6 +176,10 @@ pub struct Limits {
     pub discharge_to_soc: Option<u8>,
     /// Scheduled mode: offer this power (watts, fed back) for `energy_offer_s` seconds in the
     /// `EVEnergyOffer`, asking `energy_offer_fee_cents` per kWh (in EUR). Needs `scheduled`.
+    /// BPT with the battery model: the state of charge range (percent) the vehicle prefers to cycle in; sent as
+    /// `EVMinimumV2XEnergyRequest` and `EVMaximumV2XEnergyRequest`. Both or none.
+    pub v2x_min_soc: Option<u8>,
+    pub v2x_max_soc: Option<u8>,
     pub energy_offer_w: Option<u32>,
     pub energy_offer_s: u32,
     pub energy_offer_fee_cents: u32,
@@ -206,6 +210,8 @@ impl Default for Limits {
             ac_min_discharge_power_w: 500,
             ac_phases: 3,
             discharge_to_soc: None,
+            v2x_min_soc: None,
+            v2x_max_soc: None,
             energy_offer_w: None,
             energy_offer_s: 3600,
             energy_offer_fee_cents: 30,

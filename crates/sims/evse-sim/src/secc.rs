@@ -639,6 +639,11 @@ impl Secc for SimSecc {
     }
 
     fn schedule_requested(&mut self, request: &common::ScheduleExchangeReq<'_>) -> MobilityNeeds {
+        if let common::SeReqControlModeChoice::Dynamic(m) = &request.se_req_control_mode {
+            if let (Some(max), Some(min)) = (m.ev_maximum_v2x_energy_request, m.ev_minimum_v2x_energy_request) {
+                self.note(format!("the vehicle prefers to cycle between {} and {} Wh from its present energy", min.to_f64(), max.to_f64()));
+            }
+        }
         if let common::SeReqControlModeChoice::Scheduled(m) = &request.se_req_control_mode {
             if let Some(offer) = &m.ev_energy_offer {
                 let entries = offer.ev_power_schedule.ev_power_schedule_entries.ev_power_schedule_entry;
