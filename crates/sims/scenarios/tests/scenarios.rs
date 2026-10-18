@@ -35,6 +35,10 @@ mod run {
     use super::*;
 
     fn run(name: &str) {
+        run_report(name);
+    }
+
+    fn run_report(name: &str) -> scenarios::runner::Report {
         let scenario = Scenario::load(&directory().join(format!("{name}.toml"))).unwrap();
         // A scenario that hangs would hold the whole run: the runner has its own timeouts,
         // this ends the process if they fail too.
@@ -51,6 +55,42 @@ mod run {
         drop(done_tx);
         watchdog.join().unwrap();
         assert!(report.passed(), "scenario {name} failed:\n{}", report.describe());
+        let pcap = report.pcap.as_ref().unwrap_or_else(|| panic!("scenario {name}: no capture"));
+        assert!(std::fs::metadata(pcap).unwrap().len() > 24, "scenario {name}: the capture is empty");
+        report
+    }
+
+    /// The packets of a classic pcap file (Ethernet): the IPv6 packets' next header, the UDP/TCP
+    /// ports and the payload of UDP.
+    fn udp_packets(pcap: &Path) -> Vec<(u16, u16, Vec<u8>)> {
+        let data = std::fs::read(pcap).unwrap();
+        assert_eq!(&data[..4], &[0xd4, 0xc3, 0xb2, 0xa1], "a little-endian pcap file");
+        let (mut at, mut found) = (24, Vec::new());
+        while at + 16 <= data.len() {
+            let len = u32::from_le_bytes(data[at + 8..at + 12].try_into().unwrap()) as usize;
+            let frame = &data[at + 16..(at + 16 + len).min(data.len())];
+            at += 16 + len;
+            // Ethernet, IPv6 (0x86dd), next header UDP.
+            if frame.len() >= 62 && frame[12..14] == [0x86, 0xdd] && frame[20] == 17 {
+                let (src, dst) = (u16::from_be_bytes([frame[54], frame[55]]), u16::from_be_bytes([frame[56], frame[57]]));
+                found.push((src, dst, frame[62..].to_vec()));
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn the_capture_of_a_tls_session_carries_its_secrets() {
+        let report = run_report("dc-tls-pnc");
+        let lines: Vec<String> = udp_packets(report.pcap.as_ref().unwrap())
+            .into_iter()
+            .filter(|(src, dst, _)| (49152..=65535).contains(src) && *dst == evcc_linux::tls::DISCLOSURE_PORT)
+            .map(|(.., payload)| String::from_utf8(payload).unwrap())
+            .collect();
+        // TLS 1.3: the handshake and the first application traffic secrets, and the exporter secret.
+        for name in ["CLIENT_HANDSHAKE_TRAFFIC_SECRET", "SERVER_HANDSHAKE_TRAFFIC_SECRET", "CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0", "EXPORTER_SECRET"] {
+            assert!(lines.iter().any(|l| l.starts_with(name)), "no {name} in {lines:?}");
+        }
     }
 
     macro_rules! scenario_tests {

@@ -226,6 +226,9 @@ fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session:
                 credentials = credentials.backwards_compatible();
             }
             credentials = credentials.versions(t.versions.into());
+            if t.disclose_secrets {
+                credentials = credentials.disclose_secrets(tls::Disclosure::on_interface(ifindex)?);
+            }
             let context = tls::client_context(&credentials).map_err(io::Error::other)?;
             let mut stream = tls::connect(&context, tcp)?;
             tls::check_peer_certificates(&stream, evcc_linux::certificates::Peer::Secc, t.certificate_checks.into(), |v| eprintln!("certificates: {v}"))?;

@@ -138,6 +138,9 @@ fn run(args: &Args) -> io::Result<bool> {
                 credentials = credentials.backwards_compatible();
             }
             credentials = credentials.versions(settings.tls_versions.into());
+            if settings.disclose_secrets {
+                credentials = credentials.disclose_secrets(evcc_linux::tls::Disclosure::on_interface(evcc_linux::sdp::interface_index(&args.interface)?)?);
+            }
             Some(evcc_linux::tls::server_context(&credentials).map_err(io::Error::other)?)
         }
         None => None,

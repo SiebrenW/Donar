@@ -13,7 +13,8 @@
 //! name: a SECC is found by SDP, not by name.
 
 use std::io;
-use std::net::TcpStream;
+use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6, TcpStream, UdpSocket};
+use std::sync::Arc;
 
 use openssl::error::ErrorStack;
 use openssl::pkey::PKey;
@@ -47,6 +48,45 @@ pub enum Versions {
     Tls12,
 }
 
+/// Where the secrets of a test platform's TLS sessions go, for a packet capture to decrypt them.
+///
+/// The dSPACE V2Gshark plugin for Wireshark reads the lines of an NSS key log (`CLIENT_RANDOM ...`
+/// for TLS 1.2, the `*_TRAFFIC_SECRET` lines for TLS 1.3) from UDP packets with a source port in
+/// 49152 to 65535 that one of the partners sends in a test environment. Each line is one packet,
+/// sent to the all-nodes group of the interface so that a capture on the cable sees it.
+/// **Only for simulators and tests**: it gives away the key of the session.
+#[derive(Clone)]
+pub struct Disclosure {
+    socket: Arc<UdpSocket>,
+    to: SocketAddr,
+}
+
+/// The destination port of the disclosure packets (nothing listens there).
+pub const DISCLOSURE_PORT: u16 = 50000;
+
+impl Disclosure {
+    /// Discloses on the interface with this index.
+    pub fn on_interface(ifindex: u32) -> io::Result<Self> {
+        // The source port has to be in the dynamic range the dissector looks at.
+        let start = 49152 + (std::process::id() % 16000) as u16;
+        let mut last = None;
+        for port in (start..=65535).chain(49152..start) {
+            match UdpSocket::bind((Ipv6Addr::UNSPECIFIED, port)) {
+                Ok(socket) => {
+                    let to = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1), DISCLOSURE_PORT, 0, ifindex));
+                    return Ok(Self { socket: Arc::new(socket), to });
+                }
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(last.unwrap_or_else(|| io::Error::other("no free port")))
+    }
+
+    fn send(&self, line: &str) {
+        let _ = self.socket.send_to(line.as_bytes(), self.to);
+    }
+}
+
 /// Our certificate chain (leaf first) and its private key, both PEM, and the trust anchors
 /// (PEM, one or more certificates) the peer's chain must end in.
 pub struct Credentials<'a> {
@@ -61,11 +101,13 @@ pub struct Credentials<'a> {
     /// An OCSP response (DER) to staple to the certificate of a server context, for the
     /// peer's `status_request` (V2G20-2388).
     pub ocsp_response: Option<&'a [u8]>,
+    /// Gives the session secrets away (test platforms only).
+    pub disclosure: Option<Disclosure>,
 }
 
 impl<'a> Credentials<'a> {
     pub fn new(chain_pem: &'a [u8], key_pem: &'a [u8], trust_pem: &'a [u8]) -> Self {
-        Self { chain_pem, key_pem, trust_pem, key_password: None, backwards_compatible: false, versions: Versions::Tls13, ocsp_response: None }
+        Self { chain_pem, key_pem, trust_pem, key_password: None, backwards_compatible: false, versions: Versions::Tls13, ocsp_response: None, disclosure: None }
     }
 
     /// Staples this OCSP response (DER, for the leaf certificate) to a server's certificate when the
@@ -80,6 +122,12 @@ impl<'a> Credentials<'a> {
     pub fn versions(mut self, versions: Versions) -> Self {
         self.versions = versions;
         self.backwards_compatible |= versions != Versions::Tls13;
+        self
+    }
+
+    /// Sends the secrets of every session to the capture (see [`Disclosure`]).
+    pub fn disclose_secrets(mut self, disclosure: Disclosure) -> Self {
+        self.disclosure = Some(disclosure);
         self
     }
 
@@ -111,6 +159,9 @@ fn context(role: SslMethod, c: &Credentials<'_>) -> Result<SslContextBuilder, Er
     } else {
         b.set_groups_list(GROUPS)?;
         b.set_sigalgs_list(SIGNATURE_ALGORITHMS)?;
+    }
+    if let Some(d) = c.disclosure.clone() {
+        b.set_keylog_callback(move |_, line| d.send(line));
     }
     let mut chain = X509::stack_from_pem(c.chain_pem)?.into_iter();
     let leaf = chain.next().ok_or_else(ErrorStack::get)?;

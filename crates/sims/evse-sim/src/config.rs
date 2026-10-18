@@ -114,6 +114,9 @@ pub struct Settings {
     pub tls_versions: TlsVersions,
     /// Also accept secp256r1 certificates (the ISO 15118-2 profile).
     pub backwards_compatible: bool,
+    /// Send the session secrets in UDP packets on the cable so that a capture can be decrypted
+    /// (dSPACE V2Gshark, Wireshark). Test platforms only.
+    pub disclose_secrets: bool,
     /// Check the vehicle's certificate chain against the vehicle profiles of Annex B.
     pub certificate_checks: CertificateChecks,
     /// The simulated control pilot the vehicle toggles: one octet per toggle is appended to
@@ -128,7 +131,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { slac_responder: false, tls_versions: TlsVersions::Tls13, backwards_compatible: false, certificate_checks: CertificateChecks::Off, control_pilot_file: None, sessions: 1, session: Config::default(), slac: Default::default() }
+        Self { slac_responder: false, tls_versions: TlsVersions::Tls13, backwards_compatible: false, disclose_secrets: false, certificate_checks: CertificateChecks::Off, control_pilot_file: None, sessions: 1, session: Config::default(), slac: Default::default() }
     }
 }
 

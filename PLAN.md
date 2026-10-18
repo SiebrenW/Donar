@@ -11,7 +11,7 @@ Implemented and tested (in memory, as scenarios in network namespaces, and again
 - **Vehicle** (`evcc-core`): ISO 15118-20 DC and AC, Dynamic and Scheduled, BPT (including the V2X energy range), EIM and Plug & Charge, mobility needs by the charger, `EVEnergyOffer`, schedule and price evaluation, standby, pause and resume, `GoToPause`, service and schedule renegotiation, metering confirmation, welding detection with the welded-contactor outcome; ISO 15118-2 DC and AC (PnC, pause, renegotiation, value-added service details, metering receipt, sales tariffs); DIN SPEC 70121 DC; SDP; SLAC (attenuation correction per carrier group, validation by control pilot).
 - **Charger** (`evse-core`): the same three protocols behind the `Secc`, `Iso2Secc` and `DinSecc` traits.
 - **Hosts** (`evcc-linux`): sockets, OpenSSL TLS (1.3 mutual authentication, 1.2 for -2), certificate profile and OCSP checks, message signatures, QCA7000 family modem driver.
-- **Tooling**: generated EXI codecs checked against EXIficient, simulators with fault injection, a sandbox of network namespaces and a scenario runner, interop against the Python `iso15118` SECC and `pyslac`, and a web UI with browser tests.
+- **Tooling**: a `capture.pcap` of the cable per scenario run, with the TLS secrets disclosed for dsV2Gshark; generated EXI codecs checked against EXIficient, simulators with fault injection, a sandbox of network namespaces and a scenario runner, interop against the Python `iso15118` SECC and `pyslac`, and a web UI with browser tests.
 
 Independent checks exist against the Python `iso15118` library (-20 DC, AC, BPT, PnC, mobility needs; -2; DIN; the vehicle side only) and `pyslac` (SLAC, vehicle side), and on a Heliox board with a QCA7005 modem (frames, key, network id).
 
@@ -72,6 +72,7 @@ Independent checks exist against the Python `iso15118` library (-20 DC, AC, BPT,
 
 ### Web UI and simulation page
 
+- Captures: a download of `capture.pcap` from the web UI (runs and simulations); the simulation page does not capture yet; the charger simulator does not disclose in the runner (the vehicle's secrets suffice); a Python-partner TLS run is decryptable only because our vehicle is the client.
 - Stopping a run (killing the runner would leave namespaces behind), saving an edited scenario to a file, several runs at once, authentication (localhost only).
 - The Scenarios tab keeps its plain form; SLAC and SDP are not phases to hold at, and SLAC in the simulation is untested.
 - Fault injection to drop the connection or delay a response.

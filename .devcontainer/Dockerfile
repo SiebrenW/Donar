@@ -1,13 +1,13 @@
 # Test environment for the Linux-only network tests (network namespaces, veth, raw sockets).
 # Used by `cargo xtask linux-test` and by the dev container (.devcontainer/devcontainer.json);
 # the container has to be privileged. The JDK is for `cargo xtask vectors` (EXIficient
-# reference vectors), iproute2 and sudo for the namespaces, Python for the interop partner, Chromium for the
+# reference vectors), iproute2 and sudo for the namespaces, tcpdump for the captures of the scenarios, Python for the interop partner, Chromium for the
 # tests of the web page.
 FROM rust:1
 # The generator formats its output with rustfmt; clippy is for the editor.
 RUN rustup component add rustfmt clippy
 RUN apt-get update -qq \
- && apt-get install -y -qq --no-install-recommends iproute2 default-jdk-headless sudo python3-venv chromium \
+ && apt-get install -y -qq --no-install-recommends iproute2 tcpdump default-jdk-headless sudo python3-venv chromium \
  && rm -rf /var/lib/apt/lists/*
 
 # An independent ISO 15118-20 charger (SECC) to test against, `cargo xtask interop`: the

@@ -23,6 +23,10 @@ pub struct Report {
     pub artifacts: PathBuf,
     pub evcc_log: String,
     pub secc_log: String,
+    /// The capture of the cable (`capture.pcap` in the artifacts), when the run could make one.
+    /// If the scenario uses TLS the vehicle discloses the session secrets on the cable (a UDP
+    /// packet per key log line), which the dSPACE V2Gshark plugin uses to decrypt it.
+    pub pcap: Option<PathBuf>,
 }
 
 impl Report {
@@ -60,6 +64,9 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
         sb.impair(&evcc, impairment)?;
         sb.impair(&secc, impairment)?;
     }
+    // A capture of the cable, from before the first packet to the end; without tcpdump (or the
+    // right to capture) the run goes on without one.
+    let mut capture = start_capture(&sb, &evcc);
     let mut evcc_settings = scenario.evcc_settings();
     evcc_settings.control_pilot_file = evcc_settings.control_pilot_file.map(|p| sb.artifacts().join(p).display().to_string());
     let mut secc_args: Vec<String> = Vec::new();
@@ -125,6 +132,7 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
             certificate_checks: own.certificate_checks,
             ocsp_checks: own.ocsp_checks,
             ocsp_require_all: own.ocsp_require_all,
+            disclose_secrets: false,
             chain: tls.chain.display().to_string(),
             key: tls.key.display().to_string(),
             trust: tls.trust.display().to_string(),
@@ -140,7 +148,11 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
     };
     // An error here is a charger that ended before it was ready.
     if !secc_process.wait_for_log(ready, Duration::from_secs(40)).unwrap_or(false) {
-        return Ok(finish(scenario, &sb, vec!["the charger did not become ready".into()], &mut secc_process, None));
+        return Ok(finish(scenario, &sb, vec!["the charger did not become ready".into()], &mut secc_process, None, &mut capture));
+    }
+    // The vehicle is ours in every scenario and is the TLS client, so its secrets decrypt the capture.
+    if let Some(tls) = evcc_settings.tls.as_mut() {
+        tls.disclose_secrets = capture.is_some();
     }
     let evcc_config = sb.write_artifact("evcc.toml", toml::to_string(&evcc_settings).map_err(io::Error::other)?.as_bytes())?;
     let mut spawn = Spawn::new(partners::sibling_binary("evcc-sim")?)
@@ -175,13 +187,31 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
             failures.push(format!("secc exit status {secc_exit:?}, expected {expected}"));
         }
     }
-    Ok(finish(scenario, &sb, failures, &mut secc_process, Some(&mut car)))
+    Ok(finish(scenario, &sb, failures, &mut secc_process, Some(&mut car), &mut capture))
 }
 
-fn finish(scenario: &Scenario, sb: &Sandbox, mut failures: Vec<String>, secc: &mut Process, car: Option<&mut Process>) -> Report {
+/// Name of the capture in the artifacts directory.
+pub const CAPTURE: &str = "capture.pcap";
+
+/// Starts `tcpdump` on the vehicle's end of the cable and waits until it listens.
+fn start_capture(sb: &Sandbox, node: &sandbox::Node) -> Option<Process> {
+    let path = sb.artifacts().join(CAPTURE);
+    // `-U --immediate-mode`: every packet is delivered and written at once, so the file is complete when the process is killed.
+    let spawn = Spawn::new("tcpdump").args(["-i", sandbox::INTERFACE, "-n", "-U", "--immediate-mode", "-w"]).arg(&path).net_raw().label("tcpdump");
+    let mut process = sb.spawn(node, spawn).ok()?;
+    process.wait_for_log("listening on", Duration::from_secs(5)).unwrap_or(false).then_some(process)
+}
+
+fn finish(scenario: &Scenario, sb: &Sandbox, mut failures: Vec<String>, secc: &mut Process, car: Option<&mut Process>, capture: &mut Option<Process>) -> Report {
     let secc_log = secc.log();
     let evcc_log = car.as_ref().map(|c| c.log()).unwrap_or_default();
     secc.kill();
+    // The last packets of the session are still on their way to the capture.
+    let pcap = capture.as_mut().map(|c| {
+        std::thread::sleep(Duration::from_millis(300));
+        c.kill();
+        sb.artifacts().join(CAPTURE)
+    });
     for (who, log, wanted) in [("evcc", &evcc_log, &scenario.expect.evcc_log), ("secc", &secc_log, &scenario.expect.secc_log)] {
         for line in wanted {
             if !log.contains(line.as_str()) {
@@ -189,7 +219,7 @@ fn finish(scenario: &Scenario, sb: &Sandbox, mut failures: Vec<String>, secc: &m
             }
         }
     }
-    Report { failures, artifacts: sb.artifacts().to_path_buf(), evcc_log, secc_log }
+    Report { failures, artifacts: sb.artifacts().to_path_buf(), evcc_log, secc_log, pcap }
 }
 
 /// Certificates of a run, as paths in the artifacts directory.
@@ -229,6 +259,7 @@ pub fn write_pki(sb: &Sandbox, curve: pki::Curve) -> io::Result<Files> {
             certificate_checks: Default::default(),
             ocsp_checks: Default::default(),
             ocsp_require_all: false,
+            disclose_secrets: false,
         },
     })
 }

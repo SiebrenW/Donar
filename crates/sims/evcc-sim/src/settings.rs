@@ -286,6 +286,9 @@ pub struct Tls {
     /// Ask for a status for every certificate below the root (V2G20-2416). OpenSSL delivers only
     /// the leaf's stapled response, so with a sub-CA this fails; without it only the leaf's is needed.
     pub ocsp_require_all: bool,
+    /// Send the session secrets in UDP packets on the cable so that a capture can be decrypted
+    /// (dSPACE V2Gshark, Wireshark). Test platforms only; the scenario runner switches it on.
+    pub disclose_secrets: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -531,6 +534,7 @@ mod tests {
                 certificate_checks: CertificateChecks::Warn,
                 ocsp_checks: CertificateChecks::Off,
                 ocsp_require_all: false,
+                disclose_secrets: true,
             }),
             stop_after: 0,
             ..Default::default()
