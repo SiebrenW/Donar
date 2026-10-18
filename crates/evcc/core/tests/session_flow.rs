@@ -27,6 +27,11 @@ thread_local! {
 const BATTERY_V: i16 = 400;
 
 thread_local! {
+    /// The vehicle asks the host for the control pilot (`Config::control_pilot`).
+    static PILOT: Cell<bool> = const { Cell::new(false) };
+}
+
+thread_local! {
     /// The maximum charge current the vehicle can take right now (amperes); 0: as announced.
     static LOOP_CURRENT: Cell<i16> = const { Cell::new(0) };
 }
@@ -130,7 +135,7 @@ type Sess<'a> = Session<'a, TestEv, Capture>;
 
 fn session<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
     let Rig { rx, tx, arena } = rig;
-    Session::new(Config { poll_interval_ms: 0, allow_unsecured: true, ..Config::DC_20 }, TestEv::new(), log, Buffers { rx, tx, arena })
+    Session::new(Config { poll_interval_ms: 0, allow_unsecured: true, control_pilot: PILOT.with(Cell::get), ..Config::DC_20 }, TestEv::new(), log, Buffers { rx, tx, arena })
 }
 
 /// Copies `bytes` into the session's RX buffer and reports them, like a socket read would.
@@ -375,7 +380,15 @@ fn sent_dc(s: &Sess<'_>, step: &Step, f: impl FnOnce(dc::Message<'_>)) {
 /// Up to and including the first `DC_CableCheckReq`.
 fn up_to_cable_check<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
     let mut s = up_to_schedule_exchange(rig, log);
-    deliver(&mut s, &se_res(ResponseCode::Ok, Processing::Finished));
+    let step = deliver(&mut s, &se_res(ResponseCode::Ok, Processing::Finished));
+    if PILOT.with(Cell::get) {
+        // V2G20-917: the pilot is C before the cable check.
+        assert_eq!(step.notice, Some(Notice::ControlPilot(ControlPilot::C)));
+        assert_eq!(s.state(), State::AwaitControlPilotC);
+        assert_eq!(step.send, None, "the cable check waits for the pilot");
+        let step = s.handle(Event::ControlPilotChanged);
+        assert_eq!(step.notice, Some(Notice::ScheduleExchanged));
+    }
     assert_eq!(s.state(), State::AwaitCableCheckRes);
     s
 }
@@ -458,7 +471,13 @@ fn finish_shutdown(s: &mut Sess<'_>) {
     assert_eq!(step.send, None, "welding detection waits for the open contactors");
     assert_eq!(step.timers, Timers::one(TimerCmd::Cancel(Timer::Response)).with(sequence_timer()));
     // V2G20-1448: after the stop the EVCC performs welding detection ...
-    let step = s.handle(Event::ContactorsOpened);
+    let mut step = s.handle(Event::ContactorsOpened);
+    if PILOT.with(Cell::get) {
+        // ... with the pilot at B (V2G20-919).
+        assert_eq!(step.notice, Some(Notice::ControlPilot(ControlPilot::B)));
+        assert_eq!(s.state(), State::AwaitControlPilotB);
+        step = s.handle(Event::ControlPilotChanged);
+    }
     sent_dc(s, &step, |m| {
         let dc::Message::DcWeldingDetectionReq(r) = m else { panic!("{m:?}") };
         assert_eq!(r.ev_processing, Processing::Ongoing);
@@ -1359,4 +1378,58 @@ fn a_bpt_session_uses_the_bpt_variants() {
     // A plain Dynamic answer in a BPT session ends it.
     let step = deliver(&mut s, &loop_res(None));
     assert!(matches!(step.end, Some(EndReason::UnexpectedMessage)), "{step:?}");
+}
+
+#[test]
+fn the_vehicle_asks_for_the_pilot_around_the_cable_check_and_the_welding_detection() {
+    PILOT.with(|p| p.set(true));
+    let mut rig = Rig::new();
+    let mut s = up_to_charge_loop(&mut rig, Capture::default());
+    deliver(&mut s, &loop_res(None));
+    s.handle(Event::StopRequested);
+    finish_shutdown(&mut s);
+    PILOT.with(|p| p.set(false));
+}
+
+#[test]
+fn an_emergency_on_the_pilot_ends_the_charge_at_once_without_a_word() {
+    use control_pilot::{Pwm, Reading, State as Cp};
+    for reading in [
+        Reading { state: Cp::C, pwm: Pwm::Off },
+        Reading { state: Cp::C, pwm: Pwm::Duty(50) },
+        Reading { state: Cp::B, pwm: Pwm::Duty(5) },
+    ] {
+        let mut rig = Rig::new();
+        let mut s = up_to_charge_loop(&mut rig, Capture::default());
+        let step = s.handle(Event::Pilot(reading));
+        assert_eq!(step.end, Some(EndReason::Emergency(reading)));
+        assert_eq!(step.send, None, "nothing is sent");
+        assert_eq!(s.state(), State::Ended);
+        // Whatever comes later is ignored.
+        assert_eq!(deliver(&mut s, &loop_res(None)), Step::default());
+    }
+    let mut rig = Rig::new();
+    let mut s = up_to_charge_loop(&mut rig, Capture::default());
+    let reading = Reading { state: Cp::E, pwm: Pwm::Off };
+    assert_eq!(s.handle(Event::Pilot(reading)).end, Some(EndReason::PilotFault(reading)));
+}
+
+#[test]
+fn during_the_stop_the_pilot_may_change_and_the_oscillator_go_off() {
+    use control_pilot::{Pwm, Reading, State as Cp};
+    let mut rig = Rig::new();
+    let mut s = up_to_charge_loop(&mut rig, Capture::default());
+    deliver(&mut s, &loop_res(None));
+    s.handle(Event::StopRequested);
+    // The charger's shutdown ends with the oscillator off, and the vehicle goes to B: no emergency.
+    assert_eq!(s.handle(Event::Pilot(Reading { state: Cp::C, pwm: Pwm::Off })).end, None);
+    assert_eq!(s.handle(Event::Pilot(Reading { state: Cp::B, pwm: Pwm::Off })).end, None);
+}
+
+#[test]
+fn the_duty_cycle_before_the_charge_parameters_is_not_judged() {
+    use control_pilot::{Pwm, Reading, State as Cp};
+    let mut rig = Rig::new();
+    let mut s = up_to_charge_parameters(&mut rig, Capture::default());
+    assert_eq!(s.handle(Event::Pilot(Reading { state: Cp::B, pwm: Pwm::Off })).end, None);
 }

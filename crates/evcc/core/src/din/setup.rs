@@ -170,6 +170,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         if let Some(end) = self.received(MsgKind::ChargeParameterDiscoveryRes, res.response_code) {
             return end;
         }
+        self.pilot.set_discovered(true);
         // V2G-DC-493: while the charger is still working its values are ignored.
         if res.evse_processing == EvseProcessing::Ongoing {
             return self.pause_then_repeat(tx);

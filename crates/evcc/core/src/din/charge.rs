@@ -25,6 +25,10 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
 
     /// Asks the host to change the control pilot; the next step follows its answer.
     pub(super) fn change_control_pilot(&mut self, to: ControlPilot, next: State) -> Step {
+        if to == ControlPilot::B {
+            self.pilot.set_ready(false);
+            self.pilot.set_stopping(true);
+        }
         self.goto(next);
         Step {
             notice: Some(Notice::ControlPilot(to)),
@@ -237,6 +241,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     /// The host stops drawing current; `PowerDeliveryReq(false)` follows (V2G-DC-673).
     pub(super) fn begin_stop(&mut self) -> Step {
         self.poll_pending = false;
+        self.pilot.set_stopping(true);
         self.goto(State::AwaitCurrentStopped);
         Step {
             notice: Some(Notice::StopEnergyTransfer { within_s: None }),
@@ -290,6 +295,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
 
     pub(super) fn send_session_stop(&mut self, tx: &mut [u8]) -> Step {
+        self.pilot.set_stopping(true);
         let body = BodyElementChoice::SessionStopReq(SessionStop {});
         self.send(body, MsgKind::SessionStopReq, State::AwaitSessionStopRes, tx)
     }

@@ -65,6 +65,8 @@ struct Machine<E, L> {
     ev: E,
     log: L,
     state: State,
+    /// What the control pilot means to the session (the host reports it with `Event::Pilot`).
+    pilot: control_pilot::EvWatch,
     /// The id of the session: one zero octet until the charger has assigned one (V2G-DC-241).
     session_id: [u8; 8],
     session_len: usize,
@@ -102,6 +104,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 ev,
                 log,
                 state: State::Idle,
+                pilot: control_pilot::EvWatch::new(false),
                 session_id: [0; 8],
                 session_len: 1,
                 poll_pending: false,
@@ -167,8 +170,10 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 let step = m.change_control_pilot(crate::session::ControlPilot::B, State::AwaitControlPilotB);
                 m.sequence_done(step)
             }
+            Event::Pilot(reading) => m.on_pilot(reading),
             Event::ControlPilotChanged => match m.state {
                 State::AwaitControlPilotC => {
+                    m.pilot.set_ready(true);
                     let step = m.send_cable_check_req(tx);
                     m.sequence_done(step)
                 }
@@ -416,6 +421,22 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             return self.send_session_stop(tx);
         }
         f(self, tx)
+    }
+
+    /// A change of the control pilot (IEC 61851-23 CC.3.4.3, CC.4.3; V2G-DC-647, 655, 656): an emergency or a
+    /// lost connection ends the session at once and sends nothing.
+    fn on_pilot(&mut self, reading: control_pilot::Reading) -> Step {
+        use control_pilot::Verdict;
+        let verdict = self.pilot.reading(reading);
+        if self.state == State::Idle {
+            return Step::default();
+        }
+        match verdict {
+            Verdict::Fine => Step::default(),
+            Verdict::SupplyStopped => self.on_stop_requested(),
+            Verdict::Fault => self.end(EndReason::PilotFault(reading)),
+            Verdict::Emergency => self.end(EndReason::Emergency(reading)),
+        }
     }
 
     fn on_stop_requested(&mut self) -> Step {

@@ -89,6 +89,11 @@ pub struct Config {
     /// vehicle skips the cable check and pre-charge, stops the power delivery (V2G20-2123) and pauses the session
     /// (`SessionStopReq` Pause), to come back later. Off: the vehicle goes on as usual.
     pub follow_go_to_pause: bool,
+    /// The vehicle asks the host to change the control pilot (DIN SPEC 70121 V2G-DC-501, 502; ISO 15118-2
+    /// V2G2-847, 848 do it in their cores): to C before the cable check (V2G20-917 wants C or D), to B after the
+    /// contactors are open (V2G20-919 to 922). Off: the host does that on its own and the machine
+    /// only learns the pilot from [`Event::Pilot`] (AC has no change of the pilot to ask for).
+    pub control_pilot: bool,
     /// `MobilityNeedsMode` 2 was selected ([`Config::mobility_needs_by_secc`]).
     pub mobility_needs_by_secc: bool,
 }
@@ -171,6 +176,7 @@ impl Config {
         request_meter_info: false,
         mobility_needs_by_secc: false,
         follow_go_to_pause: true,
+        control_pilot: false,
     };
 
     /// The same session in Scheduled control mode (ISO 15118-20:2022 Table 205: `ControlMode` 1

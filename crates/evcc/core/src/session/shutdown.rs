@@ -60,6 +60,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
 
     /// `SessionStopReq` of the kind the shutdown under way ends in.
     fn send_session_stop_req(&mut self, tx: &mut [u8]) -> Step {
+        self.pilot.set_stopping(true);
         let msg = common::SessionStopReq {
             header: self.header(),
             charging_session: match self.stop_kind {
@@ -109,6 +110,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     /// Starts the shutdown: the host ramps the current down first (V2G20-1310).
     pub(super) fn begin_stop(&mut self, within_s: Option<u16>) -> Step {
         self.standby = false;
+        self.pilot.set_stopping(true);
         self.ramp_down(within_s)
     }
     /// Asks the host to bring the current to zero; the shutdown or a standby period follows.

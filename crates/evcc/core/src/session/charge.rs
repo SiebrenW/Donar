@@ -72,6 +72,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         if let Some(end) = self.received_or(MsgKind::PowerDeliveryRes, res.response_code, tolerated) {
             return end;
         }
+        // The vehicle draws power from here on: the pilot is held in C or D (for AC the host does that on its own).
+        self.pilot.set_ready(true);
         // V2G20-1615/1616: with OK the energy transfer starts; the charge loop
         // begins at once.
         let mut step = self.send_charge_loop_req(tx);

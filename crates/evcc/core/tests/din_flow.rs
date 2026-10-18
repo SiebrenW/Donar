@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use evcc_core::din::{Config, Session};
 use evcc_core::ev::{DcConnector, DcLimits, Ev, ScheduleRequest};
-use evcc_core::log::{LogSink, Record};
+use evcc_core::log::{LogSink, NoLog, Record};
 use evcc_core::session::{Buffers, ControlPilot, EndReason, Event, Notice, State};
 use evcc_core::{Timer, TimerCmd};
 use evse_sim::{Config as EvseConfig, Evse};
@@ -99,6 +99,18 @@ enum Input {
 /// A session between the vehicle and the charger; after `stop_after` charge loop answers the
 /// vehicle asks to stop. Returns once the machine ended.
 fn run(connector: DcConnector, evse: EvseConfig, config: Config, stop_after: Option<u32>) -> Run {
+    run_host(connector, evse, config, stop_after, Host::default())
+}
+
+/// What the host does with the control pilot: report what it is told to set (`report`), and report a reading of its own
+/// when the n-th charge loop answer arrives (`inject`).
+#[derive(Default)]
+struct Host {
+    report: bool,
+    inject: Option<(u32, control_pilot::Reading)>,
+}
+
+fn run_host(connector: DcConnector, evse: EvseConfig, config: Config, stop_after: Option<u32>, host: Host) -> Run {
     let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
     let sent: Sent = Rc::default();
     let mut session = Session::new(config, TestEv::new(connector), Log(sent.clone()), Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
@@ -136,9 +148,26 @@ fn run(connector: DcConnector, evse: EvseConfig, config: Config, stop_after: Opt
                 Notice::CloseContactors => Some(Event::ContactorsClosed),
                 Notice::StopEnergyTransfer { .. } => Some(Event::EnergyTransferStopped),
                 Notice::OpenContactors => Some(Event::ContactorsOpened),
-                Notice::ControlPilot(_) => Some(Event::ControlPilotChanged),
+                Notice::ControlPilot(p) => {
+                    if host.report {
+                        // The host sets the pilot and measures it before it says so.
+                        let state = match p {
+                            ControlPilot::B => control_pilot::State::B,
+                            ControlPilot::C => control_pilot::State::C,
+                        };
+                        queue.push_front(Input::Event(Event::ControlPilotChanged));
+                        queue.push_front(Input::Event(Event::Pilot(control_pilot::Reading { state, pwm: control_pilot::Pwm::Duty(5) })));
+                        continue;
+                    }
+                    Some(Event::ControlPilotChanged)
+                }
                 Notice::ChargeLoop(_) => {
                     loops += 1;
+                    if let Some((n, reading)) = host.inject.filter(|(n, _)| *n == loops) {
+                        let _ = n;
+                        queue.push_front(Input::Event(Event::Pilot(reading)));
+                        continue;
+                    }
                     (Some(loops) == stop_after).then_some(Event::StopRequested)
                 }
                 _ => None,
@@ -289,4 +318,53 @@ fn a_contactor_that_stays_welded_ends_the_session_with_that_reason() {
     let r = run(DcConnector::Extended, evse, din(), Some(1));
     assert_eq!(r.end, EndReason::ContactorWelded, "{:?}", r.log);
     assert!(!r.sent.iter().any(|m| m == "SessionStopReq"));
+}
+
+#[test]
+fn a_host_that_reports_the_pilot_does_not_disturb_a_session() {
+    use control_pilot::Reading;
+    // The pilot goes to C before the cable check and to B at the stop, as asked: nothing there is an emergency.
+    let r = run_host(DcConnector::Extended, EvseConfig::default(), din(), Some(3), Host { report: true, inject: None });
+    assert_eq!(r.end, EndReason::Completed, "{:?}\n{:?}", r.states, r.log);
+    let _ = Reading::CHARGING;
+}
+
+#[test]
+fn an_emergency_on_the_pilot_ends_the_session_at_once_and_sends_nothing_more() {
+    use control_pilot::{Pwm, Reading, State as Cp};
+    for reading in [
+        // The charger turned its oscillator off (IEC 61851-23 CC.3.4.3, scenario 2) ...
+        Reading { state: Cp::C, pwm: Pwm::Off },
+        // ... or changed the duty cycle (V2G-DC-656) ...
+        Reading { state: Cp::C, pwm: Pwm::Duty(50) },
+        // ... the state left C without the vehicle's own change (CC.4.3).
+        Reading { state: Cp::B, pwm: Pwm::Duty(5) },
+        Reading { state: Cp::Invalid, pwm: Pwm::Duty(5) },
+    ] {
+        let r = run_host(DcConnector::Extended, EvseConfig::default(), din(), None, Host { report: true, inject: Some((2, reading)) });
+        assert_eq!(r.end, EndReason::Emergency(reading), "{:?}", r.states);
+        assert_eq!(r.sent.iter().filter(|m| *m == "PowerDeliveryReq").count(), 1, "only the start of the power: {:?}", r.sent);
+        assert!(!r.sent.iter().any(|m| m == "SessionStopReq"), "{:?}", r.sent);
+        assert_eq!(r.sent.last().map(String::as_str), Some("CurrentDemandReq"), "nothing after the emergency: {:?}", r.sent);
+    }
+}
+
+#[test]
+fn a_pilot_in_state_e_or_f_closes_the_connection() {
+    use control_pilot::{Pwm, Reading, State as Cp};
+    for state in [Cp::E, Cp::F] {
+        let reading = Reading { state, pwm: Pwm::Off };
+        let r = run_host(DcConnector::Extended, EvseConfig::default(), din(), None, Host { report: true, inject: Some((2, reading)) });
+        assert_eq!(r.end, EndReason::PilotFault(reading));
+    }
+}
+
+#[test]
+fn a_pilot_reading_before_the_start_is_remembered_but_not_acted_on() {
+    use control_pilot::Reading;
+    // The first reading of a session may come before `Start`: nothing happens, the session starts.
+    let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
+    let mut session = Session::new(din(), TestEv::new(DcConnector::Extended), NoLog, Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
+    assert_eq!(session.handle(Event::Pilot(Reading::CONNECTED)), evcc_core::session::Step::default());
+    assert_eq!(session.state(), State::Idle);
 }

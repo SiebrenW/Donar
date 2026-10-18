@@ -287,6 +287,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         if let Some(end) = self.received(MsgKind::ChargeParameterDiscoveryRes, res.response_code) {
             return end;
         }
+        self.pilot.set_discovered(true);
         // While the charger is still working its values are ignored (it asks again).
         if res.evse_processing != EvseProcessing::Finished {
             return self.pause_then_repeat(tx);

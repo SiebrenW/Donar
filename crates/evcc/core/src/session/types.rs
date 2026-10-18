@@ -130,6 +130,13 @@ pub enum EndReason {
     RejectedDin(din70121::types::ResponseCode),
     /// ISO 15118-2: the EVSE answered with a failing response code.
     RejectedIso2(iso15118_2::types::ResponseCode),
+    /// The control pilot said emergency (IEC 61851-23 CC.3.4.3, CC.4.3): it left state C/D without the vehicle's
+    /// own change, or the charger turned its oscillator off or changed the duty cycle (V2G-DC-656). Nothing
+    /// was sent; the host opens the contactors, sets the pilot to B and closes the connection.
+    Emergency(control_pilot::Reading),
+    /// The control pilot is in state E or F (or A): the connection is lost or the charger signals a fault
+    /// (V2G-DC-655, V2G2-737). Close the connection.
+    PilotFault(control_pilot::Reading),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +170,12 @@ pub enum Event {
     EnergyTransferStopped,
     /// The host changed the control pilot after [`Notice::ControlPilot`].
     ControlPilotChanged,
+    /// The host measured a change of the control pilot (state or PWM). Report every change at once, at any
+    /// time, also before [`Event::Start`]: an emergency has to reach the session within the milliseconds
+    /// the standards give (IEC 61851-23 CC.4.3: 50 ms for the vehicle). The session ends with
+    /// [`EndReason::Emergency`] or [`EndReason::PilotFault`] and sends nothing more; the host opens the
+    /// contactors and closes the connection (it does not wait for this event to do the first).
+    Pilot(control_pilot::Reading),
 }
 
 /// A control pilot state (IEC 61851-1) the vehicle changes to.

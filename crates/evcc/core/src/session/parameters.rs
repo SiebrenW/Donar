@@ -16,6 +16,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         if let Some(end) = self.received(MsgKind::DcChargeParameterDiscoveryRes, res.response_code) {
             return end;
         }
+        self.pilot.set_discovered(true);
         self.note_evse_limits(&res.dc_cpd_res_energy_transfer_mode);
         let mut step = self.send_schedule_exchange_req(tx);
         if step.end.is_none() {
@@ -28,6 +29,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         if let Some(end) = self.received(MsgKind::AcChargeParameterDiscoveryRes, res.response_code) {
             return end;
         }
+        self.pilot.set_discovered(true);
         self.note_evse_ac_limits(&res.ac_cpd_res_energy_transfer_mode);
         let mut step = self.send_schedule_exchange_req(tx);
         if step.end.is_none() {
@@ -62,6 +64,10 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                     return step;
                 }
                 // AC has no cable check or pre-charge: the power delivery starts at once.
+                if self.config.control_pilot && !self.config.ac() {
+                    // V2G20-917: the pilot is C or D for the cable check; `Notice::ScheduleExchanged` follows with it.
+                    return self.change_control_pilot(ControlPilot::C, State::AwaitControlPilotC);
+                }
                 let mut step = if self.config.ac() { self.send_power_delivery(common::ChargeProgress::Start, tx) } else { self.send_cable_check_req(tx) };
                 if step.end.is_none() {
                     step.notice = Some(Notice::ScheduleExchanged);

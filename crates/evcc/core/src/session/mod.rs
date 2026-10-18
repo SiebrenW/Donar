@@ -56,6 +56,8 @@ struct Machine<E, L> {
     ev: E,
     log: L,
     state: State,
+    /// What the control pilot means to the session (the host reports it with `Event::Pilot`).
+    pilot: control_pilot::EvWatch,
     secured: bool,
     session_id: [u8; 8],
     /// The `Ongoing` timer is armed once, when the first `Ongoing` response arrives.
@@ -122,6 +124,7 @@ struct Machine<E, L> {
 
 impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
     pub fn new(config: Config, ev: E, log: L, buffers: Buffers<'a>) -> Self {
+        let ac = config.ac();
         Self {
             rx: buffers.rx,
             rx_len: 0,
@@ -132,6 +135,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 ev,
                 log,
                 state: State::Idle,
+                pilot: control_pilot::EvWatch::new(ac),
                 secured: false,
                 session_id: [0; 8],
                 ongoing_armed: false,
@@ -229,7 +233,11 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 }
                 (
                     Timer::Sequence,
-                    State::AwaitContactors | State::AwaitCurrentStopped | State::AwaitContactorsOpened,
+                    State::AwaitContactors
+                    | State::AwaitCurrentStopped
+                    | State::AwaitContactorsOpened
+                    | State::AwaitControlPilotC
+                    | State::AwaitControlPilotB,
                 ) => m.end(EndReason::Timeout),
                 (Timer::Side, _) => m.on_side_timer(tx),
                 (Timer::Poll, _) if m.poll_pending => {
@@ -243,6 +251,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 if m.state != State::AwaitContactors {
                     return Step::default();
                 }
+                m.pilot.set_ready(true);
                 let step = m.send_power_delivery(common::ChargeProgress::Start, tx);
                 m.sequence_done(step)
             }
@@ -250,28 +259,14 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 if m.state != State::AwaitContactorsOpened {
                     return Step::default();
                 }
+                // V2G20-919: the pilot goes to B when the contactors are open, then welding detection.
+                if m.config.control_pilot {
+                    return m.change_control_pilot(types::ControlPilot::B, State::AwaitControlPilotB);
+                }
                 let step = m.send_welding_req(false, tx);
                 m.sequence_done(step)
             }
-            Event::StopRequested => {
-                m.stop_kind = types::StopKind::Terminate;
-                match m.state {
-                State::AwaitChargeLoopRes if m.poll_pending => {
-                    m.poll_pending = false;
-                    m.begin_stop(None)
-                }
-                // Also while a standby period is being entered: acted on once it is on.
-                State::AwaitChargeLoopRes | State::AwaitPowerDeliveryStandbyRes => {
-                    m.stop_requested = true;
-                    Step::default()
-                }
-                State::AwaitCurrentStopped if m.entering_standby => {
-                    m.stop_requested = true;
-                    Step::default()
-                }
-                _ => Step::default(),
-            }
-            }
+            Event::StopRequested => m.stop_requested_by_vehicle(),
             Event::PauseRequested => match m.state {
                 State::AwaitChargeLoopRes if m.poll_pending => {
                     m.poll_pending = false;
@@ -304,8 +299,22 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                     _ => Step::default(),
                 }
             }
-            // DIN SPEC 70121 only.
-            Event::ControlPilotChanged => Step::default(),
+            Event::Pilot(reading) => m.on_pilot(reading),
+            Event::ControlPilotChanged => match m.state {
+                State::AwaitControlPilotC => {
+                    m.pilot.set_ready(true);
+                    let mut step = m.send_cable_check_req(tx);
+                    if step.end.is_none() {
+                        step.notice = Some(Notice::ScheduleExchanged);
+                    }
+                    m.sequence_done(step)
+                }
+                State::AwaitControlPilotB => {
+                    let step = m.send_welding_req(false, tx);
+                    m.sequence_done(step)
+                }
+                _ => Step::default(),
+            },
             Event::EnergyTransferStopped => {
                 if m.state != State::AwaitCurrentStopped {
                     return Step::default();
@@ -403,6 +412,56 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         let from = core::mem::replace(&mut self.state, to);
         self.log.record(&Record::StateChange { from, to });
     }
+    /// The vehicle wants to stop (user, full battery, fault, the AC supply gone): acted on while the charge loop runs.
+    fn stop_requested_by_vehicle(&mut self) -> Step {
+        self.stop_kind = types::StopKind::Terminate;
+        match self.state {
+            State::AwaitChargeLoopRes if self.poll_pending => {
+                self.poll_pending = false;
+                self.begin_stop(None)
+            }
+            // Also while a standby period is being entered: acted on once it is on.
+            State::AwaitChargeLoopRes | State::AwaitPowerDeliveryStandbyRes => {
+                self.stop_requested = true;
+                Step::default()
+            }
+            State::AwaitCurrentStopped if self.entering_standby => {
+                self.stop_requested = true;
+                Step::default()
+            }
+            _ => Step::default(),
+        }
+    }
+
+    /// A change of the control pilot (IEC 61851-23 CC.3.4.3, CC.4.3; V2G-DC-655, 656): an emergency or a lost
+    /// connection ends the session at once and sends nothing; the loss of an AC supply is an orderly stop.
+    fn on_pilot(&mut self, reading: control_pilot::Reading) -> Step {
+        use control_pilot::Verdict;
+        let verdict = self.pilot.reading(reading);
+        if matches!(self.state, State::Idle | State::Ended) {
+            return Step::default();
+        }
+        match verdict {
+            Verdict::Fine => Step::default(),
+            Verdict::SupplyStopped => self.stop_requested_by_vehicle(),
+            Verdict::Fault => self.end(EndReason::PilotFault(reading)),
+            Verdict::Emergency => self.end(EndReason::Emergency(reading)),
+        }
+    }
+
+    /// The control pilot change the host is asked for (`Config::control_pilot`).
+    fn change_control_pilot(&mut self, to: types::ControlPilot, next: State) -> Step {
+        if to == types::ControlPilot::B {
+            self.pilot.set_ready(false);
+        }
+        self.goto(next);
+        Step {
+            notice: Some(Notice::ControlPilot(to)),
+            timers: Timers::one(TimerCmd::Cancel(Timer::Response)).with(self.arm_sequence()),
+            ..Step::default()
+        }
+    }
+
     fn end(&mut self, reason: EndReason) -> Step {
         self.goto(State::Ended);
         self.log.record(&Record::Ended { reason });

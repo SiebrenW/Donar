@@ -39,6 +39,10 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
 
     pub(super) fn change_control_pilot(&mut self, to: ControlPilot, next: State) -> Step {
+        if to == ControlPilot::B {
+            self.pilot.set_ready(false);
+            self.pilot.set_stopping(true);
+        }
         self.goto(next);
         Step {
             notice: Some(Notice::ControlPilot(to)),
@@ -353,6 +357,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
 
     pub(super) fn begin_stop(&mut self) -> Step {
         self.poll_pending = false;
+        self.pilot.set_stopping(true);
         self.goto(State::AwaitCurrentStopped);
         Step {
             notice: Some(Notice::StopEnergyTransfer { within_s: None }),
@@ -407,6 +412,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
 
     pub(super) fn send_session_stop(&mut self, tx: &mut [u8]) -> Step {
+        self.pilot.set_stopping(true);
         let session = if self.pausing { ChargingSession::Pause } else { ChargingSession::Terminate };
         let body = BodyElementChoice::SessionStopReq(SessionStopReq { charging_session: session });
         self.send(body, MsgKind::SessionStopReq, State::AwaitSessionStopRes, tx)
