@@ -1,0 +1,93 @@
+# Gaps and inconsistencies in the standards
+
+What we ran into while implementing ISO 15118-20, ISO 15118-2, DIN SPEC 70121 and SLAC (ISO 15118-3), and what the code does about it. Requirement ids are those of the standard's text (`V2G20-…` for ISO 15118-20:2022, `V2G-DC-…` for DIN SPEC 70121). "Decision" is what the code does today; where it is a guess it says so, and the guess can be checked against another implementation or a standards body answer.
+
+Terminology used here: **V2G** is the high level communication, **BPT**/**V2X** is power delivered from the vehicle (see `AGENT.md`).
+
+Four kinds of entry: the **text contradicts itself**, the **text and the schema disagree**, the standard is **silent** where an implementation has to choose, and the standard asks for something that **cannot be done** as written. A last section lists where *other implementations* deviate from the standard, because those were found by testing against them and are easy to mistake for ours.
+
+## ISO 15118-20:2022
+
+### The text contradicts itself
+
+| Where | What | Decision |
+|---|---|---|
+| `TimeAnchor` (Table 112; 8.3.5.3.9, Annex J examples) | Table 112 says milliseconds; the examples and 8.3.5.3.9 read as microseconds. | Microseconds. The vehicle writes its message time stamp; the charger sim used seconds before and was corrected. |
+| V2G20-1032, 2098 against V2G20-1478, 1644, 1956 | After a wake-up from a pause, charge parameter discovery is the next request; elsewhere the vehicle selects the services again. | The first reading (charge parameter discovery next, authorization and service selection carry over). |
+| V2G20-2121 to 2123, 1068 | The text has the vehicle send a `PowerDeliveryReq` with `ChargeProgress` "Pause", but the schema's values are Start, Stop, Standby and ScheduleRenegotiation. V2G20-2123 names Stop for a vehicle that wants to start with a pause. | `GoToPause`: skip the cable check and pre-charge, send Stop, then `SessionStopReq(Pause)`. |
+| V2G20-479 | Names the code `FAILED_TariffSelectionInvalid` for an unknown schedule tuple; the schema has `FAILED_ScheduleSelectionInvalid` (and the tariff code is not one of the response codes). | `FAILED_ScheduleSelectionInvalid`. |
+| V2G20-2584, 2598 against the certificate tables | "Shall not contain any further values" in the subject of a SECC or vehicle certificate, but the tables allow C, OU and DC. | The tables are followed; a domain component must be CSO or EV. |
+| Annex C.3.2 | The SECCID example does not come out with the check digit the algorithm gives (4, not 2); the EMAID and EVCCID examples do. | The algorithm. |
+
+### The text and the schema disagree
+
+| Where | What | Decision |
+|---|---|---|
+| `DisplayParameters` (8.3.5.3.28) with `MobilityNeedsMode` 2 | The text makes the display values mandatory for that mode; every element in the XSD is optional. | The vehicle sends them in full in mode 2. The Python library's model requires `ChargingComplete` always, so the vehicle sim sends it. |
+| `PowerToleranceAcceptance` (V2G20-1866) | Sent only if a tolerance was offered; the schema allows it always. | Only with a tolerance (`Config::state_tolerance_always` for partners that insist). |
+| Certificate tables B.x (Ed448 SECC certificates) | `keyAgreement` is required in the key usage, which an Ed448 key cannot do. | Implemented as written; flagged. |
+| Vehicle tables: `AuthorityKeyIdentifier`, `SubjectKeyIdentifier` | Marked critical; RFC 5280 says they are not. | Either is accepted. |
+| `AuthorityInfoAccess`, `CRLDistributionPoints` | The profiles make them critical; OpenSSL reports an unhandled critical extension. | The TLS contexts let exactly those two through. |
+
+### Silent where an implementation has to choose
+
+| Where | What is not said | Decision |
+|---|---|---|
+| Schedule renegotiation side stream (payload type 0x8101, 8.6.5.1, Annex F) | Which schema the side stream uses: charge parameter discovery is in the DC schema, schedule exchange and power delivery in the common messages. | Messages are coded as on the main stream; the receiver decodes what the exchange expects next. No independent check exists (the Python library defines the payload type and does not implement it). |
+| Message signatures (V2G20-1449) | Whether the digest and signature cover the EXI fragment *with* its header octet; the SHAKE256 digest length; the ECDSA value format. | With the header octet (as EXIficient-based stacks do), r‖s (xmldsig-more); the SHAKE256 length is a guess. |
+| BPT service parameters (Table 207) | Whether `BPTChannel` and `GeneratorMode` are mandatory in a DC_BPT parameter set. The Python SECC offers none. | The vehicle accepts a set without them (`Config::optional_parameters`). Unchecked. |
+| `EVMaximumV2XEnergyRequest`, `EVMinimumV2XEnergyRequest` (V2G20-2681, 2682, 2124, 2125) | Sign conventions are given in prose only ("a negative value indicates that PresentSOC is above the V2X range"). The same ordering rule is stated twice (Dynamic, BPT loops) with different ids. | Both values or none, clamped into minimum energy ≤ minimum V2X ≤ maximum V2X ≤ maximum energy. |
+| Discharge in Dynamic mode | The convention for the target energy and power when discharging (a negative `EVTargetEnergyRequest`, a negative target active power). | Negative means discharge. Open item in PLAN. |
+| Phase specific power (V2G20-1815 to 1822, 1209) | Spread over many requirements: the base element is the sum if no `_L2`/`_L3` follows, otherwise line 1; a single-phase vehicle on a three-phase set writes zero in `_L2`/`_L3`. A first reading got this wrong. | As described; see the "second reading" section of PLAN. |
+| V2G20-1555 | Target frequency: when a vehicle must act on it. | Not used by either side. |
+| Tables 224 and 226 | Which response code each message may carry; the table columns came out of the PDF text extraction. | Read by meaning; **re-check against the PDF**. |
+| `ScheduleExchangeRes` `Ongoing` | No ScheduleExchange-specific rule for the repeat timing. | V2G_EVCC_Ongoing_Timeout applies, as for other `Ongoing` answers. |
+| Session pause (8.3.4.1) | Hash binding of the vehicle certificate and the charger certificate across the connections (V2G20-2539, 2545). | Not implemented; it belongs to the host and the TLS layer. |
+
+### Cannot be done as written
+
+| Where | What | Decision |
+|---|---|---|
+| OCSP in TLS 1.3 (V2G20-2411 to 2416) | Responses for every certificate of the chain, in the handshake. OpenSSL hands a client one stapled response (the leaf's) and has no API for the others (a limit of the library, not of the text). | `require_all` fails for a chain with a sub-CA unless the host brings more responses. The simulators check the leaf only. |
+
+Not covered at all: cross certificates (V2G20-1002, 1005, 1853), the profiles of the provisioning, e-mobility, OEM provisioning, private environment and OCSP signer certificates, and CRLs.
+
+## ISO 15118-2
+
+| Where | What | Decision |
+|---|---|---|
+| `SalesTariff` | Only price levels (`EPriceLevel`) are comparable between tuples; the optional consumption cost is a percentage. | Levels are compared as they come (`NumEPriceLevels` is not used); cost percentages are ignored. Our limitation more than the standard's. |
+| Certificate installation and update | The messages are in the codec; the crypto belongs to the implementer. | Out of scope by decision. |
+
+## DIN SPEC 70121
+
+| Where | What | Decision |
+|---|---|---|
+| Schemas | The DIN XSDs are not freely available. | Taken from the `iso15118` repository of ecog-io into `data/schemas/din-spec`; the grammar is checked against EXIficient, but the schemas themselves are not checked against the standard. |
+| `EVSEID` (V2G-DC-621) | hexBinary from a DIN SPEC 91286 string, `*` as `A`, an odd count padded with `F`. | As written; the EVSEID format (IEC 63119-2) is not validated. |
+
+## ISO 15118-3 and SLAC
+
+| Where | What | Decision |
+|---|---|---|
+| `CM_VALIDATE` | The MMTYPEs (0x6044, 0x6045) are left to the HomePlug specification. | Those of the open HomePlug implementations. Unchecked against hardware. |
+| Network id and key on the modem | The NID octet layout of `CM_SET_KEY` and the vendor `VS_NW_INFO` answer are not in the standard. | The layout was read from captures on a QCA7005; a lone modem was checked, a joined modem was not. |
+| Attenuation thresholds (10 dB direct, 20 dB indirect) | They assume a modem at the plug. Wiring between the plug and the modem adds attenuation that is no part of the path to the charger, per carrier group. The standard has no correction. | Configurable per group in the vehicle and the simulated charger (`attenuation_correction_db`). The transmit level (how loud the modem sounds) is the modem's and not configured. |
+| Secure SLAC (security type 1) | Not supported. | |
+
+## Other implementations that deviate from the standard
+
+Found by testing against them; kept here so that a failure is not blamed on the wrong side.
+
+| Implementation | Deviation |
+|---|---|
+| Python `iso15118` 0.31.2 (SECC) | Requires `PowerToleranceAcceptance` always. Requires `ChargingComplete` in `DisplayParameters`. Offers `TimeAnchor` 0 (the vehicle counts from receipt). Offers no `BPTChannel`/`GeneratorMode`. Offers `MobilityNeedsMode` 2 for AC only. Does not implement the schedule renegotiation side stream. Answers fixed values when discharging. |
+| `pyslac` 0.8.3 | Needs a PLC chip (or a stand-in) for `CM_SET_KEY` and the attenuation profile; a stale 20 dB report is refused by the vehicle by design. Its `environs` dependency breaks with `marshmallow` 4. |
+| OpenV2G, libcbv2g (EXI codecs) | Re-encode some documents to different bytes (OpenV2G: certificate installation and update requests, one byte more) or fail to decode (libcbv2g: several DIN and ISO 15118-20 documents). The full list is in `crates/codec/exi-gen/benchmarks/RESULTS.md`. |
+| OpenSSL | See the OCSP entry above. |
+
+## Where this list is weak
+
+- Items marked "unchecked" were not verified against a second implementation or hardware.
+- Tables 224 and 226 were read from a text extraction; the others from the same extraction. The line numbers of the PDF were not kept.
+- The ISO 15118-2 and DIN requirements were read less closely than the ISO 15118-20 ones; absence from this list is not evidence that they are consistent.

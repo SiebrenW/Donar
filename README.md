@@ -6,6 +6,7 @@ The core is `no_std`, allocation-free and **sans-IO**: it never touches a socket
 
 - Getting a checkout to build and test: [GETTING_STARTED.md](GETTING_STARTED.md)
 - Design, status and what is verified against what: [PLAN.md](PLAN.md)
+- Where the standards contradict themselves, disagree with their schemas or are silent, and what we decided: [STANDARDS_NOTES.md](STANDARDS_NOTES.md)
 
 ## Building your own EVCC
 
