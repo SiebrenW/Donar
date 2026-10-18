@@ -208,6 +208,8 @@ struct Machine<S> {
     state: State,
     /// What the control pilot means to the session (the host reports it with `Event::Pilot`).
     pilot: control_pilot::EvseWatch,
+    /// The guard the host was last told.
+    last_guard: control_pilot::Guard,
     session_id: [u8; 8],
     /// The mode of the session is AC.
     ac: bool,
@@ -258,7 +260,7 @@ impl Id {
 
 impl<S: Iso2Secc> Session<S> {
     pub fn new(secc: S) -> Self {
-        Self { rx_len: 0, m: Machine { secc, state: State::AwaitSessionSetupReq, pilot: control_pilot::EvseWatch::new(), session_id: [0; 8], ac: false, renegotiating: false, announced_power: None, p_max_w: 0.0 } }
+        Self { rx_len: 0, m: Machine { secc, state: State::AwaitSessionSetupReq, pilot: control_pilot::EvseWatch::new(), last_guard: control_pilot::Guard::disarmed(control_pilot::Side::Charger), session_id: [0; 8], ac: false, renegotiating: false, announced_power: None, p_max_w: 0.0 } }
     }
 
     pub fn state(&self) -> State {
@@ -278,7 +280,19 @@ impl<S: Iso2Secc> Session<S> {
         &mut rx[self.rx_len..]
     }
 
+    /// Handles an event; the step carries `pilot` when the control pilot guard changed.
     pub fn handle(&mut self, event: Event, buffers: &mut Buffers<'_>) -> Step {
+        let mut step = self.handle_event(event, buffers);
+        self.m.announce_guard(&mut step);
+        step
+    }
+
+    /// What the control pilot is expected to do now (the host arms its own monitor with it).
+    pub fn pilot_guard(&self) -> control_pilot::Guard {
+        self.m.pilot.guard(self.m.guard_active())
+    }
+
+    fn handle_event(&mut self, event: Event, buffers: &mut Buffers<'_>) -> Step {
         let Self { rx_len, m } = self;
         let Buffers { rx, tx, arena } = buffers;
         let mut arena = Arena::new(arena);
@@ -336,7 +350,7 @@ impl<S: Iso2Secc> Session<S> {
                 } else {
                     None
                 };
-                Step { send: sent, timer, close: close || ended(m.state) }
+                Step { send: sent, timer, close: close || ended(m.state), pilot: None }
             }
         }
     }
@@ -428,6 +442,20 @@ impl<S: Iso2Secc> Machine<S> {
     fn offers_tuple(&self, id: u8) -> bool {
         let offered = self.secc.schedule_tuples();
         if offered.is_empty() { id == 1 } else { offered.iter().any(|t| t.sa_schedule_tuple_id == id) }
+    }
+
+    /// Whether a session is under way, for the control pilot guard.
+    fn guard_active(&self) -> bool {
+        !matches!(self.state, State::Stopped | State::Paused | State::Closed)
+    }
+
+    /// Tells the host when what is expected of the control pilot changed.
+    fn announce_guard(&mut self, step: &mut Step) {
+        let guard = self.pilot.guard(self.guard_active());
+        if guard != self.last_guard {
+            self.last_guard = guard;
+            step.pilot = Some(guard);
+        }
     }
 
     /// A change of the control pilot (IEC 61851-23 CC.4.3): an emergency or a lost vehicle ends the session at

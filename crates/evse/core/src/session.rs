@@ -72,6 +72,8 @@ struct Machine<S> {
     state: State,
     /// What the control pilot means to the session (the host reports it with `Event::Pilot`).
     pilot: control_pilot::EvseWatch,
+    /// The guard the host was last told.
+    last_guard: control_pilot::Guard,
     secured: bool,
     /// The vehicle offered the AC schema.
     ac_namespace: bool,
@@ -102,7 +104,7 @@ impl<S: Secc> Session<S> {
             m: Machine {
                 secc,
                 state: State::AwaitSupportedAppProtocolReq,
-                pilot: control_pilot::EvseWatch::new(),
+                pilot: control_pilot::EvseWatch::new(), last_guard: control_pilot::Guard::disarmed(control_pilot::Side::Charger),
                 secured: false,
                 ac_namespace: false,
                 session_id: [0; 8],
@@ -144,7 +146,19 @@ impl<S: Secc> Session<S> {
     /// Handles an event. The buffers are the host's, and the same ones for every call: what the machine
     /// has not consumed of `rx` stays there; the frames of the answer are written to `tx` (up to
     /// [`Step::send`]).
+    /// Handles an event; the step carries `pilot` when the control pilot guard changed.
     pub fn handle(&mut self, event: Event, buffers: &mut Buffers<'_>) -> Step {
+        let mut step = self.handle_event(event, buffers);
+        self.m.announce_guard(&mut step);
+        step
+    }
+
+    /// What the control pilot is expected to do now (the host arms its own monitor with it).
+    pub fn pilot_guard(&self) -> control_pilot::Guard {
+        self.m.pilot.guard(self.m.guard_active())
+    }
+
+    fn handle_event(&mut self, event: Event, buffers: &mut Buffers<'_>) -> Step {
         let Self { rx_len, m } = self;
         let Buffers { rx, tx, arena, scratch } = buffers;
         let mut arena = Arena::new(arena);
@@ -202,7 +216,7 @@ impl<S: Secc> Session<S> {
                 } else {
                     None
                 };
-                Step { send: sent, timer, close: close || ended(m.state) }
+                Step { send: sent, timer, close: close || ended(m.state), pilot: None }
             }
         }
     }
@@ -247,6 +261,20 @@ impl<S: Secc> Machine<S> {
         let from = core::mem::replace(&mut self.state, to);
         if from != to {
             self.secc.note(format_args!("state {from:?} -> {to:?}"));
+        }
+    }
+
+    /// Whether a session is under way, for the control pilot guard.
+    fn guard_active(&self) -> bool {
+        !matches!(self.state, State::Stopped | State::Paused | State::Closed)
+    }
+
+    /// Tells the host when what is expected of the control pilot changed.
+    fn announce_guard(&mut self, step: &mut Step) {
+        let guard = self.pilot.guard(self.guard_active());
+        if guard != self.last_guard {
+            self.last_guard = guard;
+            step.pilot = Some(guard);
         }
     }
 

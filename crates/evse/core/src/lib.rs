@@ -65,6 +65,10 @@ pub struct Step {
     pub timer: Option<TimerCmd>,
     /// Close the connection (after writing `send`).
     pub close: bool,
+    /// The control pilot guard changed: arm the host's own monitor with it (see [`control_pilot::Guard`]). Published
+    /// when the connection is accepted, whenever what is expected of the pilot changes (the vehicle was seen in C or D,
+    /// the stop begins) and, disarmed, when the session is over.
+    pub pilot: Option<control_pilot::Guard>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -127,6 +127,8 @@ pub enum Record<'a> {
     /// the `Connector` parameter) and every `(name, value)` of the vehicle's filter.
     NoParameterSet { connector: i32, filter: &'static [(&'static str, i32)], offered: &'a [ParameterSet<'a>] },
     Ended { reason: EndReason },
+    /// What the host is to watch on the control pilot changed.
+    PilotGuard { guard: control_pilot::Guard },
     /// A response code of a DIN SPEC 70121 charger.
     DinResponse { msg: MsgKind, code: din70121::types::ResponseCode },
     /// The charger does not offer the energy transfer the vehicle wants (DIN SPEC 70121).
@@ -168,6 +170,7 @@ impl Record<'_> {
                 Level::Debug
             }
             Record::RxPayload { .. } => Level::Trace,
+            Record::PilotGuard { .. } => Level::Debug,
             Record::DecodeFailed { .. } | Record::Violation { .. } | Record::ResponseCodeNotAllowed { .. } | Record::NoAuthorization { .. } | Record::NoService { .. } | Record::NoParameterSet { .. } => Level::Error,
             Record::Ignored { .. } => Level::Info,
             Record::Ended { reason } => match reason {

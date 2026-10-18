@@ -123,6 +123,9 @@ fn drive(
                 deadlines.postpone(held_from.elapsed());
             }
         }
+        if let (Some(guard), Some(source)) = (step.pilot, pilot.as_deref_mut()) {
+            source.arm(guard);
+        }
         if let Some(n) = step.send {
             stream.write_all(&session.tx()[..n])?;
         }

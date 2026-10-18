@@ -70,6 +70,8 @@ struct Machine<E, L> {
     state: State,
     /// What the control pilot means to the session (the host reports it with `Event::Pilot`).
     pilot: control_pilot::EvWatch,
+    /// The guard the host was last told.
+    last_guard: control_pilot::Guard,
     /// The vehicle ends the session for a non-critical reason of its own: it says so with `SessionStopReq` and ends with
     /// this reason when the answer is in (or does not come).
     pending_end: Option<EndReason>,
@@ -132,6 +134,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 log,
                 state: State::Idle,
                 pilot: control_pilot::EvWatch::new(matches!(config.mode, Mode::AcSinglePhase | Mode::AcThreePhase)),
+                last_guard: control_pilot::Guard::disarmed(control_pilot::Side::Vehicle),
                 pending_end: None,
                 session_id: [0; 8],
                 session_len: 1,
@@ -175,7 +178,19 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
         self.m.state
     }
 
+    /// Handles an event; see the host contract. The step carries `pilot` when the control pilot guard changed.
     pub fn handle(&mut self, event: Event) -> Step {
+        let mut step = self.handle_event(event);
+        self.m.announce_guard(&mut step);
+        step
+    }
+
+    /// What the control pilot is expected to do now (the host arms its own monitor with it).
+    pub fn pilot_guard(&self) -> control_pilot::Guard {
+        self.m.pilot.guard(self.m.guard_active())
+    }
+
+    fn handle_event(&mut self, event: Event) -> Step {
         let Self { rx, rx_len, tx, arena, m } = self;
         if m.state == State::Ended {
             return Step::default();
@@ -281,6 +296,9 @@ impl<E: Ev, L: LogSink> crate::machine::Machine for Session<'_, E, L> {
     }
     fn state(&self) -> State {
         Session::state(self)
+    }
+    fn pilot_guard(&self) -> control_pilot::Guard {
+        Session::pilot_guard(self)
     }
 }
 
@@ -486,6 +504,21 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             return self.send_session_stop(tx);
         }
         f(self, tx)
+    }
+
+    /// Whether a session is under way, for the control pilot guard.
+    fn guard_active(&self) -> bool {
+        !matches!(self.state, State::Idle | State::Ended)
+    }
+
+    /// Tells the host when what is expected of the control pilot changed.
+    fn announce_guard(&mut self, step: &mut Step) {
+        let guard = self.pilot.guard(self.guard_active());
+        if guard != self.last_guard {
+            self.last_guard = guard;
+            step.pilot = Some(guard);
+            self.log.record(&Record::PilotGuard { guard });
+        }
     }
 
     /// A change of the control pilot (IEC 61851-23 CC.3.4.3, CC.4.3; V2G-DC-647, 655, 656): an emergency or a

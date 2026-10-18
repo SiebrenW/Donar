@@ -12,4 +12,7 @@ pub trait Machine {
     /// The outgoing message buffer; valid up to [`Step::send`] after a step.
     fn tx(&self) -> &[u8];
     fn state(&self) -> State;
+    /// What the control pilot is expected to do now, for the host's own fast monitor ([`control_pilot::Guard`]);
+    /// the same as the last [`Step::pilot`].
+    fn pilot_guard(&self) -> control_pilot::Guard;
 }

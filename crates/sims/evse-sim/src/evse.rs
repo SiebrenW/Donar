@@ -89,6 +89,8 @@ trait Pump {
     fn pilot(&mut self, reading: control_pilot::Reading, mem: &mut Mem) -> (usize, bool);
     /// Charge loop requests seen so far.
     fn loops(&self) -> u32;
+    /// What the host is to watch on the control pilot now.
+    fn guard(&self) -> control_pilot::Guard;
 }
 
 impl Pump for evse_core::Session<SimSecc> {
@@ -116,6 +118,9 @@ impl Pump for evse_core::Session<SimSecc> {
     }
     fn loops(&self) -> u32 {
         self.secc().loops_seen()
+    }
+    fn guard(&self) -> control_pilot::Guard {
+        self.pilot_guard()
     }
 }
 
@@ -145,6 +150,9 @@ impl Pump for evse_core::din::Session<SimDin> {
     fn loops(&self) -> u32 {
         self.secc().loops_seen()
     }
+    fn guard(&self) -> control_pilot::Guard {
+        self.pilot_guard()
+    }
 }
 
 impl Pump for evse_core::iso2::Session<SimIso2> {
@@ -173,6 +181,9 @@ impl Pump for evse_core::iso2::Session<SimIso2> {
     fn loops(&self) -> u32 {
         self.secc().loops_seen()
     }
+    fn guard(&self) -> control_pilot::Guard {
+        self.pilot_guard()
+    }
 }
 
 /// The session machine of the protocol the vehicle chose, and its memory.
@@ -194,6 +205,8 @@ pub struct Evse {
     log: Vec<String>,
     /// The last control pilot reading, for a session machine that is not started yet.
     pilot: Option<control_pilot::Reading>,
+    /// The guard last written to the log.
+    guard: control_pilot::Guard,
 }
 
 impl From<evse_core::State> for State {
@@ -266,7 +279,7 @@ impl From<evse_core::iso2::State> for State {
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), protocol: Protocol::Iso20, run: None, live: None, log: Vec::new(), pilot: None }
+        Self { config, state: State::AwaitSupportedAppProtocolReq, rx: Vec::new(), protocol: Protocol::Iso20, run: None, live: None, log: Vec::new(), pilot: None, guard: control_pilot::Guard::disarmed(control_pilot::Side::Charger) }
     }
 
     /// Reports the charge loop measurements to a test platform and takes its edits.
@@ -286,6 +299,7 @@ impl Evse {
         let Some(run) = &mut self.run else { return Vec::new() };
         let (len, close) = run.pump.pilot(reading, &mut run.mem);
         let sent = run.mem.tx[..len].to_vec();
+        self.note_guard();
         if close || len > 0 { vec![Output { send: (!sent.is_empty()).then_some(sent), close }] } else { Vec::new() }
     }
 
@@ -294,6 +308,16 @@ impl Evse {
         match (&self.run, self.config.pilot_emergency_after_loops) {
             (Some(run), Some(n)) => run.pump.loops() >= n,
             _ => false,
+        }
+    }
+
+    /// Writes a change of what the host is to watch on the pilot to the log.
+    fn note_guard(&mut self) {
+        let Some(run) = &self.run else { return };
+        let guard = run.pump.guard();
+        if guard != self.guard {
+            self.guard = guard;
+            self.note(format!("control pilot guard: {guard:?}"));
         }
     }
 
@@ -421,6 +445,7 @@ impl Evse {
             }
             run.pump.log().extend(lines);
         }
+        self.note_guard();
         vec![Output { send: (!sent.is_empty()).then_some(sent), close }]
     }
 

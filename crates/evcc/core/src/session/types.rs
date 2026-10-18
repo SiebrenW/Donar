@@ -306,4 +306,8 @@ pub struct Step {
     pub notice: Option<Notice>,
     /// Set when the session is over; the host closes the connection.
     pub end: Option<EndReason>,
+    /// The control pilot guard changed: arm the host's own monitor with it (see [`control_pilot::Guard`]). Published
+    /// when the session starts, whenever what is expected of the pilot changes (the vehicle holds C, the shutdown
+    /// begins, the oscillator is meant to be 5 %) and, disarmed, when the session ends.
+    pub pilot: Option<control_pilot::Guard>,
 }

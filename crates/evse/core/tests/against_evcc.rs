@@ -428,6 +428,12 @@ impl Ev for PnCEv {
     }
 }
 
+thread_local! {
+    /// The control pilot guards the machines published, in order: the vehicle's and the charger's.
+    static VEHICLE_GUARDS: std::cell::RefCell<Vec<control_pilot::Guard>> = const { std::cell::RefCell::new(Vec::new()) };
+    static CHARGER_GUARDS: std::cell::RefCell<Vec<control_pilot::Guard>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// The two machines and what passes between them.
 struct Rig<'a, E: Ev> {
     vehicle: EvSession<'a, E, NoLog>,
@@ -462,6 +468,9 @@ impl<E: Ev> Rig<'_, E> {
         if let Some(end) = step.end {
             self.ended = Some(end);
         }
+        if let Some(guard) = step.pilot {
+            VEHICLE_GUARDS.with(|g| g.borrow_mut().push(guard));
+        }
         if let Some(n) = step.notice {
             let event = match n {
                 Notice::CloseContactors => Some(EvEvent::ContactorsClosed),
@@ -474,6 +483,9 @@ impl<E: Ev> Rig<'_, E> {
                     };
                     if self.host.report && !skip {
                         let step = self.charger.handle(Event::Pilot(control_pilot::Reading { state, pwm: control_pilot::Pwm::Duty(5) }), &mut self.charger_buffers);
+                        if let Some(guard) = step.pilot {
+                            CHARGER_GUARDS.with(|g| g.borrow_mut().push(guard));
+                        }
                         self.closed |= step.close;
                     }
                     Some(EvEvent::ControlPilotChanged)
@@ -483,6 +495,9 @@ impl<E: Ev> Rig<'_, E> {
                     if let Some((n, reading)) = self.host.inject.filter(|(n, _)| *n == self.loops) {
                         let _ = n;
                         let step = self.charger.handle(Event::Pilot(reading), &mut self.charger_buffers);
+                        if let Some(guard) = step.pilot {
+                            CHARGER_GUARDS.with(|g| g.borrow_mut().push(guard));
+                        }
                         self.closed |= step.close;
                     }
                     (self.loops == self.stop_after).then_some(EvEvent::StopRequested)
@@ -503,6 +518,9 @@ impl<E: Ev> Rig<'_, E> {
             let space = self.charger.rx_space(self.charger_buffers.rx);
             space[..frames.len()].copy_from_slice(&frames);
             let reply = self.charger.handle(Event::Received(frames.len()), &mut self.charger_buffers);
+            if let Some(guard) = reply.pilot {
+                CHARGER_GUARDS.with(|g| g.borrow_mut().push(guard));
+            }
             let bytes = self.charger_buffers.tx[..reply.send].to_vec();
             // One frame at a time, as a stream would deliver them.
             let mut at = 0;
@@ -747,7 +765,9 @@ fn pilot_run(host: PilotHost, stop_after: u32) -> (Option<EndReason>, bool, Stat
     let (mut srx, mut stx, mut sarena, mut sscratch) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768], vec![0u8; 8192]);
     let mut charger_buffers = Buffers { rx: &mut srx, tx: &mut stx, arena: &mut sarena, scratch: &mut sscratch };
     let mut charger = Session::new(TestCharger::default());
-    charger.handle(Event::Connected { secured: true }, &mut charger_buffers);
+    if let Some(guard) = charger.handle(Event::Connected { secured: true }, &mut charger_buffers).pilot {
+        CHARGER_GUARDS.with(|g| g.borrow_mut().push(guard));
+    }
     let mut rig = Rig { vehicle, charger, charger_buffers, ended: None, loops: 0, stop_after, closed: false, halt_at: None, halted: false, host };
     if host.report {
         // Plugged in: B with the oscillator on.
@@ -817,4 +837,23 @@ fn the_pilot_going_to_b_after_the_stop_is_no_emergency() {
     assert_eq!(end, Some(EndReason::Completed));
     assert!(closed);
     assert!(matches!(charger.ended, Some(evse_core::secc::Ended::Stopped(_))), "{:?}", charger.ended);
+}
+
+#[test]
+fn the_machines_tell_the_host_what_to_watch_as_the_session_goes() {
+    use control_pilot::{Guard, Side};
+    VEHICLE_GUARDS.with(|g| g.borrow_mut().clear());
+    CHARGER_GUARDS.with(|g| g.borrow_mut().clear());
+    let (end, _, _, _) = pilot_run(PilotHost { report: true, ..Default::default() }, 3);
+    assert_eq!(end, Some(EndReason::Completed));
+    let vehicle = VEHICLE_GUARDS.with(|g| g.borrow().clone());
+    let charger = CHARGER_GUARDS.with(|g| g.borrow().clone());
+    let vg = |hold_ready: bool, hold_five_percent: bool, close_on_fault: bool| Guard { side: Side::Vehicle, hold_ready, hold_five_percent, static_stops_supply: false, close_on_fault };
+    // Vehicle: armed for the faults when the session starts; the duty cycle is to be 5 % once the charge parameters are in;
+    // C is held from its own change; the shutdown makes both free; the end disarms.
+    assert_eq!(vehicle, [vg(false, false, true), vg(false, true, true), vg(true, true, true), vg(false, false, true), Guard::disarmed(Side::Vehicle)], "{vehicle:?}");
+    let cg = |hold_ready: bool, close_on_fault: bool| Guard { side: Side::Charger, hold_ready, hold_five_percent: false, static_stops_supply: false, close_on_fault };
+    // Charger: armed for the faults when the connection is accepted; C is held once the vehicle was seen in C; the stop makes B
+    // meant (and with it nothing is judged any more, which the end does not change).
+    assert_eq!(charger, [cg(false, true), cg(true, true), Guard::disarmed(Side::Charger)], "{charger:?}");
 }

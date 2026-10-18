@@ -91,7 +91,73 @@ pub enum Verdict {
     Emergency,
 }
 
-/// The vehicle's view. The core sets the phase with the methods; [`EvWatch::reading`] decides.
+/// Who is judging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Vehicle,
+    Charger,
+}
+
+/// What the session machine wants watched *right now*: the host arms its own fast monitor with it (an interrupt, a
+/// comparator, a loop of a few hundred microseconds) and reacts to an emergency itself, within the milliseconds the
+/// standards give, without a trip through the session machine. The machine publishes a new guard in
+/// `Step::pilot` whenever the expectation changes (the pilot is meant to go to C, an orderly stop begins, the
+/// session ends); [`Guard::judge`] is the rule, the same one the machine applies when it is told a reading with
+/// `Event::Pilot`.
+///
+/// Every field is a plain condition, so a monitor in hardware or in an ISR can implement the guard without this
+/// crate. [`Guard::DISARMED`] (nothing wrong, whatever the pilot does) is the guard before and after a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Guard {
+    pub side: Side,
+    /// State C or D has to hold: any other state is an emergency (IEC 61851-23 CC.4.3). For the vehicle it holds from its
+    /// own change to C until it asks for B; for the charger from the moment it saw C or D until the stop.
+    pub hold_ready: bool,
+    /// The oscillator has to be on at 5 % (DC): another duty cycle or an oscillator that is off is an emergency
+    /// (DIN V2G-DC-656, IEC 61851-23 CC.3.4.3). Vehicle only; the charger makes the pilot.
+    pub hold_five_percent: bool,
+    /// AC: a constant duty cycle (state x1) is the supply stopping, no emergency: stop the charge in order.
+    pub static_stops_supply: bool,
+    /// State A, E, F or an invalid voltage while no emergency is judged ends the session and closes the connection
+    /// (DIN V2G-DC-655, ISO 15118-2 V2G2-737). On while a session is under way.
+    pub close_on_fault: bool,
+}
+
+impl Guard {
+    /// Nothing is judged.
+    pub const DISARMED: Guard = Guard { side: Side::Vehicle, hold_ready: false, hold_five_percent: false, static_stops_supply: false, close_on_fault: false };
+
+    pub const fn disarmed(side: Side) -> Guard {
+        Guard { side, ..Guard::DISARMED }
+    }
+
+    /// Whether anything is judged.
+    pub fn is_armed(&self) -> bool {
+        self.hold_ready || self.hold_five_percent || self.static_stops_supply || self.close_on_fault
+    }
+
+    /// What `reading` means under this guard.
+    pub fn judge(&self, r: Reading) -> Verdict {
+        let fault_state = matches!(r.state, State::A | State::E | State::F);
+        if self.hold_ready && !r.is_ready() {
+            // The vehicle takes E, F and A for the end of the connection (DIN V2G-DC-655); the charger, which had the
+            // vehicle in C or D, for an emergency.
+            return if self.side == Side::Vehicle && self.close_on_fault && fault_state { Verdict::Fault } else { Verdict::Emergency };
+        }
+        if self.close_on_fault && fault_state {
+            return Verdict::Fault;
+        }
+        if self.hold_five_percent && !r.pwm.is_five_percent() {
+            return Verdict::Emergency;
+        }
+        if self.static_stops_supply && r.pwm == Pwm::Off {
+            return Verdict::SupplyStopped;
+        }
+        Verdict::Fine
+    }
+}
+
+/// The vehicle's view.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EvWatch {
     last: Option<Reading>,
@@ -129,29 +195,22 @@ impl EvWatch {
         self.last
     }
 
+    /// What is to be watched now. `active` is whether a session is under way (before `Start` and after the end nothing is).
+    pub fn guard(&self, active: bool) -> Guard {
+        let judged = active && !self.stopping;
+        Guard {
+            side: Side::Vehicle,
+            hold_ready: judged && self.ready,
+            hold_five_percent: judged && self.discovered && !self.ac,
+            static_stops_supply: judged && self.discovered && self.ac,
+            close_on_fault: active,
+        }
+    }
+
+    /// Takes a reading (the host tells the machine what it measured) and judges it by the guard.
     pub fn reading(&mut self, r: Reading) -> Verdict {
         self.last = Some(r);
-        match r.state {
-            // V2G-DC-655, V2G2-737: close the connection. (State A: the cable is gone.)
-            State::E | State::F | State::A => return Verdict::Fault,
-            _ => {}
-        }
-        if self.stopping {
-            return Verdict::Fine;
-        }
-        // CC.4.3: C/D that is not held any more, without the vehicle's own change, is an emergency.
-        if self.ready && !r.is_ready() {
-            return Verdict::Emergency;
-        }
-        if self.discovered && !r.pwm.is_five_percent() {
-            return match (self.ac, r.pwm) {
-                (true, Pwm::Off) => Verdict::SupplyStopped,
-                (true, Pwm::Duty(_)) => Verdict::Fine,
-                // V2G-DC-656 and CC.3.4.3 scenario 2.
-                (false, _) => Verdict::Emergency,
-            };
-        }
-        Verdict::Fine
+        self.guard(true).judge(r)
     }
 }
 
@@ -185,24 +244,25 @@ impl EvseWatch {
         self.last
     }
 
+    /// What is to be watched now. `active` is whether a session is under way.
+    pub fn guard(&self, active: bool) -> Guard {
+        Guard {
+            side: Side::Charger,
+            hold_ready: active && self.was_ready && !self.stopping,
+            hold_five_percent: false,
+            static_stops_supply: false,
+            close_on_fault: active && !self.stopping,
+        }
+    }
+
     /// CC.4.3: the transition from C/D to anything else that nothing explains is an emergency; E, F and A
     /// before the vehicle was ever ready end the session.
     pub fn reading(&mut self, r: Reading) -> Verdict {
         self.last = Some(r);
         if r.is_ready() {
             self.was_ready = true;
-            return Verdict::Fine;
         }
-        if self.stopping {
-            return Verdict::Fine;
-        }
-        if self.was_ready {
-            return Verdict::Emergency;
-        }
-        match r.state {
-            State::A | State::E | State::F => Verdict::Fault,
-            _ => Verdict::Fine,
-        }
+        self.guard(true).judge(r)
     }
 
     /// V2G20-917, 918 (and V2G2-917, 918): the cable check is answered OK when the pilot is C or D, `FAILED`
@@ -310,6 +370,67 @@ mod tests {
         let mut w = EvseWatch::new();
         assert_eq!(w.reading(B5), Verdict::Fine);
         assert_eq!(w.reading(E), Verdict::Fault);
+    }
+
+    #[test]
+    fn the_guard_is_the_rule_the_machine_applies() {
+        // The host arms its own monitor with the guard; the machine judges a reading by the same rule.
+        let readings = [
+            Reading::CONNECTED,
+            Reading::CHARGING,
+            Reading { state: State::C, pwm: Pwm::Off },
+            Reading { state: State::C, pwm: Pwm::Duty(50) },
+            Reading { state: State::B, pwm: Pwm::Off },
+            Reading { state: State::Invalid, pwm: Pwm::Duty(5) },
+            Reading { state: State::E, pwm: Pwm::Off },
+            Reading { state: State::A, pwm: Pwm::Duty(5) },
+        ];
+        for ac in [false, true] {
+            for (ready, discovered, stopping) in [(false, false, false), (true, false, false), (true, true, false), (false, true, false), (true, true, true)] {
+                let mut w = EvWatch::new(ac);
+                w.set_ready(ready);
+                w.set_discovered(discovered);
+                w.set_stopping(stopping);
+                let guard = w.guard(true);
+                for r in readings {
+                    assert_eq!(guard.judge(r), w.clone().reading(r), "vehicle ac={ac} ready={ready} discovered={discovered} stopping={stopping} {r:?}");
+                }
+            }
+        }
+        for (was_ready, stopping) in [(false, false), (true, false), (true, true)] {
+            let mut w = EvseWatch::new();
+            if was_ready {
+                w.reading(Reading::CHARGING);
+            }
+            if stopping {
+                w.set_stopping();
+            }
+            let guard = w.guard(true);
+            for r in readings {
+                assert_eq!(guard.judge(r), w.clone().reading(r), "charger was_ready={was_ready} stopping={stopping} {r:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_guard_is_armed_for_the_phases_of_the_session_and_not_outside() {
+        let mut w = EvWatch::new(false);
+        assert!(!w.guard(false).is_armed(), "no session");
+        assert!(w.guard(true).close_on_fault && !w.guard(true).hold_ready, "a session: only the fault states");
+        w.set_discovered(true);
+        assert!(w.guard(true).hold_five_percent && !w.guard(true).hold_ready);
+        w.set_ready(true);
+        assert!(w.guard(true).hold_ready, "C is held from the vehicle's own change");
+        w.set_stopping(true);
+        let g = w.guard(true);
+        assert!(!g.hold_ready && !g.hold_five_percent && g.close_on_fault, "the shutdown may change the pilot");
+        assert!(!w.guard(false).is_armed());
+        let mut c = EvseWatch::new();
+        assert!(!c.guard(true).hold_ready);
+        c.reading(Reading::CHARGING);
+        assert!(c.guard(true).hold_ready, "once the charger saw C it holds");
+        c.set_stopping();
+        assert!(!c.guard(true).hold_ready, "the stop makes B meant");
     }
 
     #[test]

@@ -21,6 +21,10 @@ use control_pilot::{Pwm, Reading, State};
 pub trait PilotSource {
     /// A reading if the pilot changed since the last call.
     fn poll(&mut self) -> Option<Reading>;
+    /// The session machine published a new guard (`Step::pilot`): what the host's own monitor is to judge from now on.
+    /// A host that watches the pilot in an interrupt or in hardware arms that monitor here; the default does nothing and
+    /// leaves the judging to the machine, which applies the same rule to every reading it is given.
+    fn arm(&mut self, _guard: control_pilot::Guard) {}
 }
 
 /// How often a host with a pilot source looks for a change while it waits for the socket.
@@ -77,7 +81,7 @@ impl Wire {
 
     /// The readings of this cable as a [`PilotSource`]: a change is reported once.
     pub fn source(&self) -> WireSource {
-        WireSource { wire: self.clone(), last: None }
+        WireSource { wire: self.clone(), last: None, guard: control_pilot::Guard::DISARMED }
     }
 
     fn write(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
@@ -104,9 +108,21 @@ fn letter(state: State) -> u8 {
 pub struct WireSource {
     wire: Wire,
     last: Option<Reading>,
+    guard: control_pilot::Guard,
+}
+
+impl WireSource {
+    /// The guard the session machine last published.
+    pub fn guard(&self) -> control_pilot::Guard {
+        self.guard
+    }
 }
 
 impl PilotSource for WireSource {
+    fn arm(&mut self, guard: control_pilot::Guard) {
+        self.guard = guard;
+    }
+
     fn poll(&mut self) -> Option<Reading> {
         let now = self.wire.reading()?;
         (self.last != Some(now)).then(|| {
