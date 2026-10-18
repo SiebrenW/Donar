@@ -7,7 +7,7 @@ use crate::{run, workspace_root};
 /// Runs `cargo test` for the Linux-only tests (network namespaces, veth pairs, raw sockets)
 /// in a privileged container, so they work from macOS through Docker/Colima. The target
 /// directory and the cargo registry live in named volumes: the host's `target` holds macOS
-/// builds. Inside, `developer` builds and the test binaries run as root through sudo.
+/// builds (and, in `target/sandbox`, the artifacts of the runs). Inside, `developer` builds and the test binaries run as root through sudo.
 pub fn linux_test(cargo_args: Vec<String>) -> Result<(), String> {
     let mut cmd = linux_container(&[])?;
     // `own-volumes` first: volumes made by an older image belong to root.
@@ -37,6 +37,9 @@ fn linux_container(publish: &[String]) -> Result<Command, String> {
     cmd.arg("--volume")
         .arg(format!("{}:/workspaces/evcc-rs", root.display()))
         .args(["--volume", "evcc-rs-target-v2:/target", "--volume", "evcc-rs-cargo-v2:/usr/local/cargo/registry"])
+        // The artifacts of the runs (logs, settings, captures) go to the host's `target/sandbox`,
+        // not into the build volume, so they can be looked at (Wireshark) from the host.
+        .args(["--env", "SANDBOX_ARTIFACTS=/workspaces/evcc-rs/target/sandbox"])
         .args(["--workdir", "/workspaces/evcc-rs", IMAGE]);
     Ok(cmd)
 }
@@ -77,6 +80,6 @@ pub fn web(args: Vec<String>) -> Result<(), String> {
         return run(&mut cmd);
     }
     let mut cmd = linux_container(&[format!("127.0.0.1:{port}:8080")])?;
-    cmd.args(["bash", "-c", r#"own-volumes && cargo build --quiet --workspace --bins && exec /target/debug/evcc-web --listen 0.0.0.0:8080 --work /target/web"#]);
+    cmd.args(["bash", "-c", r#"own-volumes && cargo build --quiet --workspace --bins && exec /target/debug/evcc-web --listen 0.0.0.0:8080 --work /workspaces/evcc-rs/target/web"#]);
     run(&mut cmd)
 }

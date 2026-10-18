@@ -141,7 +141,10 @@ impl Sandbox {
         }
         let id = format!("{}-{}", std::process::id(), NEXT_SANDBOX.fetch_add(1, Ordering::Relaxed));
         let root = options.artifacts_root.unwrap_or_else(default_artifacts_root);
-        let artifacts = root.join(&id);
+        // Time first: process ids repeat (every container run starts at a low one), and a run must
+        // not find the files of an earlier one; the directories sort by age.
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let artifacts = root.join(format!("{secs}-{id}"));
         ns::create_dir_all_owned(&artifacts, user)?;
         Ok(Sandbox { id, user, artifacts, nodes: 0 })
     }
