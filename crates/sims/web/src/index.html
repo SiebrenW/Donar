@@ -844,7 +844,7 @@ const PROTOCOLS = [
   { id: "din", label: "DIN SPEC 70121", set: { protocol: "din70121", connector: "extended" } },
 ];
 const currentProtocol = () => (sim.evcc.protocol ?? "iso15118-20") === "iso15118-20" ? "iso20" : (sim.evcc.protocol === "iso15118-2" ? "iso2" : "din");
-// ISO 15118-20 charges over DC or AC, and may be bidirectional (V2G).
+// ISO 15118-20 charges over DC or AC, and may be bidirectional (BPT).
 const energyKind = () => ({ ac: currentProtocol() === "iso20" && !!sim.evcc.ac, bpt: currentProtocol() === "iso20" && !!sim.evcc.bpt });
 
 // What a button can set up with one click. Each starts from the page's defaults.
@@ -922,9 +922,9 @@ function buildSim() {
     b.onclick = () => { if (ac) sim.evcc.ac = true; else { delete sim.evcc.ac; delete sim.evcc.scheduled; } buildSim(); };
     energy.append(b);
   }
-  const v2g = $("input", { type: "checkbox", id: "sim-v2g", checked: !!sim.evcc.bpt });
-  v2g.onchange = () => { if (v2g.checked) sim.evcc.bpt = true; else delete sim.evcc.bpt; buildSim(); };
-  const v2gLabel = $("label", { className: "inline iso20-only", title: "bidirectional power transfer: the car can give energy back" }, v2g, "V2G");
+  const bpt = $("input", { type: "checkbox", id: "sim-bpt", checked: !!sim.evcc.bpt });
+  bpt.onchange = () => { if (bpt.checked) sim.evcc.bpt = true; else delete sim.evcc.bpt; buildSim(); };
+  const bptLabel = $("label", { className: "inline iso20-only", title: "bidirectional power transfer: the car can give energy back" }, bpt, "BPT");
 
   const scheduled = $("input", { type: "checkbox", id: "sim-scheduled", checked: !!sim.evcc.scheduled });
   scheduled.onchange = () => { if (scheduled.checked) sim.evcc.scheduled = true; else delete sim.evcc.scheduled; };
@@ -1042,7 +1042,7 @@ function applyProtocol() {
     b.classList.toggle("on", on);
     b.setAttribute("aria-pressed", on);
   }
-  document.getElementById("sim-v2g").checked = bpt;
+  document.getElementById("sim-bpt").checked = bpt;
 }
 
 function applyView() {
@@ -1071,7 +1071,7 @@ function applyView() {
   $id("step-start").disabled = busy;
   $id("sim-close").disabled = !v.open || v.opening;
   for (const id of ["sim-tls", "sim-slac", "sim-pki"]) $id(id).disabled = v.open || v.opening;
-  for (const b of [...$id("sim-protocol").children, ...$id("sim-energy").children, $id("sim-v2g"), $id("sim-scheduled"), $id("sim-mobility-needs")]) b.disabled = !!v.running;
+  for (const b of [...$id("sim-protocol").children, ...$id("sim-energy").children, $id("sim-bpt"), $id("sim-scheduled"), $id("sim-mobility-needs")]) b.disabled = !!v.running;
   $id("sim-held").textContent = !ev ? "" : ev.held ? `held before ${phaseName(ev.phase)}: click a phase to go on` : !v.running ? "" : ev.free_run ? "" : ev.stay && ev.phase === ev.target ? `staying in ${phaseName(ev.phase)}` : `running ${ev.stay ? "into" : "up to"} ${phaseName(ev.target)}`;
   if (document.activeElement !== $id("real-timers")) $id("real-timers").checked = !!ev?.real_timers;
   for (const [target, side] of [["ev", ev], ["evse", evse]]) {
