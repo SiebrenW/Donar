@@ -182,16 +182,14 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
         Some(_) if scenario.secc.kind == Kind::EvseSim => secc_process.wait_timeout(Duration::from_secs(5))?.and_then(|s| s.code()),
         _ => None,
     };
-    if let Some(code) = evcc_exit {
-        if code != scenario.expect.evcc_exit {
+    if let Some(code) = evcc_exit
+        && code != scenario.expect.evcc_exit {
             failures.push(format!("evcc exited with {code}, expected {}", scenario.expect.evcc_exit));
         }
-    }
-    if let Some(expected) = scenario.expect.secc_exit {
-        if secc_exit != Some(expected) {
+    if let Some(expected) = scenario.expect.secc_exit
+        && secc_exit != Some(expected) {
             failures.push(format!("secc exit status {secc_exit:?}, expected {expected}"));
         }
-    }
     Ok(finish(scenario, &sb, failures, &mut secc_process, Some(&mut car), &mut capture))
 }
 

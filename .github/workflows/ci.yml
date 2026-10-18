@@ -21,18 +21,27 @@ env:
 jobs:
   # Clippy over everything, warnings are errors. (The code is not formatted with rustfmt; the generator formats its output.)
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/prepare
         with:
           vectors: "false"
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Clippy
+        shell: bash
+        run: |
+          # To a file, not through a pipe: a child a test leaves behind (a browser, a simulator) keeps a pipe open and the step would not end.
+          status=0
+          cargo clippy --workspace --all-targets --locked -- -D warnings > ci.log 2>&1 || status=$?
+          cat ci.log
+          exit $status
+      - uses: ./.github/actions/annotate
+        if: failure()
 
   # The cores, the codecs and the control pilot rules are `no_std`: they must build for a bare-metal target.
   no-std:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -48,7 +57,7 @@ jobs:
   # Everything, on Linux, with the privileges the network tests need: the scenarios (two vehicles and chargers in network
   # namespaces joined by a virtual cable, a pcap of each), TLS, SLAC, the web page in a headless Chrome.
   linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/.github/ci-runner.sh
@@ -68,9 +77,17 @@ jobs:
       - name: Build the simulators
         run: cargo build --workspace --bins --locked
       - name: Tests
+        shell: bash
         env:
           CHROME: /usr/bin/google-chrome
-        run: cargo test --workspace --locked
+        run: |
+          # To a file, not through a pipe: a child a test leaves behind (a browser, a simulator) keeps a pipe open and the step would not end.
+          status=0
+          cargo test --workspace --locked --no-fail-fast > ci.log 2>&1 || status=$?
+          cat ci.log
+          exit $status
+      - uses: ./.github/actions/annotate
+        if: failure()
       - name: Logs and captures of the scenarios
         if: failure()
         uses: actions/upload-artifact@v4
@@ -88,12 +105,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/prepare
-      - run: cargo test --workspace --locked
+      - name: Tests
+        shell: bash
+        run: |
+          # To a file, not through a pipe: a child a test leaves behind (a browser, a simulator) keeps a pipe open and the step would not end.
+          status=0
+          cargo test --workspace --locked --no-fail-fast > ci.log 2>&1 || status=$?
+          cat ci.log
+          exit $status
+      - uses: ./.github/actions/annotate
+        if: failure()
 
   # The vehicle against independent implementations: the open-source Python `iso15118` SECC (ISO 15118-2, -20, DIN SPEC 70121)
   # and `pyslac` (SLAC), as in `cargo xtask interop`.
   interop:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       SANDBOX_ARTIFACTS: ${{ github.workspace }}/target/sandbox
@@ -116,7 +142,15 @@ jobs:
           "$PYSLAC_VENV/bin/pip" install --quiet "marshmallow<4" "git+https://github.com/ecog-io/pyslac@134cb15dfca6381892ef8e30d15e615dc9c61c50"
       - run: cargo build --workspace --bins --locked
       - name: Scenarios against the partners
-        run: sudo -E env "PATH=$PATH" target/debug/scenario crates/sims/scenarios/scenarios/interop/*.toml
+        shell: bash
+        run: |
+          # To a file, not through a pipe: a child a test leaves behind (a browser, a simulator) keeps a pipe open and the step would not end.
+          status=0
+          sudo -E env "PATH=$PATH" target/debug/scenario crates/sims/scenarios/scenarios/interop/*.toml > ci.log 2>&1 || status=$?
+          cat ci.log
+          exit $status
+      - uses: ./.github/actions/annotate
+        if: failure()
       - name: Logs and captures of the scenarios
         if: failure()
         uses: actions/upload-artifact@v4

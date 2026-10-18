@@ -44,6 +44,19 @@ fn linux_container(publish: &[String]) -> Result<Command, String> {
     Ok(cmd)
 }
 
+/// Clippy with warnings as errors, as CI runs it: for this machine, and, from a machine that is not Linux, once more in
+/// the Linux container, since a good part of the code (sockets, namespaces, SLAC) is compiled on Linux only.
+pub fn lint() -> Result<(), String> {
+    let clippy = ["clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"];
+    run(Command::new("cargo").args(clippy))?;
+    if cfg!(target_os = "linux") {
+        return Ok(());
+    }
+    let mut cmd = linux_container(&[])?;
+    cmd.args(["bash", "-c", "own-volumes && cargo clippy --workspace --all-targets --locked -- -D warnings"]);
+    run(&mut cmd)
+}
+
 /// Runs the interoperability scenarios (`crates/sims/scenarios/scenarios/interop/`) in the Linux
 /// container: the simulated vehicle against an independent charger implementation. Names
 /// select scenarios (`iso15118-python`, `iso15118-python-tls`); without any all of them run.

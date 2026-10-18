@@ -113,7 +113,7 @@ Tests that need root are compiled only on Linux, so `cargo test --workspace` on 
 
 | Job | What | Where it differs from your machine |
 |---|---|---|
-| `lint` | `cargo clippy --workspace --all-targets -- -D warnings` | |
+| `lint` | `cargo clippy --workspace --all-targets -- -D warnings` | run it yourself with `cargo xtask lint` (on a Mac it also runs in the container, for the code that is compiled on Linux only) |
 | `no-std` | the cores, the codecs and `control-pilot` build for `thumbv7em-none-eabihf` | catches `std` that crept into the portable parts |
 | `linux` | `cargo xtask grammars`, then every test of the workspace as root through `.github/ci-runner.sh`: the scenarios in network namespaces (each with its `capture.pcap`), TLS, SLAC, the web page in headless Chrome | the same as `cargo xtask linux-test`, without the container |
 | `macos` | the tests that need no privileges | the Linux-only tests are `cfg`'d out |

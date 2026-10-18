@@ -23,6 +23,7 @@ Donar (the project was called `evcc-rs`) is an open-source toolkit for the vehic
 A fresh clone does not build the codecs: the schemas, generated code and EXIficient vectors are gitignored (`data/`, `standards/`, `crates/codec/*/src/generated/`).
 
 ```sh
+cargo xtask lint             # clippy with -D warnings (also in the container on a Mac)
 cargo xtask setup            # download the schemas, generate the codecs (needs curl; --force regenerates)
 cargo xtask vectors          # reference vectors with EXIficient (needs a JDK)
 cargo xtask grammars         # diff the derived grammar with EXIficient's
@@ -54,7 +55,7 @@ cargo xtask web [PORT]          # the web UI (evcc-web) in the container, defaul
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` (clippy with `-D warnings`, the `no_std` build for a bare-metal target, the whole workspace on Linux as root, macOS, the interop scenarios; see `docs/getting-started.md`). Keep `cargo clippy --workspace --all-targets -- -D warnings` clean. The Linux job runs the tests natively on the runner, not in the container, so a change that needs a new tool needs it installed in the workflow as well as in `.devcontainer/Dockerfile`.
+`.github/workflows/ci.yml` (clippy with `-D warnings`, the `no_std` build for a bare-metal target, the whole workspace on Linux as root, macOS, the interop scenarios; see `docs/getting-started.md`). Keep clippy clean with `cargo xtask lint` (it also runs in the Linux container when you are on a Mac: a good part of the code is compiled on Linux only, and the first CI run failed on exactly that). The Linux job runs the tests natively on the runner, not in the container, so a change that needs a new tool needs it installed in the workflow as well as in `.devcontainer/Dockerfile`.
 
 ## Working conventions
 

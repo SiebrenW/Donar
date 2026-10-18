@@ -217,7 +217,7 @@ mod simulation {
         assert!(v["ev"]["model_soc"].as_f64().unwrap() <= 60.0, "{v}");
         // The floor is reached, then the car charges until its target and the session ends.
         wait(&server, "the charge after the discharge", |v| v["ev"]["evse_reports"]["current"].as_f64().is_some_and(|c| c > 1.0));
-        let v = wait(&server, "the vehicle to stop at its target", |v| v["ev"]["phase"] == "stop");
+        let _v = wait(&server, "the vehicle to stop at its target", |v| v["ev"]["phase"] == "stop");
         advance(&server, "ended");
         let v = wait(&server, "the session to end", |v| v["running"] == false);
         assert_eq!(v["exit_code"], 0, "{v}");
@@ -243,7 +243,7 @@ mod simulation {
         assert!(v["ev"]["model_soc"].as_f64().unwrap() <= 60.0, "{v}");
         // The floor is reached, then the car charges until its target and the session ends.
         wait(&server, "the charge after the discharge", |v| v["ev"]["evse_reports"]["current"].as_f64().is_some_and(|c| c > 1.0));
-        let v = wait(&server, "the vehicle to stop at its target", |v| v["ev"]["phase"] == "stop");
+        let _v = wait(&server, "the vehicle to stop at its target", |v| v["ev"]["phase"] == "stop");
         advance(&server, "ended");
         let v = wait(&server, "the session to end", |v| v["running"] == false);
         assert_eq!(v["exit_code"], 0, "{v}");

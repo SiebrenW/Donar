@@ -2,3 +2,4 @@
 /data
 /crates/codec/*/src/generated/
 /standards/
+.DS_Store
