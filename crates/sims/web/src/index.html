@@ -988,7 +988,7 @@ function buildSim() {
 
   view.replaceChildren(
     $("div", { className: "bar" },
-      protocol, energy, v2gLabel, scheduledLabel, needsLabel,
+      protocol, energy, bptLabel, scheduledLabel, needsLabel,
       $("div", { className: "row tight", style: "margin:0" }, checkbox("sim-tls", "tls", "TLS", "encrypt the connection"), checkbox("sim-slac", "slac", "SLAC", "match the vehicle to the charger over the powerline first"), $("label", { className: "inline" }, "Certificates", pki)),
       $("span", { className: "spacer" }),
       $("span", { id: "sim-status", className: "pill" }), primary, stepStart, close),
