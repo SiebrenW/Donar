@@ -1,12 +1,12 @@
-# evcc-rs
+# Donar
 
-An open-source EV communication controller (EVCC, the vehicle side) for **ISO 15118-20** (DC and AC, Dynamic and Scheduled, bidirectional), **ISO 15118-2** (DC and AC), **DIN SPEC 70121** and the **SLAC** bring-up, plus simulators of the vehicle and the charger to test against.
+Donar (the Germanic god of thunder) is an open-source toolkit for the high level communication between an electric vehicle and a charger: **ISO 15118-20** (DC and AC, Dynamic and Scheduled, with bidirectional power transfer), **ISO 15118-2** (DC and AC), **DIN SPEC 70121** and the **SLAC** bring-up. It has both ends of the link, the vehicle side (EVCC) and the charger side (EVSE/SECC), as portable cores you put your own platform under, EXI codecs generated from the standards' schemas, and simulators, scenarios and a web UI to test against.
 
-The core is `no_std`, allocation-free and **sans-IO**: it never touches a socket, a clock or a thread. You feed it events (bytes received, a timer fired, the vehicle did something) and carry out what it returns (bytes to send, timers to arm, things the vehicle should do). Your platform decides how.
+The cores are `no_std`, allocation-free and **sans-IO**: it never touches a socket, a clock or a thread. You feed one events (bytes received, a timer fired, the vehicle did something) and carry out what it returns (bytes to send, timers to arm, things the host should do). Your platform decides how.
 
 - Getting a checkout to build and test: [docs/getting-started.md](docs/getting-started.md)
 - Design, status and what is verified against what: [PLAN.md](PLAN.md)
-- Where the standards contradict themselves, disagree with their schemas or are silent, and what we decided: [docs/standards-notes.md](docs/standards-notes.md)
+- Where the standards contradict themselves or are silent, and what we decided: [docs/standards-notes.md](docs/standards-notes.md)
 
 ## Building your own EVCC
 

@@ -1,8 +1,8 @@
-# EVCC
+# Donar
 
-The intent of this project is to have an open source implementation of an EVCC using HLC via the standards `ISO 15118-2`, `ISO 15118-20`, `IEC 61851-23` and `DIN Spec 70121`.
+The intent of this project (called `evcc-rs` until it grew past the vehicle side) is an open source implementation of the high level communication between vehicle and charger using the standards `ISO 15118-2`, `ISO 15118-20`, `IEC 61851-23` and `DIN SPEC 70121`: the vehicle side (EVCC) and the charger side (EVSE/SECC), both portable enough to deploy on resource constrained, realtime systems (so they work with `no_std`), and usable as test platforms for each other and for third-party implementations. It began with the EVCC, which is why the first milestones below are about the vehicle.
 
-Unlike JosEV, it will be portable enough to deploy on resource constrained, realtime, systems (so it can work with nostd). It can also be used as a test platform for EVSE software.
+Unlike JosEV, the cores are `no_std` and sans-IO.
 
 ## Scope
 

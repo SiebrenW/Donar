@@ -2,7 +2,7 @@
 
 Guidelines for Claude Code and other AI agents working on this project. (`CLAUDE.md` only refers here.)
 
-`evcc-rs` is an open-source EV communication controller (the vehicle side, EVCC) for ISO 15118-20, ISO 15118-2 and DIN SPEC 70121, plus SLAC, with a charger side (EVSE/SECC) and simulators to test against. Documents: `README.md` (how to build your own EVCC/EVSE), `docs/getting-started.md` (setup, what the tests cover), `PLAN.md` (design log and status of every requirement), `docs/standards-notes.md` (where the standards contradict themselves or are silent, and the decision taken). Read the relevant ones before larger changes. `docs/` is meant to hold Typst documents in the future; `AGENT.md` and `README.md` stay in the root.
+Donar (the project was called `evcc-rs`) is an open-source toolkit for the vehicle-to-charger high level communication: ISO 15118-20, ISO 15118-2, DIN SPEC 70121 and SLAC, with a vehicle side (EVCC), a charger side (EVSE/SECC), generated EXI codecs, and simulators, scenarios and a web UI to test with. It is not only about the EVCC. The crates, binaries, container image and the repository directory still carry the old `evcc-rs`/`evcc-*` names. Documents: `README.md` (how to build your own EVCC/EVSE), `docs/getting-started.md` (setup, what the tests cover), `PLAN.md` (design log and status of every requirement), `docs/standards-notes.md` (where the standards contradict themselves or are silent, and the decision taken). Read the relevant ones before larger changes. `docs/` is meant to hold Typst documents in the future; `AGENT.md` and `README.md` stay in the root.
 
 ## Commits
 

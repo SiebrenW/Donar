@@ -1,6 +1,6 @@
 # Getting started
 
-`evcc-rs` is an EV communication controller (EVCC) for ISO 15118-20 with a simulated charger (EVSE) to test against. This page gets you from a fresh clone to a green test run. The plan and the status of the standard's requirements are in [PLAN.md](../PLAN.md).
+Donar is a toolkit for the vehicle-to-charger high level communication (ISO 15118-20, ISO 15118-2, DIN SPEC 70121, SLAC): an EV communication controller (EVCC), a charger side (EVSE/SECC) and simulators to test them against each other. This page gets you from a fresh clone to a green test run. The plan and the status of the standard's requirements are in [PLAN.md](../PLAN.md).
 
 ## Two ways to work
 
