@@ -90,7 +90,7 @@ jobs:
         if: failure()
       - name: Logs and captures of the scenarios
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: scenario-artifacts
           path: target/sandbox
@@ -153,7 +153,7 @@ jobs:
         if: failure()
       - name: Logs and captures of the scenarios
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: interop-artifacts
           path: target/sandbox
