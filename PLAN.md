@@ -55,6 +55,7 @@ Independent checks exist against the Python `iso15118` library (-20 DC, AC, BPT,
 
 ### TLS and certificates
 
+- Watch [purecrypto](https://docs.rs/purecrypto) (pure Rust, `no_std`, sans-I/O TLS) as a replacement for OpenSSL once it covers ISO 15118-2 TLS. Checked at 0.10.1: no x448 group (V2G20-1637), no `ECDHE_ECDSA_AES_128_CBC_SHA256` or static ECDH suites (V2G2-602), OCSP stapling for the leaf only, no Concat KDF; it has TLS 1.3 with the -20 suites, secp521r1, Ed448, a key log hook and X.509/OCSP. Then: `evcc-linux::tls` behind a trait and the scenarios on it.
 - The static-ECDH suite of ISO 15118-2 Table 7 (not in OpenSSL 3.6/4.0): an SECC claiming -2 conformance needs another library; the EVCC does not (V2G2-603).
 - Key erasure at the end of a session (V2G20-2046 ff.), cross certificates (V2G20-1002, 1005, 1853), the profiles of the other services (provisioning, e-mobility, OEM provisioning, private environment, OCSP signer), GeneralizedTime encoding, CRLs.
 - OCSP: OpenSSL delivers one stapled response, the leaf's, so `require_all` fails for a chain with a sub-CA unless the host brings more responses.
