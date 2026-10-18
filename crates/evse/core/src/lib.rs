@@ -48,6 +48,13 @@ pub enum Event {
     /// `n` bytes were written into [`Session::rx_space`].
     Received(usize),
     TimerExpired(Timer),
+    /// The host measured a change of the control pilot. Report every change at once, at any time: the
+    /// standards give the charger 10 ms for an emergency shutdown (IEC 61851-23 CC.4.3). A change away
+    /// from C/D that nothing explains (the power delivery stop, `SessionStopReq`, the charger's own
+    /// shutdown) ends the session with [`secc::Ended::Emergency`], and the state E, F or A with
+    /// [`secc::Ended::PilotFault`]; nothing is sent and the connection is closed. The host does the rest
+    /// (oscillator off, current down, contactors) without waiting for the machine.
+    Pilot(control_pilot::Reading),
 }
 
 /// What the host does after a call.

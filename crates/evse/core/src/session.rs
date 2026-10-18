@@ -70,6 +70,8 @@ pub struct Session<S: Secc> {
 struct Machine<S> {
     secc: S,
     state: State,
+    /// What the control pilot means to the session (the host reports it with `Event::Pilot`).
+    pilot: control_pilot::EvseWatch,
     secured: bool,
     /// The vehicle offered the AC schema.
     ac_namespace: bool,
@@ -100,6 +102,7 @@ impl<S: Secc> Session<S> {
             m: Machine {
                 secc,
                 state: State::AwaitSupportedAppProtocolReq,
+                pilot: control_pilot::EvseWatch::new(),
                 secured: false,
                 ac_namespace: false,
                 session_id: [0; 8],
@@ -160,6 +163,7 @@ impl<S: Secc> Session<S> {
                 m.state = State::Closed;
                 Step { close: true, ..Step::default() }
             }
+            Event::Pilot(reading) => m.on_pilot(reading),
             Event::Received(n) => {
                 *rx_len = (*rx_len + n).min(rx.len());
                 let mut sent = 0;
@@ -244,6 +248,25 @@ impl<S: Secc> Machine<S> {
         if from != to {
             self.secc.note(format_args!("state {from:?} -> {to:?}"));
         }
+    }
+
+    /// A change of the control pilot (IEC 61851-23 CC.4.3): an emergency or a lost vehicle ends the session at
+    /// once, without a response.
+    fn on_pilot(&mut self, reading: control_pilot::Reading) -> Step {
+        use control_pilot::Verdict;
+        let verdict = self.pilot.reading(reading);
+        if matches!(self.state, State::Stopped | State::Paused | State::Closed) {
+            return Step::default();
+        }
+        let how = match verdict {
+            Verdict::Fine | Verdict::SupplyStopped => return Step::default(),
+            Verdict::Fault => Ended::PilotFault(reading),
+            Verdict::Emergency => Ended::Emergency(reading),
+        };
+        self.secc.note(format_args!("control pilot {reading:?}: {how:?}, the session ends and nothing is sent"));
+        self.secc.session_ended(how);
+        self.state = State::Closed;
+        Step { close: true, ..Step::default() }
     }
 
     fn unknown_session(&self, session: [u8; 8]) -> bool {
@@ -527,7 +550,17 @@ impl<S: Secc> Machine<S> {
     fn session_stop(&mut self, req: common::SessionStopReq<'_>, out: &mut [u8]) -> Reply {
         let main = PayloadType::MAINSTREAM;
         let renegotiation = req.charging_session == ChargingSession::ServiceRenegotiation;
-        let mut code = if self.unknown_session(req.header.session_id) { ResponseCode::FailedUnknownSession } else { ResponseCode::Ok };
+        // V2G20-920 to 922: after the DC stop the pilot is B before the session stop is answered OK.
+        let after_stop = self.state == State::AwaitSessionStopReq && !self.ac() && !self.no_power;
+        self.pilot.set_stopping();
+        let mut code = if self.unknown_session(req.header.session_id) {
+            ResponseCode::FailedUnknownSession
+        } else if after_stop && !self.pilot.stop_may_pass() {
+            self.secc.note(format_args!("session stop: the control pilot is not in state B (V2G20-922)"));
+            ResponseCode::Failed
+        } else {
+            ResponseCode::Ok
+        };
         // V2G20-1643, V2G20-1955.
         if renegotiation && is_ok(code) && !self.secc.accept_service_renegotiation() {
             code = ResponseCode::FailedNoServiceRenegotiationSupported;
@@ -734,6 +767,10 @@ impl<S: Secc> Machine<S> {
             (State::AwaitCableCheckReq, Request::Dc(dc::Message::DcCableCheckReq(req))) => {
                 let (processing, code) = if self.unknown_session(req.header.session_id) {
                     (Processing::Finished, ResponseCode::FailedUnknownSession)
+                } else if !self.pilot.cable_check_may_pass() {
+                    // V2G20-918: no CP state C or D.
+                    self.secc.note(format_args!("cable check: the control pilot is not in state C or D (V2G20-918)"));
+                    (Processing::Finished, ResponseCode::Failed)
                 } else {
                     match self.secc.cable_check() {
                         Progress::Ongoing => (Processing::Ongoing, ResponseCode::Ok),
@@ -766,6 +803,7 @@ impl<S: Secc> Machine<S> {
                 let code = self.code(M::PowerDelivery, code);
                 let header = self.header();
                 if is_ok(code) {
+                    self.pilot.set_stopping();
                     self.goto(State::AwaitSessionStopReq);
                 }
                 let res = common::PowerDeliveryRes { header, response_code: code, evse_status: None };
@@ -808,6 +846,10 @@ impl<S: Secc> Machine<S> {
                 let code = self.code(M::DcChargeLoop, code);
                 let header = self.header();
                 let a = answer.unwrap_or(DcLoopAnswer::empty());
+                if matches!(a.status, Some(s) if s.evse_notification == iso15118_20::common_types::EvseNotification::Terminate) {
+                    // The charger ends the charge: its shutdown ends with the oscillator off, and the vehicle's change to B.
+                    self.pilot.set_stopping();
+                }
                 let wanted = req.meter_info_requested || matches!(a.status, Some(s) if s.evse_notification == iso15118_20::common_types::EvseNotification::MeteringConfirmation);
                 let res = dc::DcChargeLoopRes {
                     header,
@@ -851,6 +893,10 @@ impl<S: Secc> Machine<S> {
                 let code = self.code(M::AcChargeLoop, code);
                 let header = self.header();
                 let a = answer.unwrap_or(AcLoopAnswer::empty());
+                if matches!(a.status, Some(s) if s.evse_notification == iso15118_20::common_types::EvseNotification::Terminate) {
+                    // The charger ends the charge: its shutdown ends with the oscillator off, and the vehicle's change to B.
+                    self.pilot.set_stopping();
+                }
                 let wanted = req.meter_info_requested || matches!(a.status, Some(s) if s.evse_notification == iso15118_20::common_types::EvseNotification::MeteringConfirmation);
                 let res = ac::AcChargeLoopRes {
                     header,
@@ -884,7 +930,11 @@ impl<S: Secc> Machine<S> {
                         // V2G20-1385, 1387: a standby period; V2G20-1386: Start ends it.
                         ChargeProgress::Standby => self.standby = true,
                         ChargeProgress::Start => self.standby = false,
-                        ChargeProgress::Stop => self.goto(if self.ac() { State::AwaitSessionStopReq } else { State::AwaitWeldingReq }),
+                        ChargeProgress::Stop => {
+                            // V2G20-919: from here on the pilot is meant to go to B.
+                            self.pilot.set_stopping();
+                            self.goto(if self.ac() { State::AwaitSessionStopReq } else { State::AwaitWeldingReq })
+                        }
                         _ => {}
                     }
                 }
@@ -893,7 +943,15 @@ impl<S: Secc> Machine<S> {
                 self.main_reply(out, main, |o| res.encode(o), !is_ok(code) && !refused)
             }
             (State::AwaitWeldingReq, Request::Dc(dc::Message::DcWeldingDetectionReq(req))) => {
-                let code = if self.unknown_session(req.header.session_id) { ResponseCode::FailedUnknownSession } else { ResponseCode::Ok };
+                let code = if self.unknown_session(req.header.session_id) {
+                    ResponseCode::FailedUnknownSession
+                } else if !self.pilot.stop_may_pass() {
+                    // V2G20-922 (and IEC 61851-23 CC.3.4.2, t303): the pilot has to be at B first.
+                    self.secc.note(format_args!("welding detection: the control pilot is not in state B (V2G20-922)"));
+                    ResponseCode::Failed
+                } else {
+                    ResponseCode::Ok
+                };
                 let code = self.code(M::DcWeldingDetection, code);
                 let voltage = self.secc.welding_detection();
                 let header = self.header();

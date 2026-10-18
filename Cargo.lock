@@ -373,6 +373,7 @@ name = "evse-core"
 version = "0.1.0"
 dependencies = [
  "app-protocol",
+ "control-pilot",
  "din70121",
  "evcc-core",
  "exi",

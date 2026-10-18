@@ -52,7 +52,34 @@ impl Ev for TestEv {
 
 /// Runs a vehicle machine against a charger: `feed` takes the bytes the vehicle sent and returns the bytes to give back and
 /// whether the charger closes. Returns how the vehicle ended and how many charge loop answers it saw.
-fn drive(vehicle: &mut dyn Machine, mut feed: impl FnMut(&[u8]) -> (Vec<u8>, bool), stop_after: u32) -> (Option<EndReason>, u32) {
+fn drive(vehicle: &mut dyn Machine, feed: impl FnMut(ToCharger<'_>) -> (Vec<u8>, bool), stop_after: u32) -> (Option<EndReason>, u32) {
+    let (end, loops, _) = drive_host(vehicle, feed, stop_after, Host::default());
+    (end, loops)
+}
+
+/// What reaches the charger.
+enum ToCharger<'a> {
+    Bytes(&'a [u8]),
+    Pilot(control_pilot::Reading),
+}
+
+/// What the host tells the charger about the control pilot.
+#[derive(Clone, Copy, Default)]
+struct Host {
+    /// Report the pilot the vehicle was told to set (C before the cable check, B after the contactors opened).
+    report: bool,
+    skip_c: bool,
+    skip_b: bool,
+    /// A reading of its own once the n-th charge loop answer is out.
+    inject: Option<(u32, control_pilot::Reading)>,
+}
+
+/// As [`drive`], with a host that reports the pilot. Returns also whether the charger closed the connection.
+fn drive_host(vehicle: &mut dyn Machine, mut feed: impl FnMut(ToCharger<'_>) -> (Vec<u8>, bool), stop_after: u32, host: Host) -> (Option<EndReason>, u32, bool) {
+    if host.report {
+        feed(ToCharger::Pilot(control_pilot::Reading::CONNECTED));
+    }
+    let mut closed = false;
     let sap = |vehicle: &mut dyn Machine, frames: Vec<u8>| -> Event {
         vehicle.rx_space()[..frames.len()].copy_from_slice(&frames);
         Event::Received(frames.len())
@@ -63,7 +90,7 @@ fn drive(vehicle: &mut dyn Machine, mut feed: impl FnMut(&[u8]) -> (Vec<u8>, boo
         let Some(event) = queue.pop_front() else { break };
         let step = vehicle.handle(event);
         if let Some(reason) = step.end {
-            return (Some(reason), loops);
+            return (Some(reason), loops, closed);
         }
         if let Some(n) = step.send {
             let bytes = vehicle.tx()[..n].to_vec();
@@ -77,7 +104,9 @@ fn drive(vehicle: &mut dyn Machine, mut feed: impl FnMut(&[u8]) -> (Vec<u8>, boo
                 buf.truncate(v2gtp::HEADER_LEN + len);
                 (buf, false)
             } else {
-                feed(&bytes)
+                let r = feed(ToCharger::Bytes(&bytes));
+                closed |= r.1;
+                r
             };
             if !reply.0.is_empty() {
                 let e = sap(vehicle, reply.0);
@@ -88,9 +117,26 @@ fn drive(vehicle: &mut dyn Machine, mut feed: impl FnMut(&[u8]) -> (Vec<u8>, boo
             Some(Notice::CloseContactors) => Some(Event::ContactorsClosed),
             Some(Notice::StopEnergyTransfer { .. }) => Some(Event::EnergyTransferStopped),
             Some(Notice::OpenContactors) => Some(Event::ContactorsOpened),
-            Some(Notice::ControlPilot(_)) => Some(Event::ControlPilotChanged),
+            Some(Notice::ControlPilot(p)) => {
+                let (state, skip) = match p {
+                    evcc_core::session::ControlPilot::B => (control_pilot::State::B, host.skip_b),
+                    evcc_core::session::ControlPilot::C => (control_pilot::State::C, host.skip_c),
+                };
+                if host.report && !skip {
+                    if feed(ToCharger::Pilot(control_pilot::Reading { state, pwm: control_pilot::Pwm::Duty(5) })).1 {
+                        return (None, loops, true);
+                    }
+                }
+                Some(Event::ControlPilotChanged)
+            }
             Some(Notice::ChargeLoop(_) | Notice::AcChargeLoop(_)) => {
                 loops += 1;
+                if let Some((_, reading)) = host.inject.filter(|(n, _)| *n == loops) {
+                    if feed(ToCharger::Pilot(reading)).1 {
+                        // The charger closed the connection: the vehicle gets nothing more.
+                        return (None, loops, true);
+                    }
+                }
                 (loops == stop_after).then_some(Event::StopRequested)
             }
             _ => None,
@@ -102,7 +148,7 @@ fn drive(vehicle: &mut dyn Machine, mut feed: impl FnMut(&[u8]) -> (Vec<u8>, boo
             queue.push_back(Event::TimerExpired(Timer::Poll));
         }
     }
-    (None, loops)
+    (None, loops, closed)
 }
 
 /// A DIN charger that accepts and delivers the limits it is given.
@@ -111,6 +157,7 @@ struct DinCharger {
     cable_checks: u32,
     loops: u32,
     ended: bool,
+    how: Option<evse_core::secc::Ended>,
 }
 
 impl DinSecc for DinCharger {
@@ -154,8 +201,9 @@ impl DinSecc for DinCharger {
             maximum_power: None,
         }
     }
-    fn session_ended(&mut self, _how: evse_core::secc::Ended) {
+    fn session_ended(&mut self, how: evse_core::secc::Ended) {
         self.ended = true;
+        self.how = Some(how);
     }
 }
 
@@ -165,10 +213,15 @@ fn a_din_session_runs_to_the_stop() {
     let mut vehicle = evcc_core::din::Session::new(evcc_core::din::Config::DIN, TestEv, NoLog, Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
     let (mut crx, mut ctx, mut carena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
     let mut charger = din::Session::new(DinCharger::default());
-    let feed = |bytes: &[u8]| {
+    let feed = |to: ToCharger<'_>| {
         let mut buffers = din::Buffers { rx: &mut crx, tx: &mut ctx, arena: &mut carena };
-        charger.rx_space(buffers.rx)[..bytes.len()].copy_from_slice(bytes);
-        let step = charger.handle(evse_core::Event::Received(bytes.len()), &mut buffers);
+        let step = match to {
+            ToCharger::Bytes(bytes) => {
+                charger.rx_space(buffers.rx)[..bytes.len()].copy_from_slice(bytes);
+                charger.handle(evse_core::Event::Received(bytes.len()), &mut buffers)
+            }
+            ToCharger::Pilot(r) => charger.handle(evse_core::Event::Pilot(r), &mut buffers),
+        };
         (ctx[..step.send].to_vec(), step.close)
     };
     let (end, loops) = drive(&mut vehicle, feed, 3);
@@ -184,9 +237,18 @@ fn a_din_session_runs_to_the_stop() {
 #[derive(Default)]
 struct Iso2Charger {
     loops: u32,
+    cable_checks: u32,
+    how: Option<evse_core::secc::Ended>,
 }
 
 impl Iso2Secc for Iso2Charger {
+    fn cable_check(&mut self) -> evse_core::Progress<iso2::ResponseCode> {
+        self.cable_checks += 1;
+        evse_core::Progress::Done(iso2::ResponseCode::Ok)
+    }
+    fn session_ended(&mut self, how: evse_core::secc::Ended) {
+        self.how = Some(how);
+    }
     fn energy_modes(&self) -> &[iso15118_2::types::EnergyTransferMode] {
         &[iso15118_2::types::EnergyTransferMode::DcExtended, iso15118_2::types::EnergyTransferMode::AcThreePhaseCore]
     }
@@ -244,10 +306,15 @@ fn iso2_session(config: evcc_core::iso2::Config) -> (u32, iso2::State, Option<En
     let mut vehicle = evcc_core::iso2::Session::new(config, TestEv, NoLog, Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
     let (mut crx, mut ctx, mut carena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 65536]);
     let mut charger = iso2::Session::new(Iso2Charger::default());
-    let feed = |bytes: &[u8]| {
+    let feed = |to: ToCharger<'_>| {
         let mut buffers = iso2::Buffers { rx: &mut crx, tx: &mut ctx, arena: &mut carena };
-        charger.rx_space(buffers.rx)[..bytes.len()].copy_from_slice(bytes);
-        let step = charger.handle(evse_core::Event::Received(bytes.len()), &mut buffers);
+        let step = match to {
+            ToCharger::Bytes(bytes) => {
+                charger.rx_space(buffers.rx)[..bytes.len()].copy_from_slice(bytes);
+                charger.handle(evse_core::Event::Received(bytes.len()), &mut buffers)
+            }
+            ToCharger::Pilot(r) => charger.handle(evse_core::Event::Pilot(r), &mut buffers),
+        };
         (ctx[..step.send].to_vec(), step.close)
     };
     let (end, _) = drive(&mut vehicle, feed, 2);
@@ -266,4 +333,98 @@ fn an_iso2_ac_session_runs_to_the_stop() {
     let (loops, state, end) = iso2_session(evcc_core::iso2::Config::ac(true));
     assert_eq!((end, state), (Some(EndReason::Completed), iso2::State::Stopped));
     assert_eq!(loops, 2);
+}
+
+// ---- the control pilot
+
+/// DIN: the vehicle against the charger, with a host that reports the pilot. Returns how the vehicle ended, whether the
+/// charger closed, its state and its record.
+fn din_pilot(host: Host, stop_after: u32) -> (Option<EndReason>, bool, din::State, DinCharger) {
+    let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
+    let mut vehicle = evcc_core::din::Session::new(evcc_core::din::Config::DIN, TestEv, NoLog, Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
+    let (mut crx, mut ctx, mut carena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
+    let mut charger = din::Session::new(DinCharger::default());
+    let feed = |to: ToCharger<'_>| {
+        let mut buffers = din::Buffers { rx: &mut crx, tx: &mut ctx, arena: &mut carena };
+        let step = match to {
+            ToCharger::Bytes(bytes) => {
+                charger.rx_space(buffers.rx)[..bytes.len()].copy_from_slice(bytes);
+                charger.handle(evse_core::Event::Received(bytes.len()), &mut buffers)
+            }
+            ToCharger::Pilot(r) => charger.handle(evse_core::Event::Pilot(r), &mut buffers),
+        };
+        (ctx[..step.send].to_vec(), step.close)
+    };
+    let (end, _, closed) = drive_host(&mut vehicle, feed, stop_after, host);
+    let state = charger.state();
+    (end, closed, state, std::mem::take(charger.secc_mut()))
+}
+
+fn iso2_pilot(host: Host, stop_after: u32) -> (Option<EndReason>, bool, iso2::State, Iso2Charger) {
+    let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
+    let mut vehicle = evcc_core::iso2::Session::new(evcc_core::iso2::Config::ISO2_DC, TestEv, NoLog, Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
+    let (mut crx, mut ctx, mut carena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 65536]);
+    let mut charger = iso2::Session::new(Iso2Charger::default());
+    let feed = |to: ToCharger<'_>| {
+        let mut buffers = iso2::Buffers { rx: &mut crx, tx: &mut ctx, arena: &mut carena };
+        let step = match to {
+            ToCharger::Bytes(bytes) => {
+                charger.rx_space(buffers.rx)[..bytes.len()].copy_from_slice(bytes);
+                charger.handle(evse_core::Event::Received(bytes.len()), &mut buffers)
+            }
+            ToCharger::Pilot(r) => charger.handle(evse_core::Event::Pilot(r), &mut buffers),
+        };
+        (ctx[..step.send].to_vec(), step.close)
+    };
+    let (end, _, closed) = drive_host(&mut vehicle, feed, stop_after, host);
+    let state = charger.state();
+    (end, closed, state, std::mem::take(charger.secc_mut()))
+}
+
+#[test]
+fn din_and_iso2_chargers_follow_the_pilot_of_a_normal_session() {
+    let (end, _, state, charger) = din_pilot(Host { report: true, ..Default::default() }, 3);
+    assert_eq!((end, state), (Some(EndReason::Completed), din::State::Stopped));
+    assert!(matches!(charger.how, Some(evse_core::secc::Ended::Stopped(_))), "{:?}", charger.how);
+    let (end, _, state, charger) = iso2_pilot(Host { report: true, ..Default::default() }, 3);
+    assert_eq!((end, state), (Some(EndReason::Completed), iso2::State::Stopped));
+    assert!(matches!(charger.how, Some(evse_core::secc::Ended::Stopped(_))), "{:?}", charger.how);
+}
+
+#[test]
+fn din_and_iso2_chargers_fail_the_cable_check_without_c_or_d() {
+    let host = Host { report: true, skip_c: true, ..Default::default() };
+    let (end, closed, _, charger) = din_pilot(host, 3);
+    assert!(matches!(end, Some(EndReason::RejectedDin(din70121::types::ResponseCode::Failed))), "{end:?}");
+    assert!(closed);
+    assert_eq!(charger.cable_checks, 0);
+    let (end, closed, _, charger) = iso2_pilot(host, 3);
+    assert!(matches!(end, Some(EndReason::RejectedIso2(iso15118_2::types::ResponseCode::Failed))), "{end:?}");
+    assert!(closed);
+    assert_eq!(charger.cable_checks, 0);
+}
+
+#[test]
+fn din_and_iso2_chargers_fail_the_welding_detection_without_b() {
+    let host = Host { report: true, skip_b: true, ..Default::default() };
+    let (end, _, _, _) = din_pilot(host, 2);
+    assert!(matches!(end, Some(EndReason::RejectedDin(din70121::types::ResponseCode::Failed))), "{end:?}");
+    let (end, _, _, _) = iso2_pilot(host, 2);
+    assert!(matches!(end, Some(EndReason::RejectedIso2(iso15118_2::types::ResponseCode::Failed))), "{end:?}");
+}
+
+#[test]
+fn din_and_iso2_chargers_end_the_session_in_an_emergency_without_a_word() {
+    use control_pilot::{Pwm, Reading, State as Cp};
+    for reading in [Reading::CONNECTED, Reading { state: Cp::B, pwm: Pwm::Off }, Reading { state: Cp::E, pwm: Pwm::Off }] {
+        let host = Host { report: true, inject: Some((2, reading)), ..Default::default() };
+        let (end, closed, state, charger) = din_pilot(host, 100);
+        assert_eq!((end, closed, state), (None, true, din::State::Closed));
+        assert_eq!(charger.how, Some(evse_core::secc::Ended::Emergency(reading)));
+        assert_eq!(charger.loops, 2, "no answer after the emergency");
+        let (end, closed, state, charger) = iso2_pilot(host, 100);
+        assert_eq!((end, closed, state), (None, true, iso2::State::Closed));
+        assert_eq!(charger.how, Some(evse_core::secc::Ended::Emergency(reading)));
+        assert_eq!(charger.loops, 2);
+    }
 }

@@ -440,6 +440,19 @@ struct Rig<'a, E: Ev> {
     /// The vehicle's next request is held back when the charger is in this state.
     halt_at: Option<State>,
     halted: bool,
+    host: PilotHost,
+}
+
+/// What the host tells the charger about the control pilot.
+#[derive(Clone, Copy, Default)]
+struct PilotHost {
+    /// Report the pilot the vehicle was told to set (C before the cable check, B after the contactors opened).
+    report: bool,
+    /// ... but not the change to C / to B (the charger still sees the old state).
+    skip_c: bool,
+    skip_b: bool,
+    /// A reading of its own once the n-th charge loop answer is out.
+    inject: Option<(u32, control_pilot::Reading)>,
 }
 
 impl<E: Ev> Rig<'_, E> {
@@ -454,8 +467,24 @@ impl<E: Ev> Rig<'_, E> {
                 Notice::CloseContactors => Some(EvEvent::ContactorsClosed),
                 Notice::StopEnergyTransfer { .. } => Some(EvEvent::EnergyTransferStopped),
                 Notice::OpenContactors => Some(EvEvent::ContactorsOpened),
+                Notice::ControlPilot(p) => {
+                    let (state, skip) = match p {
+                        evcc_core::session::ControlPilot::B => (control_pilot::State::B, self.host.skip_b),
+                        evcc_core::session::ControlPilot::C => (control_pilot::State::C, self.host.skip_c),
+                    };
+                    if self.host.report && !skip {
+                        let step = self.charger.handle(Event::Pilot(control_pilot::Reading { state, pwm: control_pilot::Pwm::Duty(5) }), &mut self.charger_buffers);
+                        self.closed |= step.close;
+                    }
+                    Some(EvEvent::ControlPilotChanged)
+                }
                 Notice::ChargeLoop(_) | Notice::AcChargeLoop(_) => {
                     self.loops += 1;
+                    if let Some((n, reading)) = self.host.inject.filter(|(n, _)| *n == self.loops) {
+                        let _ = n;
+                        let step = self.charger.handle(Event::Pilot(reading), &mut self.charger_buffers);
+                        self.closed |= step.close;
+                    }
                     (self.loops == self.stop_after).then_some(EvEvent::StopRequested)
                 }
                 _ => None,
@@ -501,7 +530,7 @@ fn run_with<E: Ev>(secc: TestCharger, config: Config, ev: E, stop_after: u32) ->
     let mut charger_buffers = Buffers { rx: &mut srx, tx: &mut stx, arena: &mut sarena, scratch: &mut sscratch };
     let mut charger = Session::new(secc);
     charger.handle(Event::Connected { secured: true }, &mut charger_buffers);
-    let mut rig = Rig { vehicle, charger, charger_buffers, ended: None, loops: 0, stop_after, closed: false, halt_at: None, halted: false };
+    let mut rig = Rig { vehicle, charger, charger_buffers, ended: None, loops: 0, stop_after, closed: false, halt_at: None, halted: false, host: PilotHost::default() };
     let start = rig.vehicle.handle(EvEvent::Start { secured: true });
     rig.process(start);
     for _ in 0..200 {
@@ -631,7 +660,7 @@ fn stop_request_at(state: State, kind: iso15118_20::common::ChargingSession, ses
     let mut charger_buffers = Buffers { rx: &mut srx, tx: &mut stx, arena: &mut sarena, scratch: &mut sscratch };
     let mut charger = Session::new(TestCharger::default());
     charger.handle(Event::Connected { secured: true }, &mut charger_buffers);
-    let mut rig = Rig { vehicle, charger, charger_buffers, ended: None, loops: 0, stop_after: 1, closed: false, halt_at: Some(state), halted: false };
+    let mut rig = Rig { vehicle, charger, charger_buffers, ended: None, loops: 0, stop_after: 1, closed: false, halt_at: Some(state), halted: false, host: PilotHost::default() };
     let start = rig.vehicle.handle(EvEvent::Start { secured: true });
     rig.process(start);
     for _ in 0..200 {
@@ -707,4 +736,85 @@ fn a_session_stop_with_another_session_id_is_refused_and_during_the_charge_loop_
     // The power is on: the power delivery has to stop first (V2G20-1546 ff.).
     let (code, close, now, ended) = stop_request_at(State::ChargeLoop, Terminate, [1, 2, 3, 4, 5, 6, 7, 8]);
     assert_eq!((code, close, now, ended), (Some(ResponseCode::FailedSequenceError), true, State::Closed, None));
+}
+
+/// Runs the vehicle (asking for the pilot) against the charger, with a host that reports the pilot as `host` says.
+/// Returns how the vehicle ended (if it did), whether the charger closed the connection, the charger's state and its record.
+fn pilot_run(host: PilotHost, stop_after: u32) -> (Option<EndReason>, bool, State, TestCharger) {
+    let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
+    let ev = TestEv { clock: 1.into(), offer: false, v2x: false };
+    let vehicle = EvSession::new(Config { control_pilot: true, ..config(Config::DC_20) }, ev, NoLog, EvBuffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
+    let (mut srx, mut stx, mut sarena, mut sscratch) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768], vec![0u8; 8192]);
+    let mut charger_buffers = Buffers { rx: &mut srx, tx: &mut stx, arena: &mut sarena, scratch: &mut sscratch };
+    let mut charger = Session::new(TestCharger::default());
+    charger.handle(Event::Connected { secured: true }, &mut charger_buffers);
+    let mut rig = Rig { vehicle, charger, charger_buffers, ended: None, loops: 0, stop_after, closed: false, halt_at: None, halted: false, host };
+    if host.report {
+        // Plugged in: B with the oscillator on.
+        rig.charger.handle(Event::Pilot(control_pilot::Reading::CONNECTED), &mut rig.charger_buffers);
+    }
+    let start = rig.vehicle.handle(EvEvent::Start { secured: true });
+    rig.process(start);
+    for _ in 0..200 {
+        if rig.ended.is_some() || rig.closed {
+            break;
+        }
+        let s = rig.vehicle.handle(EvEvent::TimerExpired(evcc_core::Timer::Poll));
+        rig.process(s);
+    }
+    let state = rig.charger.state();
+    (rig.ended, rig.closed, state, std::mem::take(rig.charger.secc_mut()))
+}
+
+#[test]
+fn a_session_with_the_pilot_reported_as_the_standards_have_it_runs_to_the_end() {
+    let (end, _, state, charger) = pilot_run(PilotHost { report: true, ..Default::default() }, 3);
+    assert_eq!(end, Some(EndReason::Completed));
+    assert_eq!(state, State::Stopped);
+    assert_eq!(charger.loops, 3);
+    assert_eq!(charger.cable_checks, 2);
+}
+
+#[test]
+fn a_cable_check_without_c_or_d_is_answered_failed() {
+    // V2G20-918: the vehicle was not (measured to be) in C when the request came.
+    let (end, closed, _, charger) = pilot_run(PilotHost { report: true, skip_c: true, ..Default::default() }, 3);
+    assert!(matches!(end, Some(EndReason::Rejected(ResponseCode::Failed))), "{end:?}");
+    assert!(closed);
+    assert_eq!(charger.cable_checks, 0, "the charger's own check was not even asked");
+}
+
+#[test]
+fn a_welding_detection_without_b_is_answered_failed() {
+    // V2G20-922: after the stop the charger measures no B.
+    let (end, _, _, _) = pilot_run(PilotHost { report: true, skip_b: true, ..Default::default() }, 3);
+    assert!(matches!(end, Some(EndReason::Rejected(ResponseCode::Failed))), "{end:?}");
+}
+
+#[test]
+fn the_vehicle_leaving_c_during_the_charge_is_an_emergency_for_the_charger() {
+    use control_pilot::{Pwm, Reading, State as Cp};
+    for reading in [Reading::CONNECTED, Reading { state: Cp::B, pwm: Pwm::Off }, Reading { state: Cp::Invalid, pwm: Pwm::Duty(5) }] {
+        let (end, closed, state, charger) = pilot_run(PilotHost { report: true, inject: Some((2, reading)), ..Default::default() }, 100);
+        assert_eq!(end, None, "the vehicle gets nothing more: {end:?}");
+        assert!(closed);
+        assert_eq!(state, State::Closed);
+        assert_eq!(charger.ended, Some(evse_core::secc::Ended::Emergency(reading)));
+        assert!(!charger.delivering || charger.loops == 2, "no more loop answers after the emergency");
+    }
+    // State E, F and A: the connection to the vehicle is gone.
+    let e = Reading { state: Cp::E, pwm: Pwm::Off };
+    let (_, closed, state, charger) = pilot_run(PilotHost { report: true, inject: Some((2, e)), ..Default::default() }, 100);
+    assert!(closed);
+    assert_eq!(state, State::Closed);
+    assert_eq!(charger.ended, Some(evse_core::secc::Ended::Emergency(e)), "after C an E is an emergency too");
+}
+
+#[test]
+fn the_pilot_going_to_b_after_the_stop_is_no_emergency() {
+    // The vehicle's own B after PowerDeliveryRes(Stop), reported while the charger waits for the welding detection.
+    let (end, closed, _, charger) = pilot_run(PilotHost { report: true, ..Default::default() }, 2);
+    assert_eq!(end, Some(EndReason::Completed));
+    assert!(closed);
+    assert!(matches!(charger.ended, Some(evse_core::secc::Ended::Stopped(_))), "{:?}", charger.ended);
 }

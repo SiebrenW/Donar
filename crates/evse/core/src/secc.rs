@@ -95,6 +95,11 @@ pub enum Ended {
     Stopped(ChargingSession),
     /// The connection went away or the sequence timer ran out.
     Lost,
+    /// The control pilot said emergency (the vehicle left state C/D, IEC 61851-23 CC.4.3): the session ended
+    /// without a word. The host turns the oscillator off, brings the current down and opens its contactors.
+    Emergency(control_pilot::Reading),
+    /// The control pilot is in state E, F or A, or invalid: the vehicle or the cable is gone.
+    PilotFault(control_pilot::Reading),
 }
 
 pub trait Secc {
