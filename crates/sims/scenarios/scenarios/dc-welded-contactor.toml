@@ -1,0 +1,19 @@
+name = "dc-welded-contactor"
+description = "ISO 15118-20 DC: after the stop the charger's side B still carries the battery voltage, as with a welded contactor. Welding detection never sees it fall below the limit; when the bound on the repeated requests runs out, the vehicle ends the session as a welded contactor, not as a plain timeout."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session]
+welding_voltage_v = 400
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+poll_interval_ms = 10
+charge_loop_interval_ms = 10
+ongoing_timeout_ms = 1000
+
+[expect]
+evcc_exit = 1
+evcc_log = ["ContactorWelded"]

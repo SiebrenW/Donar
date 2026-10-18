@@ -560,6 +560,10 @@ pub struct Config {
     #[serde(with = "code")]
     #[schemars(with = "String")]
     pub welding_code: ResponseCode,
+    /// Volts the charger reports in the welding detection (its side B, after the vehicle opened
+    /// its contactors). A welded contactor keeps the battery voltage there; the vehicle's limit
+    /// is 60 V.
+    pub welding_voltage_v: i16,
 }
 
 impl Default for Config {
@@ -628,6 +632,7 @@ impl Default for Config {
             standby_allowed: true,
             standby_loops: 2,
             welding_code: ResponseCode::Ok,
+            welding_voltage_v: 5,
         }
     }
 }

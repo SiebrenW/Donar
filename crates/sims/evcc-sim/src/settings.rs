@@ -360,6 +360,8 @@ pub struct Settings {
     pub log: LogLevel,
     /// Overrides of the session timing (milliseconds), for quicker runs.
     pub poll_interval_ms: Option<u32>,
+    /// The bound on repeated `Ongoing` requests (also welding detection).
+    pub ongoing_timeout_ms: Option<u32>,
     pub charge_loop_interval_ms: Option<u32>,
     /// The vehicle's needs, as sent to the charger.
     pub limits: Limits,
@@ -405,6 +407,7 @@ impl Default for Settings {
             pause_on_notification: false,
             log: LogLevel::Info,
             poll_interval_ms: None,
+            ongoing_timeout_ms: None,
             charge_loop_interval_ms: None,
             limits: Limits::default(),
             pnc: None,
@@ -458,6 +461,9 @@ impl Settings {
         if let Some(ms) = self.poll_interval_ms {
             config.poll_interval_ms = ms;
         }
+        if let Some(ms) = self.ongoing_timeout_ms {
+            config.ongoing_timeout_ms = ms;
+        }
         if let Some(ms) = self.charge_loop_interval_ms {
             config.charge_loop_interval_ms = ms;
         }
@@ -475,6 +481,9 @@ impl Settings {
         };
         if let Some(ms) = self.poll_interval_ms {
             config.poll_interval_ms = ms;
+        }
+        if let Some(ms) = self.ongoing_timeout_ms {
+            config.ongoing_timeout_ms = ms;
         }
         if let Some(ms) = self.charge_loop_interval_ms {
             config.charge_loop_interval_ms = ms;
@@ -494,6 +503,9 @@ impl Settings {
         let mut config = evcc_core::session::Config { allow_unsecured: self.tls.is_none(), prefer_pnc: self.pnc.is_some(), state_tolerance_always: self.state_tolerance_always, request_meter_info: self.request_meter_info, ..base };
         if let Some(ms) = self.poll_interval_ms {
             config.poll_interval_ms = ms;
+        }
+        if let Some(ms) = self.ongoing_timeout_ms {
+            config.ongoing_timeout_ms = ms;
         }
         if let Some(ms) = self.charge_loop_interval_ms {
             config.charge_loop_interval_ms = ms;

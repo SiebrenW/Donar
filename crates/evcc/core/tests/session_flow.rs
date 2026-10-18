@@ -565,6 +565,23 @@ fn a_stop_request_during_the_loop_interval_acts_at_once() {
 }
 
 #[test]
+fn a_voltage_that_does_not_fall_during_welding_detection_means_a_welded_contactor() {
+    let mut rig = Rig::new();
+    let mut s = up_to_charge_loop(&mut rig, Capture::default());
+    deliver(&mut s, &loop_res(None));
+    s.handle(Event::StopRequested);
+    s.handle(Event::EnergyTransferStopped);
+    deliver(&mut s, &power_delivery_res(ResponseCode::Ok));
+    s.handle(Event::ContactorsOpened);
+    for _ in 0..3 {
+        let step = deliver(&mut s, &welding_res(ResponseCode::Ok, 400));
+        assert_eq!(step.end, None);
+    }
+    let step = s.handle(Event::TimerExpired(Timer::Ongoing));
+    assert_eq!(step.end, Some(EndReason::ContactorWelded));
+}
+
+#[test]
 fn the_evse_can_terminate_the_charge() {
     // V2G20-1416, V2G20-1960
     let mut rig = Rig::new();

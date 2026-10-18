@@ -97,6 +97,10 @@ pub(super) enum StopKind {
 pub enum EndReason {
     /// The flow implemented so far finished normally.
     Completed,
+    /// Welding detection never saw the charger's voltage fall below the limit: the vehicle's
+    /// contactors did not open (or the charger kept its voltage up). Safety relevant: the host
+    /// should not release the connector lock and should report a fault.
+    ContactorWelded,
     /// The EVSE rejected or did not accept our protocol offer.
     NoCommonProtocol,
     /// The EVSE offers no authorization service this EV can use (only EIM is implemented).

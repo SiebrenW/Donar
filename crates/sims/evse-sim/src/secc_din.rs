@@ -160,7 +160,7 @@ impl DinSecc for SimDin {
         }
     }
     fn welding_detection(&mut self) -> (ResponseCode, PhysicalValue) {
-        (code(self.config.welding_code), pv(5.0, UnitSymbol::V))
+        (code(self.config.welding_code), pv(f64::from(self.config.welding_voltage_v), UnitSymbol::V))
     }
     fn session_ended(&mut self, _how: Ended) {}
     fn intercept(&mut self, request: &BodyElementChoice<'_>) -> Action {

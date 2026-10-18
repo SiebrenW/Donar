@@ -61,6 +61,7 @@ mod run {
         dc_plain => "dc-plain",
         dc_bpt => "dc-bpt",
         dc_go_to_pause => "dc-go-to-pause",
+        dc_welded_contactor => "dc-welded-contactor",
         ac_plain => "ac-plain",
         ac_bpt => "ac-bpt",
         ac_scheduled => "ac-scheduled",

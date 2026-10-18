@@ -147,6 +147,10 @@ fn run(connector: DcConnector, evse: EvseConfig, config: Config, stop_after: Opt
                 queue.push_front(Input::Event(e));
             }
         }
+        // A charger that keeps its voltage up: the bound on the repeated requests runs out.
+        if sent.borrow().iter().filter(|m| m.contains("WeldingDetectionReq")).count() >= 4 {
+            queue.push_front(Input::Event(Event::TimerExpired(Timer::Ongoing)));
+        }
         // A pause before the next request: it is over at once.
         if step.timers.iter().any(|c| matches!(c, TimerCmd::Arm { timer: Timer::Poll, .. })) {
             queue.push_back(Input::Event(Event::TimerExpired(Timer::Poll)));
@@ -277,4 +281,12 @@ fn no_welding_detection_goes_straight_to_the_stop() {
 fn a_charger_without_din_refuses_the_protocol() {
     let evse = EvseConfig { protocols: vec![evse_sim::Protocol::Iso20], ..Default::default() };
     assert_eq!(run(DcConnector::Extended, evse, din(), None).end, EndReason::NoCommonProtocol);
+}
+
+#[test]
+fn a_contactor_that_stays_welded_ends_the_session_with_that_reason() {
+    let evse = EvseConfig {  welding_voltage_v: 400, ..Default::default() };
+    let r = run(DcConnector::Extended, evse, din(), Some(1));
+    assert_eq!(r.end, EndReason::ContactorWelded, "{:?}", r.log);
+    assert!(!r.sent.iter().any(|m| m == "SessionStopReq"));
 }

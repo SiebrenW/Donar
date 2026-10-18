@@ -221,9 +221,9 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                     State::AwaitAuthorizationRes
                     | State::AwaitScheduleExchangeRes
                     | State::AwaitCableCheckRes
-                    | State::AwaitPreChargeRes
-                    | State::AwaitWeldingDetectionRes,
+                    | State::AwaitPreChargeRes,
                 ) => m.end(EndReason::Timeout),
+                (Timer::Ongoing, State::AwaitWeldingDetectionRes) => m.end(EndReason::ContactorWelded),
                 (Timer::Setup, State::AwaitSupportedAppProtocolRes | State::AwaitSessionSetupRes) => {
                     m.end(EndReason::Timeout)
                 }

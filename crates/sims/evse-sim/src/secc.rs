@@ -687,7 +687,7 @@ impl Secc for SimSecc {
     }
 
     fn welding_detection(&mut self) -> RationalNumber {
-        RationalNumber { exponent: 0, value: 5 }
+        RationalNumber { exponent: 0, value: self.config.welding_voltage_v }
     }
 
     fn power_delivery(&mut self, request: &PowerDeliveryReq<'_>) -> ResponseCode {

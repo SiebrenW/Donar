@@ -290,11 +290,11 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         | State::AwaitChargeParameterDiscoveryRes
                         | State::AwaitCableCheckRes
                         | State::AwaitPreChargeRes
-                        | State::AwaitWeldingDetectionRes
                 ) =>
             {
                 self.end(EndReason::Timeout)
             }
+            Timer::Ongoing if state == State::AwaitWeldingDetectionRes => self.end(EndReason::ContactorWelded),
             Timer::Setup if matches!(state, State::AwaitSupportedAppProtocolRes | State::AwaitSessionSetupRes) => {
                 self.end(EndReason::Timeout)
             }
