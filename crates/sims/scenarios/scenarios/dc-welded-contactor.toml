@@ -1,5 +1,5 @@
 name = "dc-welded-contactor"
-description = "ISO 15118-20 DC: after the stop the charger's side B still carries the battery voltage, as with a welded contactor. Welding detection never sees it fall below the limit; when the bound on the repeated requests runs out, the vehicle ends the session as a welded contactor, not as a plain timeout."
+description = "ISO 15118-20 DC: after the stop the charger's side B still carries the battery voltage, as with a welded contactor. Welding detection never sees it fall below the limit; when the bound on the repeated requests runs out, the vehicle tells the charger with a session stop (the pilot is at B by then) and ends the session as a welded contactor, not as a plain timeout."
 timeout_s = 30
 
 [secc]
@@ -16,4 +16,6 @@ ongoing_timeout_ms = 1000
 
 [expect]
 evcc_exit = 1
+secc_exit = 0
 evcc_log = ["ContactorWelded"]
+secc_log = ["session: Stopped"]

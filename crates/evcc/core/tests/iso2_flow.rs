@@ -119,6 +119,7 @@ fn run_host(connector: DcConnector, evse: EvseConfig, config: Config, stop_after
     let mut loops = 0;
     let mut queue = std::collections::VecDeque::from([Input::Event(Event::Start { secured: false })]);
     let mut guard = 0;
+    let mut expired = false;
     while let Some(input) = queue.pop_front() {
         guard += 1;
         assert!(guard < 500, "the session does not end: {states:?}");
@@ -177,7 +178,8 @@ fn run_host(connector: DcConnector, evse: EvseConfig, config: Config, stop_after
             }
         }
         // A charger that keeps its voltage up: the bound on the repeated requests runs out.
-        if sent.borrow().iter().filter(|m| m.contains("WeldingDetectionReq")).count() >= 4 {
+        if !expired && sent.borrow().iter().filter(|m| m.contains("WeldingDetectionReq")).count() >= 4 {
+            expired = true;
             queue.push_front(Input::Event(Event::TimerExpired(Timer::Ongoing)));
         }
         // A pause before the next request: it is over at once.
@@ -278,11 +280,12 @@ fn a_charger_without_iso2_refuses_the_protocol() {
 }
 
 #[test]
-fn a_contactor_that_stays_welded_ends_the_session_with_that_reason() {
+fn a_contactor_that_stays_welded_is_reported_to_the_charger_and_ends_the_session_with_that_reason() {
     let evse = EvseConfig {  welding_voltage_v: 400, ..Default::default() };
     let r = run(DcConnector::Extended, evse, iso2(), Some(1));
     assert_eq!(r.end, EndReason::ContactorWelded, "{:?}", r.log);
-    assert!(!r.sent.iter().any(|m| m == "SessionStopReq"));
+    // The pilot is at B by then: the vehicle says so with a session stop before it ends.
+    assert_eq!(r.sent.last().map(String::as_str), Some("SessionStopReq"), "{:?}", r.sent);
 }
 
 #[test]

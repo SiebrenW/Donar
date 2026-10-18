@@ -373,7 +373,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             {
                 self.end(EndReason::Timeout)
             }
-            Timer::Ongoing if state == State::AwaitWeldingDetectionRes => self.end(EndReason::ContactorWelded),
+            // The voltage never fell: the contactors are welded. The pilot is at B by now, so the vehicle says so (and ends).
+            Timer::Ongoing if state == State::AwaitWeldingDetectionRes => self.end_politely(EndReason::ContactorWelded, tx),
             Timer::Setup if matches!(state, State::AwaitSupportedAppProtocolRes | State::AwaitSessionSetupRes) => {
                 self.end(EndReason::Timeout)
             }

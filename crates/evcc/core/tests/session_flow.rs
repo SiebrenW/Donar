@@ -611,8 +611,9 @@ fn a_voltage_that_does_not_fall_during_welding_detection_means_a_welded_contacto
         let step = deliver(&mut s, &welding_res(ResponseCode::Ok, 400));
         assert_eq!(step.end, None);
     }
+    // The pilot is at B by now: the vehicle tells the charger, then ends with the reason.
     let step = s.handle(Event::TimerExpired(Timer::Ongoing));
-    assert_eq!(step.end, Some(EndReason::ContactorWelded));
+    ends_after_a_session_stop(&mut s, &step, "ContactorWelded", EndReason::ContactorWelded);
 }
 
 #[test]
