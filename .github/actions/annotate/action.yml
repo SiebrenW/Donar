@@ -1,0 +1,15 @@
+name: Annotate failures
+description: Puts the lines of ci.log that say what failed into annotations (readable without the full log, through the API too).
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        [ -f ci.log ] || exit 0
+        # Failing tests, panics, compiler and clippy errors, failed scenarios and the lines around the first panic.
+        grep -E '^test .* \.\.\. FAILED|panicked at|^error(\[|:)|^FAIL |^ERROR |failures:$|^    [a-z_:0-9]+$' ci.log | head -40 | while IFS= read -r line; do
+          echo "::error::$(printf '%s' "$line" | cut -c1-300)"
+        done
+        grep -n -m1 'panicked at' ci.log | cut -d: -f1 | while read -r n; do
+          sed -n "$((n)),$((n+6))p" ci.log | cut -c1-300 | while IFS= read -r line; do echo "::error::$line"; done
+        done

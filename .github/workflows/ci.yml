@@ -28,7 +28,13 @@ jobs:
       - uses: ./.github/actions/prepare
         with:
           vectors: "false"
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Clippy
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee ci.log
+      - uses: ./.github/actions/annotate
+        if: failure()
 
   # The cores, the codecs and the control pilot rules are `no_std`: they must build for a bare-metal target.
   no-std:
@@ -68,9 +74,14 @@ jobs:
       - name: Build the simulators
         run: cargo build --workspace --bins --locked
       - name: Tests
+        shell: bash
         env:
           CHROME: /usr/bin/google-chrome
-        run: cargo test --workspace --locked
+        run: |
+          set -o pipefail
+          cargo test --workspace --locked --no-fail-fast 2>&1 | tee ci.log
+      - uses: ./.github/actions/annotate
+        if: failure()
       - name: Logs and captures of the scenarios
         if: failure()
         uses: actions/upload-artifact@v4
@@ -88,7 +99,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/prepare
-      - run: cargo test --workspace --locked
+      - name: Tests
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --workspace --locked --no-fail-fast 2>&1 | tee ci.log
+      - uses: ./.github/actions/annotate
+        if: failure()
 
   # The vehicle against independent implementations: the open-source Python `iso15118` SECC (ISO 15118-2, -20, DIN SPEC 70121)
   # and `pyslac` (SLAC), as in `cargo xtask interop`.
@@ -116,7 +133,12 @@ jobs:
           "$PYSLAC_VENV/bin/pip" install --quiet "marshmallow<4" "git+https://github.com/ecog-io/pyslac@134cb15dfca6381892ef8e30d15e615dc9c61c50"
       - run: cargo build --workspace --bins --locked
       - name: Scenarios against the partners
-        run: sudo -E env "PATH=$PATH" target/debug/scenario crates/sims/scenarios/scenarios/interop/*.toml
+        shell: bash
+        run: |
+          set -o pipefail
+          sudo -E env "PATH=$PATH" target/debug/scenario crates/sims/scenarios/scenarios/interop/*.toml 2>&1 | tee ci.log
+      - uses: ./.github/actions/annotate
+        if: failure()
       - name: Logs and captures of the scenarios
         if: failure()
         uses: actions/upload-artifact@v4
