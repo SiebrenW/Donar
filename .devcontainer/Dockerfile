@@ -1,12 +1,13 @@
 # Test environment for the Linux-only network tests (network namespaces, veth, raw sockets).
 # Used by `cargo xtask linux-test` and by the dev container (.devcontainer/devcontainer.json);
 # the container has to be privileged. The JDK is for `cargo xtask vectors` (EXIficient
-# reference vectors), iproute2 and sudo for the namespaces, Python for the interop partner.
+# reference vectors), iproute2 and sudo for the namespaces, Python for the interop partner, Chromium for the
+# tests of the web page.
 FROM rust:1
 # The generator formats its output with rustfmt; clippy is for the editor.
 RUN rustup component add rustfmt clippy
 RUN apt-get update -qq \
- && apt-get install -y -qq --no-install-recommends iproute2 default-jdk-headless sudo python3-venv \
+ && apt-get install -y -qq --no-install-recommends iproute2 default-jdk-headless sudo python3-venv chromium \
  && rm -rf /var/lib/apt/lists/*
 
 # An independent ISO 15118-20 charger (SECC) to test against, `cargo xtask interop`: the
@@ -34,7 +35,8 @@ RUN chmod 0755 /usr/local/bin/own-volumes /usr/local/bin/test-runner
 
 # Test binaries run as root through sudo (namespaces, raw sockets); everything else, such as
 # `cargo xtask`, runs as `developer` and does not leave root-owned files in the repository.
-ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER=/usr/local/bin/test-runner \
+ENV EVCC_REQUIRE_BROWSER=1 \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER=/usr/local/bin/test-runner \
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER=/usr/local/bin/test-runner \
     CARGO_TARGET_DIR=/target
 

@@ -22,3 +22,6 @@ libc = "0.2"
 [[bin]]
 name = "evcc-web"
 path = "src/main.rs"
+
+[dev-dependencies]
+tungstenite = "0.30.0"
