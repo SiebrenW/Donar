@@ -7,7 +7,7 @@ publish = false
 [dependencies]
 v2gtp = { path = "../../codec/v2gtp" }
 homeplug = { path = "../../codec/homeplug" }
-sha2 = "0.10"
+sha2 = "0.11"
 serde = { version = "1", features = ["derive"] }
 iso15118-20 = { path = "../../codec/iso15118-20" }
 evse-core = { path = "../../evse/core" }
