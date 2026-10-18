@@ -39,8 +39,6 @@ Not covered at all: cross certificates (V2G20-1002, 1005, 1853), the profiles of
 | BPT service parameters (Table 207) | Whether `BPTChannel` and `GeneratorMode` are mandatory in a DC_BPT parameter set. The Python SECC offers none. | The vehicle accepts a set without them (`Config::optional_parameters`). Unchecked. |
 | `EVMaximumV2XEnergyRequest`, `EVMinimumV2XEnergyRequest` (V2G20-2681, 2682, 2124, 2125) | Sign conventions are given in prose only ("a negative value indicates that PresentSOC is above the V2X range"). | Both values or none, clamped into minimum energy ≤ minimum V2X ≤ maximum V2X ≤ maximum energy. |
 | Discharge in Dynamic mode | The convention for the target energy and power when discharging (a negative `EVTargetEnergyRequest`, a negative target active power). | Negative means discharge. Open item in PLAN. |
-| Phase specific power (V2G20-1815 to 1822, 1209) | Spread over many requirements: the base element is the sum if no `_L2`/`_L3` follows, otherwise line 1; a single-phase vehicle on a three-phase set writes zero in `_L2`/`_L3`. | As described. |
-| V2G20-1555 | Target frequency: when a vehicle must act on it. | Not used by either side. |
 | `ScheduleExchangeRes` `Ongoing` | No ScheduleExchange-specific rule for the repeat timing. | V2G_EVCC_Ongoing_Timeout applies, as for other `Ongoing` answers. |
 
 ## ISO 15118-2 and DIN SPEC 70121
@@ -54,7 +52,6 @@ No entries yet. These were read less closely than ISO 15118-20; that is not evid
 | `CM_VALIDATE` | The MMTYPEs (0x6044, 0x6045) are left to the HomePlug specification. | Those of the open HomePlug implementations. Unchecked against hardware. |
 | Network id and key on the modem | The NID octet layout of `CM_SET_KEY` and the vendor `VS_NW_INFO` answer are not in the standard. | The layout was read from captures on a QCA7005; a lone modem was checked, a joined modem was not. |
 | Attenuation thresholds (10 dB direct, 20 dB indirect) | They assume a modem at the plug. Wiring between the plug and the modem adds attenuation that is no part of the path to the charger, per carrier group. The standard has no correction. | Configurable per group in the vehicle and the simulated charger (`attenuation_correction_db`). The transmit level (how loud the modem sounds) is the modem's and not configured. |
-| Secure SLAC (security type 1) | Not supported. | |
 
 ## Other implementations that deviate from the standard
 
