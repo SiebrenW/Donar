@@ -359,8 +359,12 @@ fn din_pilot(host: Host, stop_after: u32) -> (Option<EndReason>, bool, din::Stat
 }
 
 fn iso2_pilot(host: Host, stop_after: u32) -> (Option<EndReason>, bool, iso2::State, Iso2Charger) {
+    iso2_pilot_with(evcc_core::iso2::Config::ISO2_DC, host, stop_after)
+}
+
+fn iso2_pilot_with(config: evcc_core::iso2::Config, host: Host, stop_after: u32) -> (Option<EndReason>, bool, iso2::State, Iso2Charger) {
     let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
-    let mut vehicle = evcc_core::iso2::Session::new(evcc_core::iso2::Config::ISO2_DC, TestEv, NoLog, Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
+    let mut vehicle = evcc_core::iso2::Session::new(config, TestEv, NoLog, Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
     let (mut crx, mut ctx, mut carena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 65536]);
     let mut charger = iso2::Session::new(Iso2Charger::default());
     let feed = |to: ToCharger<'_>| {
@@ -425,4 +429,14 @@ fn din_and_iso2_chargers_end_the_session_in_an_emergency_without_a_word() {
         assert_eq!(charger.how, Some(evse_core::secc::Ended::Emergency(reading)));
         assert_eq!(charger.loops, 2);
     }
+}
+
+#[test]
+fn an_ac_session_with_the_pilot_reported_runs_to_the_end_and_the_charger_takes_c_and_b_as_the_vehicle_stopping() {
+    // The vehicle sets C with its Start request and B with its Stop request (V2G2-847, 848); in AC that is no emergency (IEC 61851-1).
+    let (end, closed, state, charger) = iso2_pilot_with(evcc_core::iso2::Config::ac(true), Host { report: true, ..Default::default() }, 2);
+    assert_eq!(end, Some(EndReason::Completed));
+    assert!(closed);
+    assert_eq!(state, iso2::State::Stopped);
+    assert!(matches!(charger.how, Some(evse_core::secc::Ended::Stopped(_))), "{:?}", charger.how);
 }

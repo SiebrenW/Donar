@@ -223,11 +223,19 @@ pub struct EvseWatch {
     /// B is what the stop sequence leads to (the power delivery stop was answered, a `SessionStopReq`
     /// came, or the charger itself began the shutdown).
     stopping: bool,
+    /// An AC session: the vehicle changing from C to B is how it stops the charge (IEC 61851-1), no emergency; the emergency
+    /// rule of IEC 61851-23 CC.4.3 is DC's.
+    ac: bool,
 }
 
 impl EvseWatch {
     pub const fn new() -> Self {
-        Self { last: None, was_ready: false, stopping: false }
+        Self { last: None, was_ready: false, stopping: false, ac: false }
+    }
+
+    /// The session is an AC one (known once the charge parameters or the service are chosen).
+    pub fn set_ac(&mut self, ac: bool) {
+        self.ac = ac;
     }
 
     /// The shutdown has begun (the power delivery stop is answered, `SessionStopReq` is in, or the charger
@@ -248,7 +256,7 @@ impl EvseWatch {
     pub fn guard(&self, active: bool) -> Guard {
         Guard {
             side: Side::Charger,
-            hold_ready: active && self.was_ready && !self.stopping,
+            hold_ready: active && self.was_ready && !self.stopping && !self.ac,
             hold_five_percent: false,
             static_stops_supply: false,
             close_on_fault: active && !self.stopping,
@@ -361,6 +369,17 @@ mod tests {
         w.reading(C5);
         w.set_stopping();
         assert_eq!(w.reading(B5), Verdict::Fine);
+    }
+
+    #[test]
+    fn in_an_ac_session_the_vehicle_leaving_c_is_no_emergency_for_the_charger() {
+        let mut w = EvseWatch::new();
+        w.set_ac(true);
+        assert_eq!(w.reading(C5), Verdict::Fine);
+        assert_eq!(w.reading(B5), Verdict::Fine, "IEC 61851-1: the vehicle stops the charge by going to B");
+        assert!(!w.guard(true).hold_ready);
+        // E, F and A still end the session.
+        assert_eq!(w.reading(E), Verdict::Fault);
     }
 
     #[test]

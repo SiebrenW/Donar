@@ -247,7 +247,12 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                     return Step::default();
                 }
                 let progress = if m.renegotiating { ChargeProgress::Renegotiate } else { ChargeProgress::Stop };
-                let step = m.send_power_delivery_as(progress, tx);
+                let mut step = m.send_power_delivery_as(progress, tx);
+                if m.ac && progress == ChargeProgress::Stop && step.end.is_none() {
+                    // AC: the pilot goes to B no later than 250 ms after the stop request (V2G2-848); DC does it after the answer.
+                    step.notice = Some(crate::session::Notice::ControlPilot(crate::session::ControlPilot::B));
+                    m.pilot.set_ready(false);
+                }
                 m.sequence_done(step)
             }
             // A pause is a stop that ends with `SessionStopReq(Pause)`.

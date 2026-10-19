@@ -304,7 +304,7 @@ impl<S: Iso2Secc> Session<S> {
                     return Step::default();
                 }
                 m.secc.note(format_args!("the vehicle sent nothing for {SEQUENCE_TIMEOUT_MS} ms (V2G_SECC_Sequence_Timeout)"));
-                m.secc.session_ended(Ended::Lost);
+                m.secc.session_ended(Ended::SequenceTimeout);
                 m.state = State::Closed;
                 Step { close: true, ..Step::default() }
             }
@@ -622,6 +622,7 @@ impl<S: Iso2Secc> Machine<S> {
                     return self.failing(&request, c, out);
                 }
                 self.ac = ac;
+                self.pilot.set_ac(ac);
                 self.announced_power = match &req.ev_charge_parameter {
                     EvChargeParameterChoice::Dc(p) => p.ev_maximum_power_limit,
                     _ => None,

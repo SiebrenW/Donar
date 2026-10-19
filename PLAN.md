@@ -25,17 +25,16 @@ Independent checks exist against the Python `iso15118` library (-20 DC, AC, BPT,
 - Reactive power setpoints (sent as 0), the BPT service parameter `GridCodeIslandingDetectionMethod`, the target frequency (V2G20-1555), separated channel and grid forming BPT.
 - ACDP and WPT (not generated either).
 - Hash binding of the certificates on a resumed session (V2G20-2539, 2545), the schedule tuple elapsed-time rules (V2G20-1840, 1841).
-- Control pilot: the pilot outputs of the -20 vehicle exist for DC only and only with `Config::control_pilot` (off by default so that hosts that set the pilot themselves are unaffected; DIN and ISO 15118-2 always ask); AC has none. ISO 15118-2 AC sets its pilot (C) in the host. The vehicle does not wait for a pilot reading before it sends the first `CPDReq` in AC (V2G20-930 asks for 5 %, with a NOTE that a session may start with 100 %).
-- A failing response before the charge parameter discovery follows DIN V2G-DC-649, 652, 654 (session stop if the oscillator is on, none if it is off or after `FAILED_SequenceError`); for ISO 15118-2 and -20 no such rule was checked, they end with `Rejected` at once.
+- Control pilot outputs: the -20 vehicle asks the host for C and B in DC only and only with `Config::control_pilot` (off by default so that hosts that set the pilot themselves are unaffected); DIN and ISO 15118-2 DC always ask, ISO 15118-2 AC asks for C with the Start request and B with the Stop request (V2G2-847, 848). The vehicle does not wait for a reading of 5 % or the nominal duty cycle before it sends the first `ChargeParameterDiscoveryReq` in AC (V2G2-930; V2G20-930 asks for 5 % with a NOTE that a session may start with 100 %).
 - Plug & Charge: contract revocation, `SupportedProviders` filtering, a second contract chain, other remedies of V2G20-1583. Certificate installation and update are left out on purpose (messages are in the codecs).
-- DIN: `NotificationMaxDelay` (V2G-DC-636) and the other status codes (637); ramping the current down through `CurrentDemandReq` with 0 A; the EVSE id is not parsed.
+- DIN: stopping between `PowerDeliveryRes(TRUE)` and the first `CurrentDemandReq` with that request at 0 A (V2G-DC-424, 673: "e.g."); the EVSE id is not parsed.
 - ISO 15118-2: certificate installation and update; the consumption cost (`RelativePricePercentage`), description and `NumEPriceLevels` of a sales tariff.
 
 ### Protocol, charger
 
-- `evse-core` -20: value-added services; an end-to-end test of a failing metering signature. A `SessionStopReq` is taken in every state after the setup except the charge loop (as in the DIN and ISO 15118-2 cores); the charger does not check the control pilot (V2G20-920 to 922).
-- DIN: the 60 s `V2G_SECC_Sequence_Timeout`.
-- The charger does not debounce or deliver the cable check and stop checks of the pilot with a wait: it answers at once with what it last measured, where the standards give it up to `V2G_SECC_Msg_Performance_Time` to see C/D or B appear (V2G20-916, 920 to 922). A host that measures slowly should report the pilot before it passes the request on (the simulators read the cable before each request).
+- `evse-core` -20: value-added services; an end-to-end test of a failing metering signature.
+- The 60 s `V2G_SECC_Sequence_Timeout` ends a session with `Ended::SequenceTimeout`; for DIN the host then carries out the EVSE-initiated emergency shutdown (V2G-DC-366: oscillator off, current down). The simulators do not run the timer.
+- The charger answers the cable check and the stop checks of the pilot at once with what it last measured, where the standards give it up to `V2G_SECC_Msg_Performance_Time` (1.5 s) to see C/D or B appear and only then `FAILED` (V2G2-916 to 922, V2G20-916 to 922). A vehicle that sets C a little late is failed wrongly. The cable check could answer `Ongoing` meanwhile; welding detection and the session stop have no such field, so the response would have to be held until the pilot arrives or a `Timer::PilotWait` fires (a pending request in the machine). The simulators read the cable before each request, which hides it.
 - The charger's own emergencies (oscillator off, current down, contactors open) are the host's; the core only learns of the vehicle's. The simulators are hosts that poll every 2 ms instead of arming a monitor; no example of an interrupt driven monitor yet.
 - Charger simulator: acting on an `EVEnergyOffer` (it only logs it), an offer with several rules per stack, live mobility-needs changes in the loop, a cable voltage drop (V2G20-2185 note 2), the early-stop and pause paths of -2, certificate revocation for the contract.
 
@@ -84,7 +83,7 @@ Independent checks exist against the Python `iso15118` library (-20 DC, AC, BPT,
 
 ### CI
 
-- The workflows were written without a run on GitHub's runners: expect to fix the first run (AppArmor around `tcpdump`, the namespaces and raw sockets on the hosted runners, the Chrome path, the Python 3.11 partners). Not covered: a Windows build (the sandbox is Linux-only), a coverage report, `cargo deny` for licences, building the web UI's `index.html` in a browser matrix, a nightly run of the Python partners against their newest versions.
+- The workflows run on GitHub's hosted runners (Linux jobs pinned to ubuntu-24.04). Failures show up as annotations (`.github/actions/annotate`) because job logs need a login. Not covered: a Windows build (the sandbox is Linux-only), a coverage report, `cargo deny` for licences, a nightly run of the Python partners against their newest versions.
 - The code is not formatted with rustfmt (about 2100 differences), so `cargo fmt --check` is not a check.
 
 ### Code layout

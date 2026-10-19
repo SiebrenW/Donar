@@ -173,7 +173,7 @@ impl<S: Secc> Session<S> {
                     return Step::default();
                 }
                 m.secc.note(format_args!("the vehicle sent nothing for {SEQUENCE_TIMEOUT_MS} ms (V2G_SECC_Sequence_Timeout)"));
-                m.secc.session_ended(Ended::Lost);
+                m.secc.session_ended(Ended::SequenceTimeout);
                 m.state = State::Closed;
                 Step { close: true, ..Step::default() }
             }
@@ -631,6 +631,7 @@ impl<S: Secc> Machine<S> {
                             resumed = true;
                             self.session_id = asked;
                             self.service = selected.service_id;
+                            self.pilot.set_ac(self.ac());
                             self.scheduled = self.secc.parameter_sets(selected.service_id).iter().find(|s| s.parameter_set_id == selected.parameter_set_id).and_then(|s| parameter(s, "ControlMode")) == Some(1);
                         }
                         // V2G20-2547: an id we do not know is a new session, with an id of its own.
