@@ -288,6 +288,38 @@ mod simulation {
 
     /// The timeline's messages and the faults injected during a session.
     #[test]
+    fn shows_the_control_pilot_and_takes_emergencies_from_either_side() {
+        let server = start();
+        post(&server, "/api/sim/open", json!({}));
+        wait(&server, "the simulation to open", |v| v["open"] == true && v["evse"].is_object());
+        let vehicle = json!({ "charge_loop_interval_ms": 30, "poll_interval_ms": 10, "stop_after": 0, "time_scale": 1, "stop_at_target_soc": false });
+        post(&server, "/api/sim/session", json!({ "evcc": vehicle, "secc": {} }));
+        wait(&server, "the hold before setup", held_at("setup"));
+        post(&server, "/api/sim/cmd", json!({ "target": "ev", "cmd": { "cmd": "advance", "to": "charge_loop", "stay": true } }));
+        // The cable shows state C and the 5 % oscillator, and both machines have told their hosts what to watch.
+        let v = wait(&server, "the charge loop with the pilot at C", |v| v["ev"]["loops"].as_u64().unwrap_or(0) >= 3 && v["ev"]["pilot"]["reading"]["state"] == "C");
+        assert_eq!(v["ev"]["pilot"]["reading"]["pwm"], 5, "{v}");
+        assert_eq!(v["ev"]["pilot"]["guard"]["hold_ready"], true, "{v}");
+        assert_eq!(v["ev"]["pilot"]["guard"]["hold_five_percent"], true, "{v}");
+        let v = wait(&server, "the charger's guard", |v| v["evse"]["pilot"]["guard"]["hold_ready"] == true);
+        assert_eq!(v["evse"]["pilot"]["reading"]["state"], "C", "{v}");
+        // The charger turns its oscillator to 50 %: in a DC session that is an emergency for the vehicle, which ends the session.
+        post(&server, "/api/sim/cmd", json!({ "target": "evse", "cmd": { "cmd": "pilot", "oscillator": 50 } }));
+        let v = wait(&server, "the vehicle to end the session", |v| v["running"] == false);
+        assert_eq!(v["exit_code"], 1, "{v}");
+        // A second session: the vehicle's own emergency (its pilot leaves C, the connection is dropped).
+        post(&server, "/api/sim/session", json!({ "evcc": vehicle, "secc": {} }));
+        wait(&server, "the hold before setup", held_at("setup"));
+        post(&server, "/api/sim/cmd", json!({ "target": "ev", "cmd": { "cmd": "advance", "to": "charge_loop", "stay": true } }));
+        wait(&server, "the charge loop", |v| v["session"] == 2 && v["ev"]["loops"].as_u64().unwrap_or(0) >= 3);
+        post(&server, "/api/sim/cmd", json!({ "target": "ev", "cmd": { "cmd": "event", "name": "pilot_emergency" } }));
+        let v = wait(&server, "the vehicle to end its session", |v| v["running"] == false && v["session"] == 2);
+        assert_eq!(v["exit_code"], 1, "{v}");
+        post(&server, "/api/sim/close", json!({}));
+        wait(&server, "the simulation to close", |v| v["open"] == false);
+    }
+
+    #[test]
     fn reports_messages_and_takes_injected_faults() {
         let server = start();
         post(&server, "/api/sim/open", json!({}));

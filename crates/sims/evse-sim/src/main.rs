@@ -175,6 +175,9 @@ fn run(args: &Args) -> io::Result<bool> {
         Some(dir) => {
             let wire = evcc_linux::pilot::Wire::new(dir)?;
             wire.set_evse(control_pilot::Pwm::Duty(5))?;
+            if let Some(live) = &live {
+                live.set_wire(wire.clone());
+            }
             Some(wire)
         }
         None => None,

@@ -825,6 +825,48 @@ function buildFaults() {
     $("p", { className: "note", textContent: "Charger faults change the session's settings from the next message on; the toggles show what the charger has now." }));
 }
 
+// ---- control pilot ---------------------------------------------------------
+
+// What a guard (the machine's instruction to the host's own monitor) says, in words.
+function guardText(g) {
+  if (!g) return "not published yet";
+  const parts = [];
+  if (g.hold_ready) parts.push("C or D has to hold (leaving it is an emergency)");
+  if (g.hold_five_percent) parts.push("the oscillator has to be 5 %");
+  if (g.static_stops_supply) parts.push("a constant duty cycle stops the supply in order");
+  if (g.close_on_fault) parts.push("A, E, F end the session");
+  return parts.length ? parts.join("; ") : "nothing is judged";
+}
+
+function buildPilot() {
+  const button = (text, title, onclick) => { const b = $("button", { className: "quiet", textContent: text, title }); b.onclick = onclick; return b; };
+  const state = $("select", {}, ...["A", "B", "C", "D", "E", "F"].map(l => $("option", { value: l, textContent: `state ${l}`, selected: l === "C" })));
+  const oscillator = $("select", {}, $("option", { value: "5", textContent: "5 %" }), $("option", { value: "30", textContent: "30 %" }), $("option", { value: "off", textContent: "off (constant, 100 %)" }));
+  return $("div", { className: "panel", id: "pilot-panel" }, $("h3", { textContent: "Control pilot" }),
+    $("p", { id: "pilot-reading", className: "note", textContent: "No pilot reading yet." }),
+    $("div", { className: "faults" },
+      $("div", {}, $("b", { textContent: "Vehicle" }),
+        $("div", { className: "row tight" }, $("span", { className: "note", textContent: "holds" }), state,
+          button("Set", "the state the vehicle holds on the pilot; a change from C that the vehicle did not ask for is an emergency for the charger", () => simCmd("ev", { cmd: "pilot", state: state.value })),
+          button("Emergency", "the vehicle has an emergency of its own: its pilot leaves C and it drops the connection without a word", () => simCmd("ev", { cmd: "event", name: "pilot_emergency" }))),
+        $("p", { id: "pilot-guard-ev", className: "note" })),
+      $("div", {}, $("b", { textContent: "Charger" }),
+        $("div", { className: "row tight" }, $("span", { className: "note", textContent: "oscillator" }), oscillator,
+          button("Set", "the charger's oscillator; off (or anything but 5 %) in a DC session is an emergency for the vehicle", () => simCmd("evse", { cmd: "pilot", oscillator: oscillator.value === "off" ? "off" : Number(oscillator.value) })),
+          button("Emergency", "the charger has an emergency of its own: the oscillator goes off and it drops the connection without a word", () => simCmd("evse", { cmd: "pilot_emergency" }))),
+        $("p", { id: "pilot-guard-evse", className: "note" }))),
+    $("p", { className: "note", textContent: "The machines tell the host what to watch (the guard); here the simulators are the host and watch a cable made of two files." }));
+}
+
+function updatePilot() {
+  const reading = sim.view.ev?.pilot?.reading ?? sim.view.evse?.pilot?.reading;
+  const el = document.getElementById("pilot-reading");
+  if (!el) return;
+  el.textContent = reading ? `State ${reading.state}, oscillator ${reading.pwm === "off" ? "off (constant)" : `${reading.pwm} %`}` : "No pilot reading yet (the vehicle and the charger have not both written the cable).";
+  document.getElementById("pilot-guard-ev").textContent = `The vehicle's machine asks to watch: ${guardText(sim.view.ev?.pilot?.guard)}`;
+  document.getElementById("pilot-guard-evse").textContent = `The charger's machine asks to watch: ${guardText(sim.view.evse?.pilot?.guard)}`;
+}
+
 // The toggles follow the charger's settings (also when a session ended and the settings went back).
 function updateFaults() {
   const config = sim.view.evse?.config;
@@ -999,6 +1041,7 @@ function buildSim() {
     $("div", { className: "three" }, evTable, evseTable),
     buildGraph(),
     $("div", { className: "columns wide" }, buildTimeline(), buildFaults()),
+    buildPilot(),
     $("div", { className: "panel" },
       more("More vehicle settings", schemas.evcc.schema, schemas.evcc.schema, sim.evcc, schemas.evcc.defaults, simOmitEv, "more-vehicle"),
       more("More charger settings", seccRoot, seccSchema, sim.secc, schemas.secc.defaults.session, simOmitSecc, "more-charger"),
@@ -1112,6 +1155,7 @@ function applyView() {
   $id("v-phase").textContent = ev ? phaseName(phase) : v.open ? "Ready" : "Not started";
   $id("s-phase").textContent = ev?.result ?? (ev?.state ?? "");
   updateFaults();
+  updatePilot();
   if (v.error) $id("sim-msg").textContent = v.error;
   updateUsed();
 }

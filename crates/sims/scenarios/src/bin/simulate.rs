@@ -116,7 +116,7 @@ mod linux {
         let (evcc, secc) = (sandbox.node("evcc")?, sandbox.node("secc")?);
         let (evcc, secc) = sandbox.connect(&evcc, &secc)?;
         let socket = sandbox.artifacts().join("secc.sock");
-        let settings = evse_sim::Settings { slac_responder: slac, control_pilot_file: slac.then(|| sandbox.artifacts().join("pilot").display().to_string()), ..Default::default() };
+        let settings = evse_sim::Settings { slac_responder: slac, control_pilot_file: slac.then(|| sandbox.artifacts().join("pilot").display().to_string()), control_pilot_wire: Some(sandbox.artifacts().join("control-pilot").display().to_string()), ..Default::default() };
         let config = sandbox.write_artifact("secc.toml", toml::to_string(&settings).map_err(std::io::Error::other)?.as_bytes())?;
         // The charger serves sessions for as long as the simulation is open.
         let mut args = vec!["--config".to_string(), config.display().to_string(), "--control".into(), socket.display().to_string(), "--sessions".into(), "0".into()];
@@ -148,6 +148,8 @@ mod linux {
         settings.tls = sim.tls.clone();
         settings.slac = sim.slac;
         settings.control_pilot_file = sim.slac.then(|| sim.sandbox.artifacts().join("pilot").display().to_string());
+        // The control pilot cable the two simulators share (the page sets the vehicle's state and the charger's oscillator).
+        settings.control_pilot_wire = Some(sim.sandbox.artifacts().join("control-pilot").display().to_string());
         let config = sim.sandbox.write_artifact(&format!("evcc-{n}.toml"), toml::to_string(&settings).map_err(std::io::Error::other)?.as_bytes())?;
         let socket: PathBuf = sim.sandbox.artifacts().join(format!("evcc-{n}.sock"));
         let mut spawn = Spawn::new(partners::sibling_binary("evcc-sim")?)

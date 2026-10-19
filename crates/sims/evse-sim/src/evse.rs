@@ -303,6 +303,11 @@ impl Evse {
         if close || len > 0 { vec![Output { send: (!sent.is_empty()).then_some(sent), close }] } else { Vec::new() }
     }
 
+    /// What the host is to watch on the control pilot now.
+    pub fn pilot_guard(&self) -> control_pilot::Guard {
+        self.guard
+    }
+
     /// Whether the charger is to have an emergency of its own now (`pilot_emergency_after_loops`).
     pub fn pilot_emergency_due(&self) -> bool {
         match (&self.run, self.config.pilot_emergency_after_loops) {

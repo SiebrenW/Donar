@@ -95,6 +95,9 @@ struct Inner {
     closed: bool,
     result: Option<String>,
     action: Option<Action>,
+    /// The control pilot cable shared with the simulated charger, and what the session machine last asked the host to watch.
+    wire: Option<evcc_linux::pilot::Wire>,
+    guard: Option<control_pilot::Guard>,
 }
 
 /// Something the vehicle does in the charge loop when asked, once.
@@ -103,6 +106,8 @@ pub enum Action {
     Pause,
     RenegotiateServices,
     RenegotiateSchedule,
+    /// An emergency of the vehicle's own: its pilot leaves state C and it drops the connection.
+    PilotEmergency,
 }
 
 pub struct EvLive {
@@ -180,6 +185,8 @@ impl EvLive {
                 closed: false,
                 result: None,
                 action: None,
+                wire: None,
+                guard: None,
             }),
             changed: Condvar::new(),
             events: EventLog::new(4000),
@@ -187,6 +194,16 @@ impl EvLive {
     }
 
     /// What the vehicle was asked to do in the charge loop, once.
+    /// The control pilot cable of the session (the host's end of it).
+    pub fn set_wire(&self, wire: evcc_linux::pilot::Wire) {
+        self.inner.lock().unwrap().wire = Some(wire);
+    }
+
+    /// What the session machine last asked the host to watch on the pilot.
+    pub fn set_guard(&self, guard: control_pilot::Guard) {
+        self.inner.lock().unwrap().guard = Some(guard);
+    }
+
     pub fn take_action(&self) -> Option<Action> {
         self.inner.lock().unwrap().action.take()
     }
@@ -342,6 +359,7 @@ impl Endpoint for EvLive {
             "model_soc": g.model_soc,
             "loops": g.loops,
             "result": g.result,
+            "pilot": { "reading": sim_control::pilot_json::reading(g.wire.as_ref().and_then(evcc_linux::pilot::Wire::reading)), "guard": sim_control::pilot_json::guard(g.guard) },
         })
     }
 
@@ -389,8 +407,14 @@ impl Endpoint for EvLive {
                     Some("pause") => Action::Pause,
                     Some("renegotiate_services") => Action::RenegotiateServices,
                     Some("renegotiate_schedule") => Action::RenegotiateSchedule,
+                    Some("pilot_emergency") => Action::PilotEmergency,
                     other => return Err(format!("no such event: {other:?}")),
                 });
+            }
+            // The vehicle changes the state it holds on the control pilot (A to F): a real vehicle's pilot goes where its hardware takes it.
+            Some("pilot") => {
+                let state = sim_control::pilot_json::state(cmd.get("state").and_then(Value::as_str).unwrap_or(""))?;
+                g.wire.as_ref().ok_or("there is no control pilot wire in this simulation")?.set_ev(state).map_err(|e| e.to_string())?;
             }
             Some("real_timers") => g.real_timers = cmd.get("on").and_then(Value::as_bool).ok_or("on: a boolean")?,
             Some("measure") => {
