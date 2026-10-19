@@ -272,6 +272,13 @@ impl EvLive {
         g.take_energy(watts.iter().sum())
     }
 
+    /// For tests: lets the battery model's clock run `by` further, instead of sleeping (a slow machine sleeps longer than asked).
+    #[cfg(test)]
+    fn shift_clock(&self, by: std::time::Duration) {
+        let mut g = self.inner.lock().unwrap();
+        g.updated = g.updated.and_then(|t| t.checked_sub(by));
+    }
+
     /// The charger's power ramp limit from its charge parameters, percent of the maximum power per minute.
     pub fn set_ramp_limit(&self, percent: f64) {
         self.inner.lock().unwrap().ramp_percent = percent;
@@ -425,16 +432,17 @@ mod tests {
 
     #[test]
     fn the_battery_charges_with_what_the_charger_delivers_and_stops_at_the_target() {
-        let live = EvLive::new(Limits { target_soc: 30, ..Limits::default() }, 20, 3600, true);
+        // Real time, 1:1: 40 kW into 60 kWh takes 150 s from 20 % to 30 %. The clock is moved, not waited for.
+        let live = EvLive::new(Limits { target_soc: 30, ..Limits::default() }, 20, 1, true);
         live.command(json!({ "cmd": "advance", "to": "charge_loop" })).unwrap();
-        // The first answer only starts the clock; one real millisecond is 3.6 s of battery time.
+        // The first answer only starts the clock.
         assert!(!live.charge_loop(&status(400.0, 100.0)));
-        std::thread::sleep(std::time::Duration::from_millis(40));
+        live.shift_clock(std::time::Duration::from_secs(40));
         let stop = live.charge_loop(&status(400.0, 100.0));
         assert!(live.present_soc() > 20.0);
-        assert_eq!(stop, live.present_soc() >= 30.0);
+        assert!(!stop && live.present_soc() < 30.0, "{}", live.present_soc());
         // Far past the target it asks once, not at every answer.
-        std::thread::sleep(std::time::Duration::from_millis(400));
+        live.shift_clock(std::time::Duration::from_secs(1000));
         assert!(live.charge_loop(&status(400.0, 100.0)));
         assert!(!live.charge_loop(&status(400.0, 100.0)));
     }
