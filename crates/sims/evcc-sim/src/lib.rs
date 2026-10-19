@@ -350,6 +350,13 @@ pub fn run_car_pilot(
                 Action::Pause => Event::PauseRequested,
                 Action::RenegotiateServices => Event::RenegotiateServices,
                 Action::RenegotiateSchedule => Event::RenegotiateSchedule,
+                Action::PilotEmergency => {
+                    // The vehicle's own emergency: its pilot is B, and the session machine learns it the way it would from hardware.
+                    if let Some(p) = &pilot {
+                        let _ = p.wire.set_ev(control_pilot::State::B);
+                    }
+                    Event::Pilot(control_pilot::Reading::CONNECTED)
+                }
             })
         } else if Some(loops) == behaviour.pause_after {
             Some(Event::PauseRequested)
@@ -408,7 +415,10 @@ pub fn run_car_pilot(
         }
         _ => None,
     };
-    let mut source = pilot.as_ref().map(|p| p.wire.source());
+    if let (Some(p), Some(live)) = (&pilot, &live) {
+        live.set_wire(p.wire.clone());
+    }
+    let mut source = pilot.as_ref().map(|p| LivePilot { source: p.wire.source(), live: live.clone() });
     let outcome = match config {
         SessionConfig::Iso20(config) => {
             let mut session = Session::new(config, car, log, buffers);
@@ -427,6 +437,25 @@ pub fn run_car_pilot(
         live.finished(format!("{outcome:?}"));
     }
     outcome
+}
+
+/// The wire as the session's pilot source; the guards the machine publishes are shown on the test platform.
+struct LivePilot {
+    source: evcc_linux::pilot::WireSource,
+    live: Option<Arc<EvLive>>,
+}
+
+impl evcc_linux::pilot::PilotSource for LivePilot {
+    fn poll(&mut self) -> Option<control_pilot::Reading> {
+        self.source.poll()
+    }
+
+    fn arm(&mut self, guard: control_pilot::Guard) {
+        self.source.arm(guard);
+        if let Some(live) = &self.live {
+            live.set_guard(guard);
+        }
+    }
 }
 
 /// Prints records of at most `level` to standard error.

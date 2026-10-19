@@ -9,3 +9,4 @@ description = "The control channel of the simulators: live values and commands a
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "1"
+control-pilot = { path = "../../pilot" }

@@ -29,6 +29,11 @@ struct Inner {
     ev_voltage: f64,
     ev_max_current: f64,
     ev_max_power: f64,
+    /// The control pilot cable shared with the simulated vehicle, what the session machine last asked the host to watch, and an
+    /// emergency of the charger's own that was asked for.
+    wire: Option<evcc_linux::pilot::Wire>,
+    guard: Option<control_pilot::Guard>,
+    emergency: bool,
 }
 
 pub struct EvseLive {
@@ -53,6 +58,9 @@ impl EvseLive {
                 ev_voltage: 0.0,
                 ev_max_current: 0.0,
                 ev_max_power: 0.0,
+                wire: None,
+                guard: None,
+                emergency: false,
             }),
             events: EventLog::new(4000),
         })
@@ -80,6 +88,21 @@ impl EvseLive {
     }
 
     /// The config for a session that starts now.
+    /// The control pilot cable of the charger (its end of it).
+    pub fn set_wire(&self, wire: evcc_linux::pilot::Wire) {
+        self.inner.lock().unwrap().wire = Some(wire);
+    }
+
+    /// What the session machine last asked the host to watch on the pilot.
+    pub fn set_guard(&self, guard: control_pilot::Guard) {
+        self.inner.lock().unwrap().guard = Some(guard);
+    }
+
+    /// Whether an emergency of the charger's own was asked for (once).
+    pub fn take_emergency(&self) -> bool {
+        std::mem::take(&mut self.inner.lock().unwrap().emergency)
+    }
+
     pub fn begin_session(&self) -> Config {
         let mut g = self.inner.lock().unwrap();
         g.sessions += 1;
@@ -176,6 +199,7 @@ impl Endpoint for EvseLive {
             "config": g.used.as_ref().map(|_| &g.session_config),
             "measurements": { "voltage": g.voltage, "current": g.current, "max_power": g.max_power },
             "ev_reports": { "voltage": g.ev_voltage, "max_current": g.ev_max_current, "max_power": g.ev_max_power },
+            "pilot": { "reading": sim_control::pilot_json::reading(g.wire.as_ref().and_then(evcc_linux::pilot::Wire::reading)), "guard": sim_control::pilot_json::guard(g.guard) },
         })
     }
 
@@ -213,6 +237,24 @@ impl Endpoint for EvseLive {
                 let slot = limits.get_mut(key).ok_or_else(|| format!("no such limit: {key}"))?;
                 *slot = cmd.get("value").cloned().unwrap_or(Value::Null);
                 g.limits = serde_json::from_value(limits).map_err(|e| format!("{key}: {e}"))?;
+                Ok(())
+            }
+            // The charger's oscillator: `"off"` (a constant voltage, 100 %) or a duty cycle in percent.
+            Some("pilot") => {
+                let pwm = match cmd.get("oscillator") {
+                    Some(Value::String(s)) if s == "off" => control_pilot::Pwm::Off,
+                    Some(Value::Number(n)) => control_pilot::Pwm::Duty(n.as_u64().filter(|d| (1..=99).contains(d)).ok_or("oscillator: 1 to 99 percent or \"off\"")? as u8),
+                    _ => return Err("oscillator: 1 to 99 percent or \"off\"".into()),
+                };
+                g.wire.as_ref().ok_or("there is no control pilot wire in this simulation")?.set_evse(pwm).map_err(|e| e.to_string())?;
+                Ok(())
+            }
+            // An emergency of the charger's own: the oscillator goes off and the connection is dropped without a word.
+            Some("pilot_emergency") => {
+                if g.wire.is_none() {
+                    return Err("there is no control pilot wire in this simulation".into());
+                }
+                g.emergency = true;
                 Ok(())
             }
             Some("measure") => {

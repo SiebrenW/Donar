@@ -82,6 +82,7 @@ pub fn serve_wired<T: evcc_linux::Transport>(stream: &mut T, config: crate::Conf
         }
         if let Some(live) = live {
             live.set_state(evse.state());
+            live.set_guard(evse.pilot_guard());
         }
         for out in outputs {
             if let Some(bytes) = out.send {
@@ -116,6 +117,12 @@ pub fn serve_wired<T: evcc_linux::Transport>(stream: &mut T, config: crate::Conf
             if emit(stream, &mut evse, outputs, live)? {
                 return Ok(evse.state());
             }
+        }
+        // An emergency asked for from the test platform.
+        if live.is_some_and(|l| l.take_emergency()) {
+            eprintln!("[evse] an emergency of its own (asked for): the oscillator goes off, the connection is dropped");
+            wire.set_evse(control_pilot::Pwm::Off)?;
+            return Ok(State::Closed);
         }
         stream.set_read_timeout(Some(evcc_linux::pilot::POLL_INTERVAL))?;
         match stream.read(&mut buf) {

@@ -1028,6 +1028,7 @@ dependencies = [
 name = "sim-control"
 version = "0.1.0"
 dependencies = [
+ "control-pilot",
  "schemars",
  "serde",
  "serde_json",

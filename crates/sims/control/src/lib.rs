@@ -205,3 +205,46 @@ mod tests {
         assert_eq!(m.resolve(50.0), 50.0);
     }
 }
+
+/// The control pilot as JSON, for the live state of a simulator: `{"state": "C", "pwm": "off" | 5}` and the conditions of a guard.
+pub mod pilot_json {
+    use control_pilot::{Guard, Pwm, Reading, State};
+    use serde_json::{Value, json};
+
+    pub fn reading(r: Option<Reading>) -> Value {
+        let Some(r) = r else { return Value::Null };
+        let state = match r.state {
+            State::A => "A",
+            State::B => "B",
+            State::C => "C",
+            State::D => "D",
+            State::E => "E",
+            State::F => "F",
+            State::Invalid => "invalid",
+        };
+        json!({ "state": state, "pwm": match r.pwm { Pwm::Off => json!("off"), Pwm::Duty(d) => json!(d) } })
+    }
+
+    pub fn guard(g: Option<Guard>) -> Value {
+        let Some(g) = g else { return Value::Null };
+        json!({
+            "hold_ready": g.hold_ready,
+            "hold_five_percent": g.hold_five_percent,
+            "static_stops_supply": g.static_stops_supply,
+            "close_on_fault": g.close_on_fault,
+        })
+    }
+
+    /// A state letter from a command.
+    pub fn state(letter: &str) -> Result<State, String> {
+        Ok(match letter {
+            "A" => State::A,
+            "B" => State::B,
+            "C" => State::C,
+            "D" => State::D,
+            "E" => State::E,
+            "F" => State::F,
+            other => return Err(format!("state: A to F, not {other:?}")),
+        })
+    }
+}

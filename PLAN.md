@@ -76,6 +76,7 @@ Independent checks exist against the Python `iso15118` library (-20 DC, AC, BPT,
 
 ### Web UI and simulation page
 
+- Control pilot in the page: the Simulation tab shows the cable's reading and the guards of both machines and has controls for the vehicle's state, the charger's oscillator and an emergency of either side; the Scenarios tab has none (a scenario's TOML can: `pilot_emergency_after`, `pilot_emergency_after_loops`).
 - Captures: the simulation page does not capture yet (the runs of the Scenarios tab do: the path of `capture.pcap` is in the result); the charger simulator does not disclose in the runner (the vehicle's secrets suffice); a Python-partner TLS run is decryptable only because our vehicle is the client.
 - Stopping a run (killing the runner would leave namespaces behind), saving an edited scenario to a file, several runs at once, authentication (localhost only).
 - The Scenarios tab keeps its plain form; SLAC and SDP are not phases to hold at, and SLAC in the simulation is untested.

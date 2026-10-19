@@ -191,7 +191,7 @@ fn the_simulation_page_builds_with_all_its_controls() {
     let server = start();
     let Some(mut b) = open(&server, "#simulation") else { return };
     b.wait_for("the Start button", "!!document.querySelector('#primary')");
-    for id in ["sim-protocol", "sim-energy", "sim-bpt", "sim-scheduled", "sim-mobility-needs", "primary", "step-start"] {
+    for id in ["sim-protocol", "sim-energy", "sim-bpt", "sim-scheduled", "sim-mobility-needs", "primary", "step-start", "pilot-panel", "pilot-reading", "pilot-guard-ev", "pilot-guard-evse"] {
         assert_eq!(b.eval(&format!("!!document.getElementById('{id}')")), json!(true), "no element {id}");
     }
     // Three protocols, DC and AC.
