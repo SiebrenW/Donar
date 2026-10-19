@@ -100,10 +100,15 @@ pub fn run_with_pilot(
             if let Some(reason) = pilot.as_mut().and_then(|p| p.poll()).and_then(|reading| session.handle(Event::Pilot(reading)).end) {
                 return Ok(Outcome::Ended(reason));
             }
-            Ok(Outcome::ConnectionClosed)
+            Ok(closed(session))
         }
         other => other,
     }
+}
+
+/// The connection is gone: a session that had said it was ending anyway ends with its reason, else the hang-up is the result.
+fn closed(session: &mut impl Machine) -> Outcome {
+    session.handle(Event::ConnectionClosed).end.map_or(Outcome::ConnectionClosed, Outcome::Ended)
 }
 
 fn is_hang_up(e: &io::Error) -> bool {
@@ -151,7 +156,7 @@ fn drive(
         }
         match next_step(stream, session, &mut deadlines, pilot)? {
             Next::Step(next) => step = next,
-            Next::PeerClosed => return Ok(Outcome::ConnectionClosed),
+            Next::PeerClosed => return Ok(closed(session)),
         }
     }
 }

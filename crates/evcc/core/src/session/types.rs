@@ -191,6 +191,10 @@ pub enum Event {
     /// [`EndReason::Emergency`] or [`EndReason::PilotFault`] and sends nothing more; the host opens the
     /// contactors and closes the connection (it does not wait for this event to do the first).
     Pilot(control_pilot::Reading),
+    /// The charger closed the connection (or it broke). A session that had announced its own end with a `SessionStopReq`
+    /// (a reason of its own before the power, a welded contactor) ends with that reason, since no answer will come; otherwise
+    /// the event does nothing and the host reports the hang-up itself.
+    ConnectionClosed,
 }
 
 /// A control pilot state (IEC 61851-1) the vehicle changes to.

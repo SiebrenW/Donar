@@ -108,6 +108,8 @@ fn run(connector: DcConnector, evse: EvseConfig, config: Config, stop_after: Opt
 struct Host {
     report: bool,
     inject: Option<(u32, control_pilot::Reading)>,
+    /// A reading the host reports before the session starts (the charger's oscillator is off, say).
+    initial: Option<control_pilot::Reading>,
 }
 
 fn run_host(connector: DcConnector, evse: EvseConfig, config: Config, stop_after: Option<u32>, host: Host) -> Run {
@@ -118,6 +120,9 @@ fn run_host(connector: DcConnector, evse: EvseConfig, config: Config, stop_after
     let (mut states, mut notices) = (Vec::new(), Vec::new());
     let mut loops = 0;
     let mut queue = std::collections::VecDeque::from([Input::Event(Event::Start { secured: false })]);
+    if let Some(reading) = host.initial {
+        queue.push_front(Input::Event(Event::Pilot(reading)));
+    }
     let mut guard = 0;
     let mut expired = false;
     while let Some(input) = queue.pop_front() {
@@ -329,7 +334,7 @@ fn a_contactor_that_stays_welded_is_reported_to_the_charger_and_ends_the_session
 fn a_host_that_reports_the_pilot_does_not_disturb_a_session() {
     use control_pilot::Reading;
     // The pilot goes to C before the cable check and to B at the stop, as asked: nothing there is an emergency.
-    let r = run_host(DcConnector::Extended, EvseConfig::default(), din(), Some(3), Host { report: true, inject: None });
+    let r = run_host(DcConnector::Extended, EvseConfig::default(), din(), Some(3), Host { report: true, ..Default::default() });
     assert_eq!(r.end, EndReason::Completed, "{:?}\n{:?}", r.states, r.log);
     let _ = Reading::CHARGING;
 }
@@ -346,7 +351,7 @@ fn an_emergency_on_the_pilot_ends_the_session_at_once_and_sends_nothing_more() {
         Reading { state: Cp::B, pwm: Pwm::Duty(5) },
         Reading { state: Cp::Invalid, pwm: Pwm::Duty(5) },
     ] {
-        let r = run_host(DcConnector::Extended, EvseConfig::default(), din(), None, Host { report: true, inject: Some((2, reading)) });
+        let r = run_host(DcConnector::Extended, EvseConfig::default(), din(), None, Host { report: true, inject: Some((2, reading)), ..Default::default() });
         assert_eq!(r.end, EndReason::Emergency(reading), "{:?}", r.states);
         assert_eq!(r.sent.iter().filter(|m| *m == "PowerDeliveryReq").count(), 1, "only the start of the power: {:?}", r.sent);
         assert!(!r.sent.iter().any(|m| m == "SessionStopReq"), "{:?}", r.sent);
@@ -359,7 +364,7 @@ fn a_pilot_in_state_e_or_f_closes_the_connection() {
     use control_pilot::{Pwm, Reading, State as Cp};
     for state in [Cp::E, Cp::F] {
         let reading = Reading { state, pwm: Pwm::Off };
-        let r = run_host(DcConnector::Extended, EvseConfig::default(), din(), None, Host { report: true, inject: Some((2, reading)) });
+        let r = run_host(DcConnector::Extended, EvseConfig::default(), din(), None, Host { report: true, inject: Some((2, reading)), ..Default::default() });
         assert_eq!(r.end, EndReason::PilotFault(reading));
     }
 }
@@ -372,4 +377,37 @@ fn a_pilot_reading_before_the_start_is_remembered_but_not_acted_on() {
     let mut session = Session::new(din(), TestEv::new(DcConnector::Extended), NoLog, Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
     assert_eq!(session.handle(Event::Pilot(Reading::CONNECTED)), evcc_core::session::Step::default());
     assert_eq!(session.state(), State::Idle);
+}
+
+#[test]
+fn a_failing_response_before_the_charge_parameters_is_announced_with_a_session_stop_while_the_oscillator_is_on() {
+    // V2G-DC-649: the vehicle goes on as if it wanted to stop for a reason of its own: SessionStopReq as the next request.
+    for code in [iso15118_20::common_types::ResponseCode::Failed, iso15118_20::common_types::ResponseCode::FailedUnknownSession] {
+        let evse = EvseConfig { setup_code: code, ..Default::default() };
+        let r = run(DcConnector::Extended, evse, din(), None);
+        assert!(matches!(r.end, EndReason::RejectedDin(_)), "{:?}", r.end);
+        assert_eq!(r.sent.last().map(String::as_str), Some("SessionStopReq"), "{:?}", r.sent);
+    }
+    // Later in the same part of the flow: the payment selection.
+    let evse = EvseConfig { cpd_code: iso15118_20::common_types::ResponseCode::FailedWrongChargeParameter, ..Default::default() };
+    let r = run(DcConnector::Extended, evse, din(), None);
+    // V2G-DC-653: after the charge parameter discovery request it is an error shutdown: no word.
+    assert_eq!(r.end, EndReason::RejectedDin(din70121::types::ResponseCode::FailedWrongChargeParameter));
+    assert_eq!(r.sent.last().map(String::as_str), Some("ChargeParameterDiscoveryReq"), "{:?}", r.sent);
+}
+
+#[test]
+fn a_failing_response_with_the_oscillator_off_or_a_sequence_error_ends_the_session_without_a_word() {
+    use control_pilot::{Pwm, Reading, State as Cp};
+    // V2G-DC-652: the charger turned its oscillator off: an error shutdown (the host sets the pilot to B).
+    let off = Reading { state: Cp::B, pwm: Pwm::Off };
+    let evse = EvseConfig { setup_code: iso15118_20::common_types::ResponseCode::Failed, ..Default::default() };
+    let r = run_host(DcConnector::Extended, evse, din(), None, Host { initial: Some(off), ..Default::default() });
+    assert_eq!(r.end, EndReason::RejectedDin(din70121::types::ResponseCode::Failed));
+    assert_eq!(r.sent.last().map(String::as_str), Some("SessionSetupReq"), "{:?}", r.sent);
+    // V2G-DC-654: FAILED_SequenceError is terminated at once, whatever the oscillator does.
+    let evse = EvseConfig { setup_code: iso15118_20::common_types::ResponseCode::FailedSequenceError, ..Default::default() };
+    let r = run(DcConnector::Extended, evse, din(), None);
+    assert_eq!(r.end, EndReason::RejectedDin(din70121::types::ResponseCode::FailedSequenceError));
+    assert_eq!(r.sent.last().map(String::as_str), Some("SessionSetupReq"), "{:?}", r.sent);
 }

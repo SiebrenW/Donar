@@ -44,7 +44,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
 
     pub(super) fn on_session_setup_res(&mut self, session_id: &[u8], res: SessionSetupRes<'_>, tx: &mut [u8]) -> Step {
-        if let Some(end) = self.received(MsgKind::SessionSetupRes, res.response_code) {
+        if let Some(end) = self.received_before_cpd(MsgKind::SessionSetupRes, res.response_code, tx) {
             return end;
         }
         let len = session_id.len().min(self.session_id.len());
@@ -76,7 +76,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
 
     pub(super) fn on_service_discovery_res(&mut self, res: ServiceDiscoveryRes<'_>, tx: &mut [u8]) -> Step {
-        if let Some(end) = self.received(MsgKind::ServiceDiscoveryRes, res.response_code) {
+        if let Some(end) = self.received_before_cpd(MsgKind::ServiceDiscoveryRes, res.response_code, tx) {
             return end;
         }
         // V2G-DC-252: only external payment is used.
@@ -107,7 +107,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
 
     pub(super) fn on_service_payment_selection_res(&mut self, res: ServicePaymentSelectionRes, tx: &mut [u8]) -> Step {
-        if let Some(end) = self.received(MsgKind::ServicePaymentSelectionRes, res.response_code) {
+        if let Some(end) = self.received_before_cpd(MsgKind::ServicePaymentSelectionRes, res.response_code, tx) {
             return end;
         }
         self.log.record(&Record::ServiceSelected { service_id: self.service_id, parameter_set_id: 0 });
@@ -123,7 +123,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
 
     pub(super) fn on_contract_authentication_res(&mut self, res: ContractAuthenticationRes, tx: &mut [u8]) -> Step {
-        if let Some(end) = self.received(MsgKind::ContractAuthenticationRes, res.response_code) {
+        if let Some(end) = self.received_before_cpd(MsgKind::ContractAuthenticationRes, res.response_code, tx) {
             return end;
         }
         match res.evse_processing {

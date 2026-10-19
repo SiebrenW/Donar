@@ -1454,3 +1454,19 @@ fn the_duty_cycle_before_the_charge_parameters_is_not_judged() {
     let mut s = up_to_charge_parameters(&mut rig, Capture::default());
     assert_eq!(s.handle(Event::Pilot(Reading { state: Cp::B, pwm: Pwm::Off })).end, None);
 }
+
+#[test]
+fn a_closed_connection_ends_a_session_that_had_announced_its_end_and_is_nothing_otherwise() {
+    // The charger shuts the connection after a failing answer: no SessionStopRes will come, the vehicle ends with its reason.
+    let mut rig = Rig::new();
+    let mut s = up_to_service_discovery(&mut rig, Capture::default());
+    let step = deliver(&mut s, &discovery_res(ResponseCode::Ok, &[1]));
+    assert_eq!(step.end, None);
+    assert_eq!(s.state(), State::AwaitSessionStopRes);
+    assert_eq!(s.handle(Event::ConnectionClosed).end, Some(EndReason::NoCompatibleService));
+    // Nothing announced: the event changes nothing (the host reports the hang-up).
+    let mut rig = Rig::new();
+    let mut s = up_to_charge_loop(&mut rig, Capture::default());
+    assert_eq!(s.handle(Event::ConnectionClosed), Step::default());
+    assert_eq!(s.state(), State::AwaitChargeLoopRes);
+}
