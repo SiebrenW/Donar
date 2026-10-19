@@ -336,3 +336,16 @@ fn a_pilot_reading_before_the_start_is_remembered_but_not_acted_on() {
     assert_eq!(session.handle(Event::Pilot(Reading::CONNECTED)), evcc_core::session::Step::default());
     assert_eq!(session.state(), State::Idle);
 }
+
+#[test]
+fn an_ac_session_asks_for_the_pilot_around_the_power_delivery() {
+    // V2G2-847, 848: C no later than 250 ms after the Start request, B no later than 250 ms after the Stop request; AC has no cable check,
+    // so the notices are the only ones about the pilot.
+    let r = run_host(DcConnector::Extended, EvseConfig::default(), Config::ac(false), Some(2), Host { report: true, ..Default::default() });
+    assert_eq!(r.end, EndReason::Completed, "{:?}\n{:?}", r.states, r.log);
+    let pilots: Vec<_> = r.notices.iter().filter_map(|n| if let Notice::ControlPilot(p) = n { Some(*p) } else { None }).collect();
+    assert_eq!(pilots, [ControlPilot::C, ControlPilot::B], "{:?}", r.notices);
+    let first_pilot = r.notices.iter().position(|n| matches!(n, Notice::ControlPilot(_))).unwrap();
+    let last_pilot = r.notices.iter().rposition(|n| matches!(n, Notice::ControlPilot(_))).unwrap();
+    assert!(r.notices[first_pilot + 1..last_pilot].iter().any(|n| matches!(n, Notice::ChargeLoop(_))), "C before the charge loop, B after it: {:?}", r.notices);
+}

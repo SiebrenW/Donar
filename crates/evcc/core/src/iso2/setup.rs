@@ -341,10 +341,12 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             self.stop_requested = false;
             self.send_session_stop(tx)
         } else if self.ac {
-            // AC has no cable check or pre-charge: power is asked for at once.
+            // AC has no cable check or pre-charge: power is asked for at once, and the pilot goes to C or D no later than 250 ms after
+            // that request (V2G2-847); the host does that when it sees the notice.
             let mut s = self.send_power_delivery(true, tx);
             if s.end.is_none() {
-                s.notice = Some(Notice::CableChecked);
+                s.notice = Some(Notice::ControlPilot(crate::session::ControlPilot::C));
+                self.pilot.set_ready(true);
             }
             s
         } else {

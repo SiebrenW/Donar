@@ -857,3 +857,16 @@ fn the_machines_tell_the_host_what_to_watch_as_the_session_goes() {
     // meant (and with it nothing is judged any more, which the end does not change).
     assert_eq!(charger, [cg(false, true), cg(true, true), Guard::disarmed(Side::Charger)], "{charger:?}");
 }
+
+#[test]
+fn a_vehicle_that_goes_quiet_for_the_sequence_timeout_ends_the_session_as_such() {
+    // Not a lost connection: for DIN the host has an emergency shutdown to carry out (V2G-DC-366).
+    let (mut srx, mut stx, mut sarena, mut sscratch) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768], vec![0u8; 8192]);
+    let mut buffers = Buffers { rx: &mut srx, tx: &mut stx, arena: &mut sarena, scratch: &mut sscratch };
+    let mut charger = Session::new(TestCharger::default());
+    charger.handle(Event::Connected { secured: true }, &mut buffers);
+    let step = charger.handle(Event::TimerExpired(evse_core::Timer::Sequence), &mut buffers);
+    assert!(step.close);
+    assert_eq!(charger.secc_mut().ended, Some(evse_core::secc::Ended::SequenceTimeout));
+    assert_eq!(charger.state(), State::Closed);
+}
