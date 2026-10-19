@@ -190,6 +190,10 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 m.sequence_done(step)
             }
             Event::Pilot(reading) => m.on_pilot(reading),
+            Event::ConnectionClosed => match m.pending_end {
+                Some(reason) => m.end(reason),
+                None => Step::default(),
+            },
             Event::ControlPilotChanged => match m.state {
                 State::AwaitControlPilotC => {
                     m.pilot.set_ready(true);
@@ -381,6 +385,25 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         self.log.record(&Record::MsgRx { msg });
         self.log.record(&Record::DinResponse { msg, code });
         if is_ok(code) { None } else { Some(self.end(EndReason::RejectedDin(code))) }
+    }
+
+    /// Like [`Machine::received`] for the responses before the charge parameter discovery (V2G-DC-649, 652, 654): a failing code ends the
+    /// session in one of two ways. With the CP oscillator on, the vehicle goes on as if it wanted to stop for a non-critical reason of its
+    /// own: `SessionStopReq` as the next request, then the end with the code. With the oscillator off the charger is shutting down (an
+    /// error shutdown: the host sets the pilot to B), and after `FAILED_SequenceError` the session is terminated at once, so the
+    /// vehicle ends without a word.
+    fn received_before_cpd(&mut self, msg: MsgKind, code: ResponseCode, tx: &mut [u8]) -> Option<Step> {
+        self.log.record(&Record::MsgRx { msg });
+        self.log.record(&Record::DinResponse { msg, code });
+        if is_ok(code) {
+            return None;
+        }
+        let oscillator_off = self.pilot.last().is_some_and(|r| r.pwm == control_pilot::Pwm::Off);
+        Some(if oscillator_off || code == ResponseCode::FailedSequenceError {
+            self.end(EndReason::RejectedDin(code))
+        } else {
+            self.end_politely(EndReason::RejectedDin(code), tx)
+        })
     }
 
     /// The vehicle answered (contactors, control pilot, ramp-down): the sequence timer stops.

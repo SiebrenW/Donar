@@ -225,6 +225,10 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 m.sequence_done(step)
             }
             Event::Pilot(reading) => m.on_pilot(reading),
+            Event::ConnectionClosed => match m.pending_end {
+                Some(reason) => m.end(reason),
+                None => Step::default(),
+            },
             Event::ControlPilotChanged => match m.state {
                 State::AwaitControlPilotC => {
                     m.pilot.set_ready(true);

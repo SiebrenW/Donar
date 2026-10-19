@@ -1,0 +1,19 @@
+name = "dc-din-session-setup-failed"
+description = "DIN SPEC 70121: the charger answers the session setup with FAILED (it has a reason of its own; its oscillator is still on). The vehicle goes on as if it wanted to stop for a non-critical reason (V2G-DC-649): it sends SessionStopReq as the next request. The charger has closed the connection after its failing answer, so no answer comes and the vehicle ends with the charger's code."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session]
+setup_code = "FAILED"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+protocol = "din70121"
+connector = "extended"
+poll_interval_ms = 10
+
+[expect]
+evcc_exit = 1
+evcc_log = ["RejectedDin(Failed)"]

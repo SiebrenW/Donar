@@ -104,6 +104,7 @@ mod run {
         dc_pilot_emergency_by_evse => "dc-pilot-emergency-by-evse",
         dc_pilot_emergency_by_evcc => "dc-pilot-emergency-by-evcc",
         dc_din_pilot_emergency_by_evse => "dc-din-pilot-emergency-by-evse",
+        dc_din_session_setup_failed => "dc-din-session-setup-failed",
         dc_welded_contactor => "dc-welded-contactor",
         ac_plain => "ac-plain",
         ac_bpt => "ac-bpt",

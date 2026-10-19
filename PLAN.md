@@ -26,7 +26,7 @@ Independent checks exist against the Python `iso15118` library (-20 DC, AC, BPT,
 - ACDP and WPT (not generated either).
 - Hash binding of the certificates on a resumed session (V2G20-2539, 2545), the schedule tuple elapsed-time rules (V2G20-1840, 1841).
 - Control pilot: the pilot outputs of the -20 vehicle exist for DC only and only with `Config::control_pilot` (off by default so that hosts that set the pilot themselves are unaffected; DIN and ISO 15118-2 always ask); AC has none. ISO 15118-2 AC sets its pilot (C) in the host. The vehicle does not wait for a pilot reading before it sends the first `CPDReq` in AC (V2G20-930 asks for 5 %, with a NOTE that a session may start with 100 %).
-- A `FAILED` response before the charge parameter discovery: DIN says `SessionStopReq` if the oscillator is still on and an error shutdown if it is off (V2G-DC-649, 652); the vehicle ends with `Rejected` either way.
+- A failing response before the charge parameter discovery follows DIN V2G-DC-649, 652, 654 (session stop if the oscillator is on, none if it is off or after `FAILED_SequenceError`); for ISO 15118-2 and -20 no such rule was checked, they end with `Rejected` at once.
 - Plug & Charge: contract revocation, `SupportedProviders` filtering, a second contract chain, other remedies of V2G20-1583. Certificate installation and update are left out on purpose (messages are in the codecs).
 - DIN: `NotificationMaxDelay` (V2G-DC-636) and the other status codes (637); ramping the current down through `CurrentDemandReq` with 0 A; the EVSE id is not parsed.
 - ISO 15118-2: certificate installation and update; the consumption cost (`RelativePricePercentage`), description and `NumEPriceLevels` of a sales tariff.
