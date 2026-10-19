@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/prepare
         with:
           vectors: "false"
@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/prepare
         with:
           vectors: "false"
@@ -64,7 +64,7 @@ jobs:
       SANDBOX_ARTIFACTS: ${{ github.workspace }}/target/sandbox
       EVCC_REQUIRE_BROWSER: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/prepare
       - name: tcpdump
         run: |
@@ -103,7 +103,7 @@ jobs:
     env:
       CHROME: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/prepare
       - name: Tests
         shell: bash
@@ -126,7 +126,7 @@ jobs:
       ISO15118_PYTHON_VENV: ${{ github.workspace }}/target/venv/iso15118
       PYSLAC_VENV: ${{ github.workspace }}/target/venv/pyslac
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/prepare
       - uses: actions/setup-python@v7
         with:
