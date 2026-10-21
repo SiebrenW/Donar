@@ -22,7 +22,7 @@ use iso15118_20::common::{self, SelectedService};
 use iso15118_20::common_types::{MessageHeader, ResponseCode};
 use iso15118_20::ac;
 use iso15118_20::dc;
-use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
+use v2gtp::{FrameError, HEADER_LEN, Parse, PayloadType, parse, write_header};
 
 use crate::ev::Ev;
 use crate::log::{LogSink, MsgKind, Record};
@@ -354,6 +354,11 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                             m.log.record(&Record::RxPayload { payload_type: frame.payload_type.0, payload: frame.payload });
                             step = m.on_frame(frame.payload_type, frame.payload, arena, tx);
                             frame.consumed
+                        }
+                        // V2G20-800: a header with wrong data is ignored. Its length cannot be trusted, so what is buffered goes.
+                        Err(FrameError::BadVersion | FrameError::BadInverseVersion) => {
+                            *rx_len = 0;
+                            break;
                         }
                         Err(_) => return m.end(EndReason::Framing),
                     };

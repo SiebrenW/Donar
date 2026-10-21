@@ -13,7 +13,7 @@ use iso15118_20::common::{
 };
 use iso15118_20::common_types::{MessageHeader, Processing, RationalNumber, ResponseCode};
 use iso15118_20::dc;
-use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
+use v2gtp::{FrameError, HEADER_LEN, Parse, PayloadType, parse, write_header};
 
 use crate::secc::{Action, Authorize, Ended, Progress, Request, Secc, Signed};
 use crate::{Event, State, Step, Timer, TimerCmd};
@@ -198,6 +198,12 @@ impl<S: Secc> Session<S> {
                                 break;
                             }
                         }
+                        // V2G20-800: a header with wrong data is ignored. Its length cannot be trusted, so what is buffered goes.
+                        Err(FrameError::BadVersion | FrameError::BadInverseVersion) => {
+                            m.secc.note(format_args!("ignoring bytes with a wrong V2GTP version (V2G20-800)"));
+                            *rx_len = 0;
+                            break;
+                        }
                         Err(_) => {
                             m.state = State::Closed;
                             close = true;
@@ -303,6 +309,15 @@ impl<S: Secc> Machine<S> {
 
     fn on_frame(&mut self, payload_type: PayloadType, payload: &[u8], arena: &Arena<'_>, scratch: &mut [u8], out: &mut [u8]) -> Reply {
         self.secc.note(format_args!("rx {} bytes, payload type {:#06x}, in {:?}", payload.len(), payload_type.0, self.state));
+        // V2G20-800: a payload type that is not supported or a payload that is empty is a header with wrong data: ignored.
+        let supported = matches!(
+            payload_type,
+            PayloadType::SAP | PayloadType::MAINSTREAM | PayloadType::METERING_CONFIRMATION | PayloadType::DC_MAINSTREAM | PayloadType::AC_MAINSTREAM | PayloadType::SCHEDULE_RENEGOTIATION
+        );
+        if !supported || payload.is_empty() {
+            self.secc.note(format_args!("ignoring a frame with payload type {:#06x} and {} bytes (V2G20-800)", payload_type.0, payload.len()));
+            return Reply::default();
+        }
         if self.state == State::AwaitSupportedAppProtocolReq {
             return if payload_type == PayloadType::SAP { self.on_sap(payload, arena, out) } else { Reply { len: 0, close: true } };
         }

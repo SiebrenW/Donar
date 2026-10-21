@@ -872,3 +872,31 @@ fn a_vehicle_that_goes_quiet_for_the_sequence_timeout_ends_the_session_as_such()
     assert_eq!(charger.secc_mut().ended, Some(evse_core::secc::Ended::SequenceTimeout));
     assert_eq!(charger.state(), State::Closed);
 }
+
+#[test]
+fn a_frame_with_a_wrong_v2gtp_header_is_ignored() {
+    // V2G20-800 (ISO/PAS 15118-23 TC23_SECC_V2GTPDCMessages_003..006): no answer, no close, the state stays.
+    let junk: [&[u8]; 5] = [
+        &[0xFF, 0x00, 0x80, 0x01, 0, 0, 0, 1, 0],       // version
+        &[0x01, 0xFF, 0x80, 0x01, 0, 0, 0, 1, 0],       // inverse version
+        &[0x01, 0xFE, 0x70, 0x01, 0, 0, 0, 1, 0],       // payload type
+        &[0x01, 0xFE, 0x80, 0x01, 0, 0, 0, 0],          // payload length 0
+        &[0x01, 0xFE, 0x80, 0x01, 0, 0, 0, 3, 1, 2, 3], // a payload that is no EXI
+    ];
+    for (i, bytes) in junk.iter().enumerate() {
+        let (mut srx, mut stx, mut sarena, mut sscratch) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768], vec![0u8; 8192]);
+        let mut buffers = Buffers { rx: &mut srx, tx: &mut stx, arena: &mut sarena, scratch: &mut sscratch };
+        let mut charger = Session::new(TestCharger::default());
+        charger.handle(Event::Connected { secured: true }, &mut buffers);
+        let before = charger.state();
+        charger.rx_space(buffers.rx)[..bytes.len()].copy_from_slice(bytes);
+        let step = charger.handle(Event::Received(bytes.len()), &mut buffers);
+        if i == 4 {
+            // Undecodable EXI is another matter (closed before the application protocol is negotiated).
+            continue;
+        }
+        assert_eq!(step.send, 0, "case {i}");
+        assert!(!step.close, "case {i}");
+        assert_eq!(charger.state(), before, "case {i}");
+    }
+}

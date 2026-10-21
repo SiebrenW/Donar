@@ -1246,11 +1246,12 @@ fn the_vehicle_has_a_bounded_time_for_its_own_actions() {
 
 #[test]
 fn garbage_is_rejected_without_panicking() {
-    // Bad V2GTP version.
+    // Bad V2GTP version: ignored (V2G20-800).
     let mut rig = Rig::new();
     let mut s = session(&mut rig, Capture::default());
     s.handle(Event::Start { secured: false });
-    assert_eq!(deliver(&mut s, &[0x02, 0xFD, 0x80, 0x01, 0, 0, 0, 0]).end, Some(EndReason::Framing));
+    assert_eq!(deliver(&mut s, &[0x02, 0xFD, 0x80, 0x01, 0, 0, 0, 0]).end, None);
+    assert_eq!(s.state(), State::AwaitSupportedAppProtocolRes);
 
     // Valid framing, undecodable payload.
     let mut rig = Rig::new();
@@ -1477,4 +1478,24 @@ fn a_closed_connection_ends_a_session_that_had_announced_its_end_and_is_nothing_
     let mut s = up_to_charge_loop(&mut rig, Capture::default());
     assert_eq!(s.handle(Event::ConnectionClosed), Step::default());
     assert_eq!(s.state(), State::AwaitChargeLoopRes);
+}
+
+#[test]
+fn a_frame_with_a_wrong_v2gtp_header_is_ignored() {
+    // V2G20-800 (ISO/PAS 15118-23 TC23_EVCC_V2GTPDCMessages_003..006): the session goes on as if nothing came.
+    let mut rig = Rig::new();
+    let mut s = session(&mut rig, Capture::default());
+    s.handle(Event::Start { secured: false });
+    let state = s.state();
+    let junk: [&[u8]; 4] = [
+        &[0xFF, 0x00, 0x80, 0x01, 0, 0, 0, 1, 0],
+        &[0x01, 0xFF, 0x80, 0x01, 0, 0, 0, 1, 0],
+        &[0x01, 0xFE, 0x70, 0x01, 0, 0, 0, 1, 0],
+        &[0x01, 0xFE, 0x80, 0x01, 0, 0, 0, 0],
+    ];
+    for (i, bytes) in junk.iter().enumerate() {
+        let step = deliver(&mut s, bytes);
+        assert_eq!(step.end, None, "case {i}");
+        assert_eq!(s.state(), state, "case {i}");
+    }
 }
