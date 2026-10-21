@@ -18,7 +18,7 @@ Status: **covered**, **partly** (behaviour exists, the stimulus or one verdict c
 |---|---|---|---|
 | SessionSetup_001, ServiceDetail_001/002, ScheduleExchange_001 | V2G20-1486, 1357, 1360, 1611, 457 | covered | `against_evcc` full DC/BPT sessions, `session_flow` |
 | ChargeParameterDiscovery_001 (unknown session id) | V2G20-460, 736 | partly | session id checks in `evse-core` (`a_session_stop_with_another_session_id_is_refused...`); not for every message type |
-| CableCheck_001/002 (`Ongoing` first, then `Finished`) | V2G20-2003, 2004, 916, 917 | partly | The charger answers `Finished` at once when the host has the result. Open decision: answer `Ongoing` while waiting for C/D (see PLAN.md) |
+| CableCheck_001/002 (`Ongoing` first, then `Finished`) | V2G20-2003, 2004, 916, 917 | covered | The charger answers `Ongoing` while C/D is missing, `FAILED` after 1.5 s (`a_cable_check_without_c_or_d_is_answered_failed`); no test with C arriving late yet |
 | CableCheck_003, PreCharge_003, WeldingDetection_003 (out-of-sequence request gives `FAILED_SequenceError`) | V2G20-459, 538, 736 | covered | sequence checks in `evse-core` |
 | CableCheck_004, PreCharge_004, ChargeLoop_002, WeldingDetection_004 (unknown session) | V2G20-460, 736 | partly | see ChargeParameterDiscovery_001 |
 | CableCheck_005 (`FAILED` without C/D), WeldingDetectionOrSessionStop_001 (`FAILED` without B) | V2G20-916, 918..922, 736 | covered | `a_cable_check_without_c_or_d_is_answered_failed`, `a_welding_detection_without_b_is_answered_failed` |
@@ -47,13 +47,13 @@ Status: **covered**, **partly** (behaviour exists, the stimulus or one verdict c
 
 ## What this shows
 
-1. Most of the vehicle and charger sequence behaviour of the PAS is exercised by our flow tests. The gaps are host-level: the V2GTP header and port cases at cable level, the duty cycle range, and the charger's `Ongoing` answer while it waits for the pilot.
+1. Most of the vehicle and charger sequence behaviour of the PAS is exercised by our flow tests. The gaps are host-level: the V2GTP header and port cases at cable level, the duty cycle range, and the duty cycle.
 2. To run the cases as the PAS describes them we need ISO 15118-21 (default parameter sets, timers) and a tester role; the scenarios runner could play the test system (a scripted partner that sends the PAS's stimuli and checks verdicts), but that is a larger piece of work.
 3. Requirement ids above were taken from the PAS's test case tables; they have not been re-checked against ISO 15118-20 text here, so code comments citing them still follow the rule in AGENT.md.
 
 ## Next steps (not started)
 
-- Decide on the charger's `Ongoing` answer while waiting for C/D (CableCheck_001) and implement it.
+- Test the cable check with C arriving late; do the same wait for DIN/ISO 15118-2 and the welding detection.
 - Add the cable-level V2GTP header cases (`V2G20-800`) and the duty cycle range check (`V2G20-1408`) to the simulators.
 - Check V2G20-2679/2680 on the vehicle.
 - Obtain ISO 15118-21 and see whether the scenario runner can take the tester role.

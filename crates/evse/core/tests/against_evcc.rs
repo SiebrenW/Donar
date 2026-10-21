@@ -110,6 +110,9 @@ static TUPLES: [ScheduleTuple<'static>; 1] = [ScheduleTuple {
 /// A charger with fixed limits that delivers what the vehicle asks for.
 #[derive(Default)]
 struct TestCharger {
+    /// Each reading of the clock moves it on by this much (0: it stands still).
+    clock_step_us: u64,
+    ticks: std::cell::Cell<u64>,
     loops: u32,
     cable_checks: u32,
     delivering: bool,
@@ -134,7 +137,8 @@ impl Secc for TestCharger {
         "DE*TST*E1"
     }
     fn now_micros(&self) -> u64 {
-        1_700_000_000_000_000
+        self.ticks.set(self.ticks.get() + 1);
+        1_700_000_000_000_000 + self.ticks.get() * self.clock_step_us
     }
     fn new_session_id(&mut self) -> [u8; 8] {
         [1, 2, 3, 4, 5, 6, 7, 8]
@@ -764,7 +768,7 @@ fn pilot_run(host: PilotHost, stop_after: u32) -> (Option<EndReason>, bool, Stat
     let vehicle = EvSession::new(Config { control_pilot: true, ..config(Config::DC_20) }, ev, NoLog, EvBuffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
     let (mut srx, mut stx, mut sarena, mut sscratch) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768], vec![0u8; 8192]);
     let mut charger_buffers = Buffers { rx: &mut srx, tx: &mut stx, arena: &mut sarena, scratch: &mut sscratch };
-    let mut charger = Session::new(TestCharger::default());
+    let mut charger = Session::new(TestCharger { clock_step_us: if host.skip_c { 500_000 } else { 0 }, ..Default::default() });
     if let Some(guard) = charger.handle(Event::Connected { secured: true }, &mut charger_buffers).pilot {
         CHARGER_GUARDS.with(|g| g.borrow_mut().push(guard));
     }
@@ -797,7 +801,7 @@ fn a_session_with_the_pilot_reported_as_the_standards_have_it_runs_to_the_end() 
 
 #[test]
 fn a_cable_check_without_c_or_d_is_answered_failed() {
-    // V2G20-918: the vehicle was not (measured to be) in C when the request came.
+    // V2G20-916 to 918: `Ongoing` while C or D may still come, `FAILED` once the performance time (1.5 s) has passed.
     let (end, closed, _, charger) = pilot_run(PilotHost { report: true, skip_c: true, ..Default::default() }, 3);
     assert!(matches!(end, Some(EndReason::Rejected(ResponseCode::Failed))), "{end:?}");
     assert!(closed);
