@@ -88,7 +88,13 @@ struct Machine<S> {
     /// The schedule exchange said `GoToPause`: the power delivery that follows is a stop, the power never on.
     no_power: bool,
     last_stamp: u64,
+    /// When the cable check was first held back for want of C or D (V2G20-916).
+    pilot_wait_since: Option<u64>,
 }
+
+/// How long the charger gives the vehicle to show C or D before it answers the cable check `FAILED`
+/// (`V2G_SECC_Msg_Performance_Time`, V2G20-916 to 918).
+const PILOT_WAIT_US: u64 = 1_500_000;
 
 /// What one frame led to: bytes appended to the output and whether the connection ends.
 #[derive(Default)]
@@ -102,6 +108,7 @@ impl<S: Secc> Session<S> {
         Self {
             rx_len: 0,
             m: Machine {
+                pilot_wait_since: None,
                 secc,
                 state: State::AwaitSupportedAppProtocolReq,
                 pilot: control_pilot::EvseWatch::new(), last_guard: control_pilot::Guard::disarmed(control_pilot::Side::Charger),
@@ -796,10 +803,18 @@ impl<S: Secc> Machine<S> {
                 let (processing, code) = if self.unknown_session(req.header.session_id) {
                     (Processing::Finished, ResponseCode::FailedUnknownSession)
                 } else if !self.pilot.cable_check_may_pass() {
-                    // V2G20-918: no CP state C or D.
-                    self.secc.note(format_args!("cable check: the control pilot is not in state C or D (V2G20-918)"));
-                    (Processing::Finished, ResponseCode::Failed)
+                    // V2G20-916 to 918: C or D may still come within the performance time; `Ongoing` meanwhile.
+                    let now = self.secc.now_micros();
+                    let since = *self.pilot_wait_since.get_or_insert(now);
+                    if now.saturating_sub(since) < PILOT_WAIT_US {
+                        self.secc.note(format_args!("cable check: waiting for the control pilot to show C or D (V2G20-916)"));
+                        (Processing::Ongoing, ResponseCode::Ok)
+                    } else {
+                        self.secc.note(format_args!("cable check: the control pilot is not in state C or D (V2G20-918)"));
+                        (Processing::Finished, ResponseCode::Failed)
+                    }
                 } else {
+                    self.pilot_wait_since = None;
                     match self.secc.cable_check() {
                         Progress::Ongoing => (Processing::Ongoing, ResponseCode::Ok),
                         Progress::Done(code) => (Processing::Finished, code),
