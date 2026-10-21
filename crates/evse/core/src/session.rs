@@ -988,8 +988,9 @@ impl<S: Secc> Machine<S> {
             (State::AwaitWeldingReq, Request::Dc(dc::Message::DcWeldingDetectionReq(req))) => {
                 let code = if self.unknown_session(req.header.session_id) {
                     ResponseCode::FailedUnknownSession
-                } else if !self.pilot.stop_may_pass() {
-                    // V2G20-922 (and IEC 61851-23 CC.3.4.2, t303): the pilot has to be at B first.
+                } else if req.ev_processing == Processing::Finished && !self.pilot.stop_may_pass() {
+                    // V2G20-922 (and IEC 61851-23 CC.3.4.2, t303): the pilot has to be at B first. The vehicle stays in the
+                    // welding detection with `Ongoing` until it has what it needs, so only `Finished` is held to it.
                     self.secc.note(format_args!("welding detection: the control pilot is not in state B (V2G20-922)"));
                     ResponseCode::Failed
                 } else {
