@@ -28,7 +28,7 @@ Status: **covered**, **partly** (behaviour exists, the stimulus or one verdict c
 | ChargeLoop_004/005 (absolute limit values) | V2G20-2654, 2655 | covered | `limits.rs` checks, `loopback` violation tests |
 | SessionStop_001 (duty cycle 3 to 7 % for the whole session) | V2G20-1408 | open | The pilot is the host's; the guard covers changes, not the duty range. A host-level check in `evse-sim` would do |
 | V2GTPDCMessages_001/002 (header, TCP port ranges) | V2G20-2307, 078, 080 | partly | header in `v2gtp` tests; ports are the host's and untested |
-| V2GTPDCMessages_003..008 (invalid header is ignored) | V2G20-800 | partly | `rejects_bad_headers_early` in `v2gtp`; not as a cable-level case against the sims |
+| V2GTPDCMessages_003..008 (invalid header is ignored) | V2G20-800 | partly | ignored since the V2G20-800 change: `a_frame_with_a_wrong_v2gtp_header_is_ignored` (version, inverse version, payload type, empty payload) and `garbage_is_rejected_without_panicking`; a payload length that is too small or too large cannot be told from a short read, so it is not resynchronised (the stream waits or the sequence timeout ends it); no cable-level case |
 
 ## Vehicle (SUT = our `evcc-core` behind `evcc-sim`)
 
@@ -43,7 +43,7 @@ Status: **covered**, **partly** (behaviour exists, the stimulus or one verdict c
 | PreCharge_006 (waits for the cable check) | V2G20-1397 | covered | `cable_check_pre_charge_and_power_delivery`, `ongoing_answers_are_polled_at_the_configured_pace` |
 | ChargeLoop_010/011 (absolute values), ChargeLoop_012 (BPT dynamic parameters) | V2G20-2198, 2199, 2679, 2680 | partly | 2198/2199 covered in `limits.rs`; 2679/2680 (EVMaximumV2X...) not checked |
 | V2GTPDCMessages_001/002 (header, source port range) | V2G20-2307, 077, 079 | partly | see the charger side |
-| V2GTPDCMessages_003..008 (invalid header ignored) | V2G20-800 | partly | see the charger side |
+| V2GTPDCMessages_003..008 (invalid header ignored) | V2G20-800 | partly | `a_frame_with_a_wrong_v2gtp_header_is_ignored` in `session_flow` (same limits as the charger side) |
 
 ## What this shows
 
@@ -53,6 +53,6 @@ Status: **covered**, **partly** (behaviour exists, the stimulus or one verdict c
 
 ## Next steps (not started)
 
-- Add the cable-level V2GTP header cases (`V2G20-800`) and the duty cycle range check (`V2G20-1408`) to the simulators.
+- Add the duty cycle check (V2G20-1408 says 5 %, the PAS accepts 3 to 7 %) to the simulators; it is the host's hardware, so only the sim's wire can show it.
 - Check V2G20-2679/2680 on the vehicle.
 - Obtain ISO 15118-21 and see whether the scenario runner can take the tester role.
