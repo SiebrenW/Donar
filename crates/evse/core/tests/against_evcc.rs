@@ -485,14 +485,16 @@ impl<E: Ev> Rig<'_, E> {
                         evcc_core::session::ControlPilot::B => (control_pilot::State::B, self.host.skip_b),
                         evcc_core::session::ControlPilot::C => (control_pilot::State::C, self.host.skip_c),
                     };
+                    let reading = control_pilot::Reading { state, pwm: control_pilot::Pwm::Duty(5) };
                     if self.host.report && !skip {
-                        let step = self.charger.handle(Event::Pilot(control_pilot::Reading { state, pwm: control_pilot::Pwm::Duty(5) }), &mut self.charger_buffers);
+                        let step = self.charger.handle(Event::Pilot(reading), &mut self.charger_buffers);
                         if let Some(guard) = step.pilot {
                             CHARGER_GUARDS.with(|g| g.borrow_mut().push(guard));
                         }
                         self.closed |= step.close;
                     }
-                    Some(EvEvent::ControlPilotChanged)
+                    // The vehicle measures what it set; that is what it waits for.
+                    Some(EvEvent::Pilot(reading))
                 }
                 Notice::ChargeLoop(_) | Notice::AcChargeLoop(_) => {
                     self.loops += 1;

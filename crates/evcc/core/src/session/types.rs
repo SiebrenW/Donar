@@ -183,7 +183,9 @@ pub enum Event {
     /// The host reduced the current to zero after [`Notice::StopEnergyTransfer`]
     /// (V2G20-1310 asks for this before `PowerDeliveryReq(Stop)`).
     EnergyTransferStopped,
-    /// The host changed the control pilot after [`Notice::ControlPilot`].
+    /// The host changed the control pilot after [`Notice::ControlPilot`]. Setting the resistor is not what the session
+    /// waits for: it goes on when [`Event::Pilot`] reports the state it asked for (C or D, B) measured, whichever of the
+    /// two events comes last.
     ControlPilotChanged,
     /// The host measured a change of the control pilot (state or PWM). Report every change at once, at any
     /// time, also before [`Event::Start`]: an emergency has to reach the session within the milliseconds

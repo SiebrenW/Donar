@@ -61,7 +61,7 @@ Documented at the top of [`session/mod.rs`](crates/evcc/core/src/session/mod.rs)
 | `CloseContactors` (DC, after pre-charge) | close the contactors | `Event::ContactorsClosed` |
 | `StopEnergyTransfer` | ramp the current to zero | `Event::EnergyTransferStopped` |
 | `OpenContactors` (DC) | open them | `Event::ContactorsOpened` |
-| `ControlPilot(state)` (DIN, ISO 15118-2; -20 with `Config::control_pilot`) | change the control pilot | `Event::ControlPilotChanged` |
+| `ControlPilot(state)` (DIN, ISO 15118-2; -20 with `Config::control_pilot`) | change the control pilot | `Event::Pilot` with the state measured (the session waits for it; `Event::ControlPilotChanged` alone is not enough) |
 | `ChargeLoop(status)` / `AcChargeLoop(status)` | apply the charger's current / target power | nothing |
 
 Informational notices (`SessionSetUp`, `Authorized`, `ChargeParametersDiscovered`, `EnergyTransferStarted`, `StandbyEntered`, …) need no answer. You can also push events yourself while the charge loop runs: `StopRequested`, `PauseRequested`, `RenegotiateSchedule`, `RenegotiateServices`.

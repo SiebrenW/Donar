@@ -378,15 +378,16 @@ pub fn run_car_pilot(
             open.set(true);
             Some(Event::ContactorsOpened)
         }
-        // The control pilot follows at once.
+        // The control pilot follows at once, and the car measures what it set (that is what the session waits for).
         Notice::ControlPilot(to) => {
+            let state = match to {
+                evcc_core::session::ControlPilot::B => control_pilot::State::B,
+                evcc_core::session::ControlPilot::C => control_pilot::State::C,
+            };
             if let Some(p) = &pilot {
-                let _ = p.wire.set_ev(match to {
-                    evcc_core::session::ControlPilot::B => control_pilot::State::B,
-                    evcc_core::session::ControlPilot::C => control_pilot::State::C,
-                });
+                let _ = p.wire.set_ev(state);
             }
-            Some(Event::ControlPilotChanged)
+            Some(Event::Pilot(control_pilot::Reading { state, pwm: control_pilot::Pwm::Duty(5) }))
         }
         // The charger's output is on again for the next pre-charge.
         Notice::ServicesRenegotiating => {

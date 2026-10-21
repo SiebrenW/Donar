@@ -102,11 +102,10 @@ fn run(connector: DcConnector, evse: EvseConfig, config: Config, stop_after: Opt
     run_host(connector, evse, config, stop_after, Host::default())
 }
 
-/// What the host does with the control pilot: report what it is told to set (`report`), and report a reading of its own
+/// What the host does with the control pilot: report what it is told to set, and report a reading of its own
 /// when the n-th charge loop answer arrives (`inject`).
 #[derive(Default)]
 struct Host {
-    report: bool,
     inject: Option<(u32, control_pilot::Reading)>,
     /// A reading the host reports before the session starts (the charger's oscillator is off, say).
     initial: Option<control_pilot::Reading>,
@@ -155,17 +154,14 @@ fn run_host(connector: DcConnector, evse: EvseConfig, config: Config, stop_after
                 Notice::StopEnergyTransfer { .. } => Some(Event::EnergyTransferStopped),
                 Notice::OpenContactors => Some(Event::ContactorsOpened),
                 Notice::ControlPilot(p) => {
-                    if host.report {
-                        // The host sets the pilot and measures it before it says so.
-                        let state = match p {
-                            ControlPilot::B => control_pilot::State::B,
-                            ControlPilot::C => control_pilot::State::C,
-                        };
-                        queue.push_front(Input::Event(Event::ControlPilotChanged));
-                        queue.push_front(Input::Event(Event::Pilot(control_pilot::Reading { state, pwm: control_pilot::Pwm::Duty(5) })));
-                        continue;
-                    }
-                    Some(Event::ControlPilotChanged)
+                    // The host sets the pilot and measures it before it says so.
+                    let state = match p {
+                        ControlPilot::B => control_pilot::State::B,
+                        ControlPilot::C => control_pilot::State::C,
+                    };
+                    queue.push_front(Input::Event(Event::ControlPilotChanged));
+                    queue.push_front(Input::Event(Event::Pilot(control_pilot::Reading { state, pwm: control_pilot::Pwm::Duty(5) })));
+                    continue;
                 }
                 Notice::ChargeLoop(_) => {
                     loops += 1;
@@ -334,7 +330,7 @@ fn a_contactor_that_stays_welded_is_reported_to_the_charger_and_ends_the_session
 fn a_host_that_reports_the_pilot_does_not_disturb_a_session() {
     use control_pilot::Reading;
     // The pilot goes to C before the cable check and to B at the stop, as asked: nothing there is an emergency.
-    let r = run_host(DcConnector::Extended, EvseConfig::default(), din(), Some(3), Host { report: true, ..Default::default() });
+    let r = run_host(DcConnector::Extended, EvseConfig::default(), din(), Some(3), Host::default());
     assert_eq!(r.end, EndReason::Completed, "{:?}\n{:?}", r.states, r.log);
     let _ = Reading::CHARGING;
 }
@@ -351,7 +347,7 @@ fn an_emergency_on_the_pilot_ends_the_session_at_once_and_sends_nothing_more() {
         Reading { state: Cp::B, pwm: Pwm::Duty(5) },
         Reading { state: Cp::Invalid, pwm: Pwm::Duty(5) },
     ] {
-        let r = run_host(DcConnector::Extended, EvseConfig::default(), din(), None, Host { report: true, inject: Some((2, reading)), ..Default::default() });
+        let r = run_host(DcConnector::Extended, EvseConfig::default(), din(), None, Host { inject: Some((2, reading)), ..Default::default() });
         assert_eq!(r.end, EndReason::Emergency(reading), "{:?}", r.states);
         assert_eq!(r.sent.iter().filter(|m| *m == "PowerDeliveryReq").count(), 1, "only the start of the power: {:?}", r.sent);
         assert!(!r.sent.iter().any(|m| m == "SessionStopReq"), "{:?}", r.sent);
@@ -364,7 +360,7 @@ fn a_pilot_in_state_e_or_f_closes_the_connection() {
     use control_pilot::{Pwm, Reading, State as Cp};
     for state in [Cp::E, Cp::F] {
         let reading = Reading { state, pwm: Pwm::Off };
-        let r = run_host(DcConnector::Extended, EvseConfig::default(), din(), None, Host { report: true, inject: Some((2, reading)), ..Default::default() });
+        let r = run_host(DcConnector::Extended, EvseConfig::default(), din(), None, Host { inject: Some((2, reading)), ..Default::default() });
         assert_eq!(r.end, EndReason::PilotFault(reading));
     }
 }

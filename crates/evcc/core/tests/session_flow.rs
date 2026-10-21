@@ -386,7 +386,11 @@ fn up_to_cable_check<'a>(rig: &'a mut Rig, log: Capture) -> Sess<'a> {
         assert_eq!(step.notice, Some(Notice::ControlPilot(ControlPilot::C)));
         assert_eq!(s.state(), State::AwaitControlPilotC);
         assert_eq!(step.send, None, "the cable check waits for the pilot");
+        // Setting the pilot is not enough: the vehicle goes on when it has measured C.
         let step = s.handle(Event::ControlPilotChanged);
+        assert_eq!(step.send, None);
+        assert_eq!(s.state(), State::AwaitControlPilotC);
+        let step = s.handle(Event::Pilot(control_pilot::Reading { state: control_pilot::State::C, pwm: control_pilot::Pwm::Duty(5) }));
         assert_eq!(step.notice, Some(Notice::ScheduleExchanged));
     }
     assert_eq!(s.state(), State::AwaitCableCheckRes);
@@ -491,7 +495,11 @@ fn finish_shutdown(s: &mut Sess<'_>) {
         // ... with the pilot at B (V2G20-919).
         assert_eq!(step.notice, Some(Notice::ControlPilot(ControlPilot::B)));
         assert_eq!(s.state(), State::AwaitControlPilotB);
+        // Setting the pilot is not enough: the vehicle goes on when it has measured B.
         step = s.handle(Event::ControlPilotChanged);
+        assert_eq!(step.send, None);
+        assert_eq!(s.state(), State::AwaitControlPilotB);
+        step = s.handle(Event::Pilot(control_pilot::Reading::CONNECTED));
     }
     sent_dc(s, &step, |m| {
         let dc::Message::DcWeldingDetectionReq(r) = m else { panic!("{m:?}") };

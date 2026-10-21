@@ -122,11 +122,13 @@ fn drive_host(vehicle: &mut dyn Machine, mut feed: impl FnMut(ToCharger<'_>) -> 
                     evcc_core::session::ControlPilot::B => (control_pilot::State::B, host.skip_b),
                     evcc_core::session::ControlPilot::C => (control_pilot::State::C, host.skip_c),
                 };
+                let reading = control_pilot::Reading { state, pwm: control_pilot::Pwm::Duty(5) };
                 if host.report && !skip
-                    && feed(ToCharger::Pilot(control_pilot::Reading { state, pwm: control_pilot::Pwm::Duty(5) })).1 {
+                    && feed(ToCharger::Pilot(reading)).1 {
                         return (None, loops, true);
                     }
-                Some(Event::ControlPilotChanged)
+                // The vehicle measures what it set; that is what it waits for.
+                Some(Event::Pilot(reading))
             }
             Some(Notice::ChargeLoop(_) | Notice::AcChargeLoop(_)) => {
                 loops += 1;
