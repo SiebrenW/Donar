@@ -18,7 +18,7 @@ Status: **covered**, **partly** (behaviour exists, the stimulus or one verdict c
 |---|---|---|---|
 | SessionSetup_001, ServiceDetail_001/002, ScheduleExchange_001 | V2G20-1486, 1357, 1360, 1611, 457 | covered | `against_evcc` full DC/BPT sessions, `session_flow` |
 | ChargeParameterDiscovery_001 (unknown session id) | V2G20-460, 736 | partly | session id checks in `evse-core` (`a_session_stop_with_another_session_id_is_refused...`); not for every message type |
-| CableCheck_001/002 (`Ongoing` first, then `Finished`) | V2G20-2003, 2004, 916, 917 | covered | The charger answers `Ongoing` while C/D is missing, `FAILED` after 1.5 s (`a_cable_check_without_c_or_d_is_answered_failed`); no test with C arriving late yet |
+| CableCheck_001/002 (`Ongoing` first, then `Finished`) | V2G20-2003, 2004, 916, 917 | covered | `Ongoing` comes from the host's own cable check (`Secc::cable_check`) once C/D is there; without C/D the answer is `FAILED` at once (CableCheck_005) |
 | CableCheck_003, PreCharge_003, WeldingDetection_003 (out-of-sequence request gives `FAILED_SequenceError`) | V2G20-459, 538, 736 | covered | sequence checks in `evse-core` |
 | CableCheck_004, PreCharge_004, ChargeLoop_002, WeldingDetection_004 (unknown session) | V2G20-460, 736 | partly | see ChargeParameterDiscovery_001 |
 | CableCheck_005 (`FAILED` without C/D), WeldingDetectionOrSessionStop_001 (`FAILED` without B) | V2G20-916, 918..922, 736 | covered | `a_cable_check_without_c_or_d_is_answered_failed`, `a_welding_detection_without_b_is_answered_failed` |
@@ -53,7 +53,6 @@ Status: **covered**, **partly** (behaviour exists, the stimulus or one verdict c
 
 ## Next steps (not started)
 
-- Test the cable check with C arriving late; do the same wait for DIN/ISO 15118-2 and the welding detection.
 - Add the cable-level V2GTP header cases (`V2G20-800`) and the duty cycle range check (`V2G20-1408`) to the simulators.
 - Check V2G20-2679/2680 on the vehicle.
 - Obtain ISO 15118-21 and see whether the scenario runner can take the tester role.
