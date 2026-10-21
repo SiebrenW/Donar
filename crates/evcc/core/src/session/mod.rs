@@ -321,26 +321,16 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                     _ => Step::default(),
                 }
             }
-            Event::Pilot(reading) => m.on_pilot(reading),
+            Event::Pilot(reading) => {
+                let step = m.on_pilot(reading);
+                if m.awaited_pilot_seen() { m.pilot_arrived(tx) } else { step }
+            }
             Event::ConnectionClosed => match m.pending_end {
                 Some(reason) => m.end(reason),
                 None => Step::default(),
             },
-            Event::ControlPilotChanged => match m.state {
-                State::AwaitControlPilotC => {
-                    m.pilot.set_ready(true);
-                    let mut step = m.send_cable_check_req(tx);
-                    if step.end.is_none() {
-                        step.notice = Some(Notice::ScheduleExchanged);
-                    }
-                    m.sequence_done(step)
-                }
-                State::AwaitControlPilotB => {
-                    let step = m.send_welding_req(false, tx);
-                    m.sequence_done(step)
-                }
-                _ => Step::default(),
-            },
+            // The host's own change is not enough: the vehicle goes on when it has measured the state it asked for.
+            Event::ControlPilotChanged => m.pilot_arrived(tx),
             Event::EnergyTransferStopped => {
                 if m.state != State::AwaitCurrentStopped {
                     return Step::default();
@@ -490,6 +480,38 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             Verdict::SupplyStopped => self.stop_requested_by_vehicle(),
             Verdict::Fault => self.end(EndReason::PilotFault(reading)),
             Verdict::Emergency => self.end(EndReason::Emergency(reading)),
+        }
+    }
+
+    /// Whether the pilot state the vehicle asked for (C or D before the cable check, B before the welding detection) has
+    /// been measured: setting the resistor is not seeing the change.
+    fn awaited_pilot_seen(&self) -> bool {
+        let last = self.pilot.last();
+        match self.state {
+            State::AwaitControlPilotC => last.is_some_and(control_pilot::Reading::is_ready),
+            State::AwaitControlPilotB => last.is_some_and(|r| r.state == control_pilot::State::B),
+            _ => false,
+        }
+    }
+
+    /// The next request after a pilot change, once the change has been measured.
+    fn pilot_arrived(&mut self, tx: &mut [u8]) -> Step {
+        if !self.awaited_pilot_seen() {
+            return Step::default();
+        }
+        match self.state {
+            State::AwaitControlPilotC => {
+                self.pilot.set_ready(true);
+                let mut step = self.send_cable_check_req(tx);
+                if step.end.is_none() {
+                    step.notice = Some(Notice::ScheduleExchanged);
+                }
+                self.sequence_done(step)
+            }
+            _ => {
+                let step = self.send_welding_req(false, tx);
+                self.sequence_done(step)
+            }
         }
     }
 

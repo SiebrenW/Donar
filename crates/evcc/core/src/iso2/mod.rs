@@ -7,7 +7,7 @@
 //! It follows the same host contract as the ISO 15118-20 [`crate::session::Session`]
 //! ([`crate::machine::Machine`]), with two additions the older standard needs: the vehicle changes
 //! the control pilot (C before the cable check, B after the energy transfer), which the machine
-//! asks for with [`Notice::ControlPilot`] and waits for [`Event::ControlPilotChanged`].
+//! asks for with [`Notice::ControlPilot`] and waits until [`Event::Pilot`] reports the state measured.
 //!
 //! The code is split by phase: `setup` (up to the charge parameters) and `charge` (the cable
 //! check to the end of the session); this file has the public `Session`, the shared state, the
@@ -224,23 +224,15 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 let step = m.change_control_pilot(crate::session::ControlPilot::B, State::AwaitControlPilotB);
                 m.sequence_done(step)
             }
-            Event::Pilot(reading) => m.on_pilot(reading),
+            Event::Pilot(reading) => {
+                let step = m.on_pilot(reading);
+                if m.awaited_pilot_seen() { m.pilot_arrived(tx) } else { step }
+            }
             Event::ConnectionClosed => match m.pending_end {
                 Some(reason) => m.end(reason),
                 None => Step::default(),
             },
-            Event::ControlPilotChanged => match m.state {
-                State::AwaitControlPilotC => {
-                    m.pilot.set_ready(true);
-                    let step = m.send_cable_check_req(tx);
-                    m.sequence_done(step)
-                }
-                State::AwaitControlPilotB => {
-                    let step = m.after_stop(tx);
-                    m.sequence_done(step)
-                }
-                _ => Step::default(),
-            },
+            Event::ControlPilotChanged => m.pilot_arrived(tx),
             Event::StopRequested => m.on_stop_requested(),
             Event::EnergyTransferStopped => {
                 if m.state != State::AwaitCurrentStopped {
@@ -528,6 +520,35 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             self.last_guard = guard;
             step.pilot = Some(guard);
             self.log.record(&Record::PilotGuard { guard });
+        }
+    }
+
+    /// Whether the pilot state the vehicle asked for (C or D before the cable check, B before the welding detection) has
+    /// been measured: setting the resistor is not seeing the change.
+    fn awaited_pilot_seen(&self) -> bool {
+        let last = self.pilot.last();
+        match self.state {
+            State::AwaitControlPilotC => last.is_some_and(control_pilot::Reading::is_ready),
+            State::AwaitControlPilotB => last.is_some_and(|r| r.state == control_pilot::State::B),
+            _ => false,
+        }
+    }
+
+    /// The next request after a pilot change, once the change has been measured.
+    fn pilot_arrived(&mut self, tx: &mut [u8]) -> Step {
+        if !self.awaited_pilot_seen() {
+            return Step::default();
+        }
+        match self.state {
+            State::AwaitControlPilotC => {
+                self.pilot.set_ready(true);
+                let step = self.send_cable_check_req(tx);
+                self.sequence_done(step)
+            }
+            _ => {
+                let step = self.after_stop(tx);
+                self.sequence_done(step)
+            }
         }
     }
 

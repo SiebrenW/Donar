@@ -102,11 +102,10 @@ fn run(connector: DcConnector, evse: EvseConfig, config: Config, stop_after: Opt
     run_host(connector, evse, config, stop_after, Host::default())
 }
 
-/// What the host does with the control pilot: report what it is told to set (`report`), and report a reading of its own
+/// What the host does with the control pilot: report what it is told to set, and report a reading of its own
 /// when the n-th charge loop answer arrives (`inject`).
 #[derive(Default)]
 struct Host {
-    report: bool,
     inject: Option<(u32, control_pilot::Reading)>,
 }
 
@@ -150,17 +149,14 @@ fn run_host(connector: DcConnector, evse: EvseConfig, config: Config, stop_after
                 Notice::StopEnergyTransfer { .. } => Some(Event::EnergyTransferStopped),
                 Notice::OpenContactors => Some(Event::ContactorsOpened),
                 Notice::ControlPilot(p) => {
-                    if host.report {
-                        // The host sets the pilot and measures it before it says so.
-                        let state = match p {
-                            ControlPilot::B => control_pilot::State::B,
-                            ControlPilot::C => control_pilot::State::C,
-                        };
-                        queue.push_front(Input::Event(Event::ControlPilotChanged));
-                        queue.push_front(Input::Event(Event::Pilot(control_pilot::Reading { state, pwm: control_pilot::Pwm::Duty(5) })));
-                        continue;
-                    }
-                    Some(Event::ControlPilotChanged)
+                    // The host sets the pilot and measures it before it says so.
+                    let state = match p {
+                        ControlPilot::B => control_pilot::State::B,
+                        ControlPilot::C => control_pilot::State::C,
+                    };
+                    queue.push_front(Input::Event(Event::ControlPilotChanged));
+                    queue.push_front(Input::Event(Event::Pilot(control_pilot::Reading { state, pwm: control_pilot::Pwm::Duty(5) })));
+                    continue;
                 }
                 Notice::ChargeLoop(_) => {
                     loops += 1;
@@ -292,7 +288,7 @@ fn a_contactor_that_stays_welded_is_reported_to_the_charger_and_ends_the_session
 fn a_host_that_reports_the_pilot_does_not_disturb_a_session() {
     use control_pilot::Reading;
     // The pilot goes to C before the cable check and to B at the stop, as asked: nothing there is an emergency.
-    let r = run_host(DcConnector::Extended, EvseConfig::default(), iso2(), Some(3), Host { report: true, inject: None });
+    let r = run_host(DcConnector::Extended, EvseConfig::default(), iso2(), Some(3), Host::default());
     assert_eq!(r.end, EndReason::Completed, "{:?}\n{:?}", r.states, r.log);
     let _ = Reading::CHARGING;
 }
@@ -309,7 +305,7 @@ fn an_emergency_on_the_pilot_ends_the_session_at_once_and_sends_nothing_more() {
         Reading { state: Cp::B, pwm: Pwm::Duty(5) },
         Reading { state: Cp::Invalid, pwm: Pwm::Duty(5) },
     ] {
-        let r = run_host(DcConnector::Extended, EvseConfig::default(), iso2(), None, Host { report: true, inject: Some((2, reading)) });
+        let r = run_host(DcConnector::Extended, EvseConfig::default(), iso2(), None, Host { inject: Some((2, reading)) });
         assert_eq!(r.end, EndReason::Emergency(reading), "{:?}", r.states);
         assert_eq!(r.sent.iter().filter(|m| *m == "PowerDeliveryReq").count(), 1, "only the start of the power: {:?}", r.sent);
         assert!(!r.sent.iter().any(|m| m == "SessionStopReq"), "{:?}", r.sent);
@@ -322,7 +318,7 @@ fn a_pilot_in_state_e_or_f_closes_the_connection() {
     use control_pilot::{Pwm, Reading, State as Cp};
     for state in [Cp::E, Cp::F] {
         let reading = Reading { state, pwm: Pwm::Off };
-        let r = run_host(DcConnector::Extended, EvseConfig::default(), iso2(), None, Host { report: true, inject: Some((2, reading)) });
+        let r = run_host(DcConnector::Extended, EvseConfig::default(), iso2(), None, Host { inject: Some((2, reading)) });
         assert_eq!(r.end, EndReason::PilotFault(reading));
     }
 }
@@ -341,7 +337,7 @@ fn a_pilot_reading_before_the_start_is_remembered_but_not_acted_on() {
 fn an_ac_session_asks_for_the_pilot_around_the_power_delivery() {
     // V2G2-847, 848: C no later than 250 ms after the Start request, B no later than 250 ms after the Stop request; AC has no cable check,
     // so the notices are the only ones about the pilot.
-    let r = run_host(DcConnector::Extended, EvseConfig::default(), Config::ac(false), Some(2), Host { report: true, ..Default::default() });
+    let r = run_host(DcConnector::Extended, EvseConfig::default(), Config::ac(false), Some(2), Host::default());
     assert_eq!(r.end, EndReason::Completed, "{:?}\n{:?}", r.states, r.log);
     let pilots: Vec<_> = r.notices.iter().filter_map(|n| if let Notice::ControlPilot(p) = n { Some(*p) } else { None }).collect();
     assert_eq!(pilots, [ControlPilot::C, ControlPilot::B], "{:?}", r.notices);
