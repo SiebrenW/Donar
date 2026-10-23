@@ -52,9 +52,10 @@ pub enum Pwm {
 }
 
 impl Pwm {
-    /// 5 % (digital communication), with one percent of tolerance.
+    /// 5 % (digital communication) as the vehicle measures it: the charger aims at 5 %, and a measurement from 3 to 7 % is
+    /// 5 % (the capacitance and the inductance of the line change the measured duty cycle; V2G20-1408).
     pub fn is_five_percent(self) -> bool {
-        matches!(self, Pwm::Duty(4..=6))
+        matches!(self, Pwm::Duty(3..=7))
     }
 }
 
@@ -294,6 +295,20 @@ mod tests {
     const E: Reading = Reading { state: State::E, pwm: Pwm::Off };
     const C_OFF: Reading = Reading { state: State::C, pwm: Pwm::Off };
     const B_OFF: Reading = Reading { state: State::B, pwm: Pwm::Off };
+
+    #[test]
+    fn a_measurement_from_3_to_7_percent_is_five_percent() {
+        for d in 0..=100u8 {
+            assert_eq!(Pwm::Duty(d).is_five_percent(), (3..=7).contains(&d), "{d} %");
+        }
+        assert!(!Pwm::Off.is_five_percent());
+        // The vehicle's DC guard takes the whole window and nothing else.
+        let g = EvWatch { discovered: true, ..EvWatch::new(false) }.guard(true);
+        assert_eq!(g.judge(Reading { state: State::B, pwm: Pwm::Duty(3) }), Verdict::Fine);
+        assert_eq!(g.judge(Reading { state: State::B, pwm: Pwm::Duty(7) }), Verdict::Fine);
+        assert_eq!(g.judge(Reading { state: State::B, pwm: Pwm::Duty(2) }), Verdict::Emergency);
+        assert_eq!(g.judge(Reading { state: State::B, pwm: Pwm::Duty(8) }), Verdict::Emergency);
+    }
 
     #[test]
     fn the_vehicle_tolerates_what_it_causes_itself() {

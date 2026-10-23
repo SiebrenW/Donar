@@ -30,10 +30,16 @@ pub struct Config {
     pub nmk: [u8; 16],
     /// How the charger answers CM_VALIDATE.REQ (validation by control pilot toggles).
     pub validation: Validation,
-    /// The timers and limits of the machine.
-    #[serde(skip)]
-    #[schemars(skip)]
-    pub machine: core::Config,
+    /// An AC charger: without a request in `init_ms` it restarts the connection through state E or F, `sequ_retry` times, and
+    /// then turns the oscillator off (V2G3-M06-07).
+    pub ac: bool,
+    /// `TT_EVSE_SLAC_init` (ms): how long the charger waits for the first request.
+    pub init_ms: u32,
+    /// `T_step_EF` (ms): how long the pilot stays in state E or F to restart the connection.
+    pub step_ef_ms: u32,
+    /// How long the oscillator is off (X1) when the pilot goes through it (V2G3-M06-06, M07-05); the standards point to
+    /// IEC 61851-23 for the minimum, which is not checked here.
+    pub x1_ms: u32,
 }
 
 /// The charger's side of the validation by BCB-Toggle (ISO 15118-3 A.9.3).
@@ -63,7 +69,10 @@ impl Default for Config {
             no_report: false,
             nmk: [0x5A; 16],
             validation: Validation::Ready,
-            machine: core::Config::DEFAULT,
+            ac: false,
+            init_ms: core::Config::DEFAULT.init_ms,
+            step_ef_ms: core::Config::DEFAULT.step_ef_ms,
+            x1_ms: 3_000,
         }
     }
 }
@@ -124,6 +133,15 @@ pub fn nid(nmk: &[u8; 16]) -> [u8; 7] {
 
 impl Evse {
     pub fn new(config: Config) -> Self {
+        Self::build(config, false)
+    }
+
+    /// For a host that reports the pilot ([`Evse::pilot`]): the vehicle is not taken to be there until a reading says so.
+    pub fn wired(config: Config) -> Self {
+        Self::build(config, true)
+    }
+
+    fn build(config: Config, wired: bool) -> Self {
         let machine_config = core::Config {
             sounds: 10,
             attenuation: config.attenuation,
@@ -133,12 +151,15 @@ impl Evse {
                 Validation::Failure => core::Validation::Failure,
                 _ => core::Validation::Ready,
             },
-            ..config.machine
+            ac: config.ac,
+            init_ms: config.init_ms,
+            step_ef_ms: config.step_ef_ms,
+            ..core::Config::DEFAULT
         };
         let mut machine = Machine::new(machine_config, config.mac, Fixed(config.nmk));
         let mut tx = [0u8; 256];
         // A host without a pilot: the vehicle is there.
-        let step = machine.handle(Event::Pilot(Reading::CONNECTED), &mut tx);
+        let step = if wired { core::Step::default() } else { machine.handle(Event::Pilot(Reading::CONNECTED), &mut tx) };
         let mut evse = Self {
             config,
             machine,
@@ -149,7 +170,7 @@ impl Evse {
             validate_seen: 0,
             counting: None,
             toggle_timer: None,
-            pilot_driven: false,
+            pilot_driven: wired,
             modem_link: false,
             no_slac: false,
             notices: Vec::new(),
@@ -371,6 +392,13 @@ impl<M: evcc_linux::slac::Modem> Serve<M> {
 
     pub fn next_deadline(&self) -> Option<u64> {
         self.evse.next_deadline()
+    }
+
+    /// A change of the control pilot, as measured; returns the frames to send. What the pilot is asked to do about
+    /// it comes in [`Evse::pilot_requests`].
+    pub fn pilot(&mut self, now_ms: u64, reading: Reading) -> Vec<Vec<u8>> {
+        self.evse.at(now_ms);
+        self.evse.pilot(reading)
     }
 
     /// One round: the timers, the frame (if one came), the keys to the modem, the link from the modem. Returns the frames to

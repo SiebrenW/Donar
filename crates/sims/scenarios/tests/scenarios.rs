@@ -114,6 +114,7 @@ mod run {
         dc_mobility_needs_evse => "dc-mobility-needs-evse",
         dc_slac => "dc-slac",
         slac_too_far => "slac-too-far",
+        slac_ac_restarts => "slac-ac-restarts",
         dc_tls_slac => "dc-tls-slac",
         dc_tls_ed448 => "dc-tls-ed448",
         dc_tls12 => "dc-tls12",

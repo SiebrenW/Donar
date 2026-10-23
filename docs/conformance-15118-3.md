@@ -23,11 +23,12 @@ Status: **done** (in the machine, tested), **host** (the host has to do it; the 
 | V2G3-A09-126, 127, M09-19 | State A leaves the network and stops; E and F stop the matching | done |
 | V2G3-M09-01 | `C_EVSE_match_parallel` = 5 processes at once | done |
 | V2G3-M06-11 | The matching starts with a transition from A, E or F to B, C or D | done |
-| V2G3-M06-07 | An AC charger without a request restarts the connection `C_sequ_retry` times through E/F, then X1 | done (`PilotRequest`; the pilot is the host's) |
-| V2G3-M07-04 to 12 | `D-LINK_ERROR.request`: through X1 and E/F, or option B with a nominal duty cycle | done (`PilotRequest`) |
+| V2G3-M06-07 | An AC charger without a request restarts the connection `C_sequ_retry` times through E/F, then X1 | done; `evse-sim` carries it out on the cable (scenario `slac-ac-restarts`) |
+| V2G3-M07-04 to 12 | `D-LINK_ERROR.request`: through X1 and E/F, or option B with a nominal duty cycle | done (`PilotRequest`; `evse-sim` carries the cycles out, nothing in the simulator raises the request yet) |
 | V2G3-M07-03, 21, M12-01 | `D-LINK_READY.indication` on every change of the link | done |
 | V2G3-M07-20, 22, 24 to 27 | Pause keeps the network parameters; wake-up configures the last ones; `T_conn_max_comm` for the link, then a restart | done (the B1/B2 transition of the wake-up is the host's) |
-| V2G3-M06-05, 06, 08, 09, M07-02, 31 to 33 | The oscillator: E/F for `T_step_EF` when changing to a nominal duty cycle, X1 in the middle with a link, X1/X2 after EIM, the +12 V stays during a pause | host (`evse-sim`'s pilot, not yet in line with the machine) |
+| V2G3-M06-05, 06, 08, 09 | The oscillator: E/F for `T_step_EF` when changing to a nominal duty cycle, X1 in the middle with a link, E/F then X1/X2 after EIM | done in `evse_sim::sequence` (`to_nominal`; the simulator has no EIM and no policy that calls it, a host decides when) |
+| V2G3-M07-02, 31 to 33 | The +12 V stays during a pause, the module is awake while the oscillator is on | host |
 | V2G3-M09-10, 11 | The charger detects a toggle within `T_vald_detect_time` | host |
 | V2G3-A06-03 | The module is the CCo | modem (PIB); a host driver can check it |
 | V2G3-A06-04 | CAP3 for the matching frames | modem |
@@ -38,4 +39,4 @@ Status: **done** (in the machine, tested), **host** (the host has to do it; the 
 
 The charger's modem: `QcaModem::as_coordinator` (evcc-linux) takes the key, reads the link from the link status and the modem's indications (never from the network information or a settle time) and can check that the modem coordinates its network; `evse_sim::slac::Serve` ties it to the machine. Tested against a fake modem only. The `CM_ATTEN_PROFILE.IND` of the modem reach the machine as ordinary frames of the interface; their layout is the one of the HomePlug Green PHY specification, not seen from a modem here.
 
-Not covered by anything here yet: the simulator's pilot following the machine's `PilotRequest`s, scenarios against `pyslac` as the vehicle. The simulator has no modem and no pilot reading: the vehicle is taken to be there, the cable is the link, and the window of `TT_EVSE_SLAC_init` is reopened when it runs out. See PLAN.md.
+Not covered by anything here yet: scenarios against `pyslac` as the vehicle. The simulator has no modem and no pilot reading: the vehicle is taken to be there, the cable is the link, and the window of `TT_EVSE_SLAC_init` is reopened when it runs out. See PLAN.md.

@@ -146,7 +146,7 @@ fn run(args: &Args) -> io::Result<bool> {
         None => None,
     };
     if args.slac || settings.slac_responder {
-        start_slac(&args.interface, settings.slac.clone(), settings.slac_modem, settings.control_pilot_file.clone())?;
+        start_slac(&args.interface, settings.slac.clone(), settings.slac_modem, settings.control_pilot_file.clone(), settings.control_pilot_wire.clone())?;
     }
     let ifindex = evcc_linux::sdp::interface_index(&args.interface)?;
     let udp = UdpSocket::bind((Ipv6Addr::UNSPECIFIED, v2gtp::sdp::SDP_PORT))?;
@@ -228,38 +228,62 @@ fn run(args: &Args) -> io::Result<bool> {
 }
 
 #[cfg(target_os = "linux")]
-fn start_slac(interface: &str, config: evse_sim::slac::Config, modem: bool, pilot: Option<String>) -> io::Result<()> {
+fn start_slac(interface: &str, config: evse_sim::slac::Config, modem: bool, pilot: Option<String>, wire: Option<String>) -> io::Result<()> {
     use evcc_linux::slac::{NoModem, PacketSocket, QcaModem};
     use evse_sim::slac::{Evse, Serve};
     let socket = PacketSocket::open(interface)?;
-    let evse = Evse::new(evse_sim::slac::Config { mac: socket.mac(), ..config });
+    let x1_ms = config.x1_ms;
+    let config = evse_sim::slac::Config { mac: socket.mac(), ..config };
+    // With a cable the charger watches the pilot itself: the matching starts with the plug-in, and the pilot does what the
+    // machine asks for (state E or F to restart the connection, X1).
+    let wire = wire.map(evcc_linux::pilot::Wire::new).transpose()?.map(|w| (w, x1_ms));
+    let evse = if wire.is_some() { Evse::wired(config) } else { Evse::new(config) };
     if modem {
         let modem = QcaModem::open(interface)?.as_coordinator();
         eprintln!("slac: modem {}", modem.version()?);
-        slac_loop(socket, Serve::new(evse, modem), pilot);
+        slac_loop(socket, Serve::new(evse, modem), pilot, wire);
     } else {
-        slac_loop(socket, Serve::new(evse, NoModem), pilot);
+        slac_loop(socket, Serve::new(evse, NoModem), pilot, wire);
     }
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn slac_loop<M: evcc_linux::slac::Modem + Send + 'static>(socket: evcc_linux::slac::PacketSocket, mut serve: evse_sim::slac::Serve<M>, pilot: Option<String>) {
+fn slac_loop<M: evcc_linux::slac::Modem + Send + 'static>(
+    socket: evcc_linux::slac::PacketSocket,
+    mut serve: evse_sim::slac::Serve<M>,
+    pilot: Option<String>,
+    wire: Option<(evcc_linux::pilot::Wire, u32)>,
+) {
+    use evcc_linux::pilot::PilotSource;
     use std::time::Duration;
     std::thread::spawn(move || {
         let mut buf = [0u8; 2048];
         let mut matched = false;
         let start = std::time::Instant::now();
         let now_ms = move || start.elapsed().as_millis() as u64;
+        let mut source = wire.as_ref().map(|(w, _)| w.source());
         let toggles = |pilot: &Option<String>| pilot.as_deref().and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len());
         loop {
             // Wait for a frame, but not past the next timer of the machine (the modem's link is asked about every 100 ms).
-            let wait = serve.next_deadline().map_or(100, |d| d.saturating_sub(now_ms()).clamp(1, 100));
+            let longest = if source.is_some() { 5 } else { 100 };
+            let wait = serve.next_deadline().map_or(longest, |d| d.saturating_sub(now_ms()).clamp(1, longest));
             let received = socket.recv(&mut buf, Some(Duration::from_millis(wait))).ok().flatten();
             // Toggles are counted from here on (the file may hold those of an earlier run).
             let before = toggles(&pilot);
-            for frame in serve.step(now_ms(), received.map(|n| &buf[..n])) {
+            let mut frames = Vec::new();
+            if let Some(reading) = source.as_mut().and_then(|s| s.poll()) {
+                frames.extend(serve.pilot(now_ms(), reading));
+            }
+            frames.extend(serve.step(now_ms(), received.map(|n| &buf[..n])));
+            for frame in frames {
                 let _ = socket.send(&frame);
+            }
+            if let Some((wire, x1_ms)) = &wire {
+                for request in serve.evse.pilot_requests.drain(..) {
+                    eprintln!("slac: pilot {request:?}");
+                    evse_sim::sequence::spawn(wire.clone(), request, *x1_ms);
+                }
             }
             // The vehicle asked for the validation by BCB-Toggle: listen, count, answer.
             if let Some(ms) = serve.evse.validation_window_ms() {
@@ -286,7 +310,7 @@ fn slac_loop<M: evcc_linux::slac::Modem + Send + 'static>(socket: evcc_linux::sl
 }
 
 #[cfg(not(target_os = "linux"))]
-fn start_slac(_interface: &str, _config: evse_sim::slac::Config, _modem: bool, _pilot: Option<String>) -> io::Result<()> {
+fn start_slac(_interface: &str, _config: evse_sim::slac::Config, _modem: bool, _pilot: Option<String>, _wire: Option<String>) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "SLAC needs Linux",
