@@ -26,7 +26,7 @@ Status: **covered**, **partly** (behaviour exists, the stimulus or one verdict c
 | CableCheck_007, PreCharge_006 (SessionStopReq for a non-critical reason is answered) | V2G20-2645, 1632 | covered | `a_session_stop_is_taken_wherever_the_power_is_not_on` |
 | PreCharge_001/002, ChargeLoop_001, WeldingDetection_001/002 | V2G20-2005, 2006, 2013, 1630, 921, 1631 | covered | `against_evcc` full sessions |
 | ChargeLoop_004/005 (absolute limit values) | V2G20-2654, 2655 | covered | `limits.rs` checks, `loopback` violation tests |
-| SessionStop_001 (duty cycle 3 to 7 % for the whole session) | V2G20-1408 | open | The pilot is the host's; the guard covers changes, not the duty range. A host-level check in `evse-sim` would do |
+| SessionStop_001 (duty cycle 3 to 7 % for the whole session) | V2G20-1408 | covered | The charger's target is 5 % (`evse-sim` writes 5 and keeps it); a measurement from 3 to 7 % counts as 5 % (`Pwm::is_five_percent`, the vehicle's DC guard: `a_measurement_from_3_to_7_percent_is_five_percent`) |
 | V2GTPDCMessages_001/002 (header, TCP port ranges) | V2G20-2307, 078, 080 | partly | header in `v2gtp` tests; ports are the host's and untested |
 | V2GTPDCMessages_003..008 (invalid header is ignored) | V2G20-800 | partly | ignored since the V2G20-800 change: `a_frame_with_a_wrong_v2gtp_header_is_ignored` (version, inverse version, payload type, empty payload) and `garbage_is_rejected_without_panicking`; a payload length that is too small or too large cannot be told from a short read, so it is not resynchronised (the stream waits or the sequence timeout ends it); no cable-level case |
 

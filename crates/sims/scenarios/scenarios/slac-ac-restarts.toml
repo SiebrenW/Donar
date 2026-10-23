@@ -1,0 +1,25 @@
+name = "slac-ac-restarts"
+description = "An AC charger that no vehicle gets an answer from in its SLAC window restarts the connection through state E twice and then turns the oscillator off (ISO 15118-3 V2G3-M06-07)."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+[secc.settings]
+slac_responder = true
+[secc.settings.slac]
+ac = true
+init_ms = 800
+step_ef_ms = 150
+# The vehicle's requests are not answered, so the window runs out.
+ignore_parm = 1000
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+slac = true
+slac_repetition_ms = 6000
+
+[expect]
+evcc_exit = 1
+evcc_log = ["slac: Failed(NoResponse)"]
+secc_log = ["slac: NoSlac", "slac: pilot ErrorCycle", "slac: pilot X1"]

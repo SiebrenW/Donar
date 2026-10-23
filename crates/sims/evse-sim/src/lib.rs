@@ -3,6 +3,7 @@
 //! ([`serve_one`]) for end-to-end tests. Its knobs inject the faults an EVSE test platform
 //! needs: rejections, failing response codes and silence.
 
+pub mod sequence;
 pub mod slac;
 
 mod answers;

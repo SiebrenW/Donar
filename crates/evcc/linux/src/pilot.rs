@@ -6,7 +6,8 @@
 //! side reads, with the same readings a real measurement would give.
 //!
 //! * `ev`: the state the vehicle holds (`A`, `B`, `C`, `D`, `E`, `F`, or `X` for an invalid voltage),
-//! * `evse`: the charger's oscillator: `off` (a constant voltage, 100 %) or the duty cycle in percent.
+//! * `evse`: the charger's oscillator: `off` (a constant voltage, 100 %) or the duty cycle in percent; or `E` or `F`, the
+//!   charger holding the pilot in an error state (it pulls the line to 0 V or -12 V, whatever the vehicle does).
 //!
 //! A reading exists once both files do: until the charger has written its oscillator, or while no vehicle
 //! is connected, there is none, and nothing is judged.
@@ -29,6 +30,37 @@ pub trait PilotSource {
 
 /// How often a host with a pilot source looks for a change while it waits for the socket.
 pub const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(2);
+
+/// What the charger puts on the line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Oscillator {
+    /// A constant voltage (X1).
+    Off,
+    /// The oscillator at this duty cycle in percent (X2).
+    Duty(u8),
+    /// State E or F, which the vehicle sees whatever state it holds.
+    Error(State),
+}
+
+impl Oscillator {
+    fn text(self) -> String {
+        match self {
+            Oscillator::Off => "off".into(),
+            Oscillator::Duty(d) => d.to_string(),
+            Oscillator::Error(State::F) => "F".into(),
+            Oscillator::Error(_) => "E".into(),
+        }
+    }
+
+    fn parse(text: &str) -> Option<Oscillator> {
+        Some(match text.trim() {
+            "off" => Oscillator::Off,
+            "E" => Oscillator::Error(State::E),
+            "F" => Oscillator::Error(State::F),
+            d => Oscillator::Duty(d.parse().ok()?),
+        })
+    }
+}
 
 /// The cable between two simulators.
 #[derive(Debug, Clone)]
@@ -55,10 +87,20 @@ impl Wire {
 
     /// The charger's oscillator.
     pub fn set_evse(&self, pwm: Pwm) -> io::Result<()> {
-        match pwm {
-            Pwm::Off => self.write("evse", b"off"),
-            Pwm::Duty(d) => self.write("evse", d.to_string().as_bytes()),
-        }
+        self.set_evse_signal(match pwm {
+            Pwm::Off => Oscillator::Off,
+            Pwm::Duty(d) => Oscillator::Duty(d),
+        })
+    }
+
+    /// What the charger puts on the line, including an error state.
+    pub fn set_evse_signal(&self, signal: Oscillator) -> io::Result<()> {
+        self.write("evse", signal.text().as_bytes())
+    }
+
+    /// What the charger puts on the line now, if it wrote anything.
+    pub fn evse(&self) -> Option<Oscillator> {
+        Oscillator::parse(std::str::from_utf8(&fs::read(self.dir.join("evse")).ok()?).ok()?)
     }
 
     /// What either side measures now, if both are there.
@@ -74,9 +116,12 @@ impl Wire {
             b'F' => State::F,
             _ => State::Invalid,
         };
-        let text = std::str::from_utf8(&evse).ok()?.trim();
-        let pwm = if text == "off" { Pwm::Off } else { Pwm::Duty(text.parse().ok()?) };
-        Some(Reading { state, pwm })
+        Some(match Oscillator::parse(std::str::from_utf8(&evse).ok()?)? {
+            Oscillator::Off => Reading { state, pwm: Pwm::Off },
+            Oscillator::Duty(d) => Reading { state, pwm: Pwm::Duty(d) },
+            // The charger's error state is what both sides measure.
+            Oscillator::Error(state) => Reading { state, pwm: Pwm::Off },
+        })
     }
 
     /// The readings of this cable as a [`PilotSource`]: a change is reported once.
@@ -151,6 +196,12 @@ mod tests {
         assert_eq!(source.poll(), Some(Reading::CHARGING));
         wire.set_evse(Pwm::Off).unwrap();
         assert_eq!(source.poll(), Some(Reading { state: State::C, pwm: Pwm::Off }));
+        // The charger holds the line in E: the vehicle's state does not matter.
+        wire.set_evse_signal(Oscillator::Error(State::E)).unwrap();
+        assert_eq!(source.poll(), Some(Reading { state: State::E, pwm: Pwm::Off }));
+        assert_eq!(wire.evse(), Some(Oscillator::Error(State::E)));
+        wire.set_evse_signal(Oscillator::Duty(5)).unwrap();
+        assert_eq!(source.poll(), Some(Reading::CHARGING));
         let _ = fs::remove_dir_all(dir);
     }
 }
