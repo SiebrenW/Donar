@@ -483,8 +483,9 @@ impl Machine {
     /// CM_VALIDATE.REQ: step 1 (unicast, timer 0) or step 2 (broadcast, the listening time).
     fn validate_req(&self, chosen: usize, timer: u8, tx: &mut [u8]) -> Step {
         let evse = self.candidates[chosen].map_or(BROADCAST, |c| c.mac);
-        let dst = if timer == 0 { evse } else { BROADCAST };
-        self.send(Message::ValidateReq { timer, result: homeplug::validate_result::READY }, dst, tx)
+        // Table A.6 says broadcast for the second request, but a charger may refuse one (the request is for it, and the HomePlug
+        // specification makes no difference); both steps go to the charger's address.
+        self.send(Message::ValidateReq { timer, result: homeplug::validate_result::READY }, evse, tx)
     }
 
     /// Step 2: the time to listen covers the whole sequence (V2G3-A09-67) and is the window
@@ -495,11 +496,11 @@ impl Machine {
             n => n.clamp(1, 3),
         };
         let states = 2 * u32::from(count) + 1;
-        // The listening time is sent in units of 100 ms, with a margin of one unit.
-        let units = (states * self.config.toggle_state_ms).div_ceil(100) + 1;
-        let units = units.min(35) as u8;
+        // The listening time is `Timer` + 1 units of 100 ms (HomePlug Green PHY Table 11-148: 0x00 is 100 ms), with a margin of one
+        // unit, and at most 3.5 s (`TT_EVSE_vald_toggle`).
+        let units = ((states * self.config.toggle_state_ms).div_ceil(100) + 1).clamp(2, 35) as u8;
         self.state = State::Validate2 { chosen, count, window: true };
-        let mut step = self.validate_req(chosen, units, tx).arm(Timer::Slac, u32::from(units) * 100);
+        let mut step = self.validate_req(chosen, units - 1, tx).arm(Timer::Slac, u32::from(units) * 100);
         step.toggle = Some(Toggle { count, state_ms: self.config.toggle_state_ms });
         step
     }
