@@ -152,6 +152,27 @@ impl Timer {
     /// The number of different timers, for the host's table.
     pub const COUNT: usize = 4 + 5 * PARALLEL;
 
+    /// The timer with the number [`Timer::index`] gave it.
+    pub fn from_index(i: usize) -> Option<Timer> {
+        match i {
+            0 => Some(Timer::Init),
+            1 => Some(Timer::Join),
+            2 => Some(Timer::LinkReady),
+            3 => Some(Timer::Wake),
+            _ if i >= Self::COUNT => None,
+            _ => {
+                let (kind, slot) = ((i - 4) / PARALLEL, ((i - 4) % PARALLEL) as u8);
+                Some(match kind {
+                    0 => Timer::Sequence(slot),
+                    1 => Timer::Mnbc(slot),
+                    2 => Timer::Response(slot),
+                    3 => Timer::Session(slot),
+                    _ => Timer::Toggle(slot),
+                })
+            }
+        }
+    }
+
     /// A number below [`Timer::COUNT`], different for every timer.
     pub fn index(self) -> usize {
         match self {
@@ -644,7 +665,7 @@ impl<R: Random> Machine<R> {
         }
         match message {
             Message::ParmReq { run_id } => self.on_parm_req(from, run_id, tx),
-            Message::StartAttenChar { run_id, .. } => self.with_process(from, run_id, |m, s| m.on_start(s)),
+            Message::StartAttenChar { run_id, num_sounds, .. } => self.with_process(from, run_id, |m, s| m.on_start(s, num_sounds)),
             Message::MnbcSound { run_id, .. } => self.with_process(from, run_id, |m, s| m.on_sound(s, tx)),
             Message::AttenProfileInd { pev, groups } => match self.slot_of(pev) {
                 Some(s) => self.on_profile(s, groups, tx),
@@ -694,14 +715,15 @@ impl<R: Random> Machine<R> {
         step.arm(Timer::Sequence(slot), self.config.sequence_ms)
     }
 
-    fn on_start(&mut self, s: u8) -> Step {
+    fn on_start(&mut self, s: u8, announced: u8) -> Step {
         let p = self.processes[usize::from(s)].as_mut().unwrap();
         // The vehicle repeats the message; one is enough (V2G3-A09-39).
         if p.phase != Phase::Parm {
             return Step::default();
         }
         p.phase = Phase::Sounding;
-        p.expected = self.config.sounds;
+        // The vehicle says how many sounds it sends.
+        p.expected = if announced == 0 { self.config.sounds } else { announced };
         // V2G3-A09-42.
         Step::default().cancel(Timer::Sequence(s)).arm(Timer::Mnbc(s), self.config.mnbc_ms)
     }

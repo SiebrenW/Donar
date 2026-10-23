@@ -1,9 +1,14 @@
-//! The EVSE side of SLAC (ISO 15118-3:2015 Annex A.9), for testing an EV.
+//! The EVSE side of SLAC (ISO 15118-3:2015 Annex A.9), for testing an EV: the charger's machine
+//! ([`evse_core::slac`]) behind a clock, with the faults a test wants to inject.
 //!
 //! Feed it Ethernet frames; it returns the frames to send. It plays a charger whose modem
-//! measures a fixed attenuation, so the EV decides "directly connected" or not by the knob.
+//! measures a fixed attenuation, so the EV decides "directly connected" or not by the knob. Time is the host's:
+//! [`Evse::at`] sets it, [`Evse::poll`] lets the timers of the machine run out, [`Evse::next_deadline`] says when
+//! to call it. A host that never does (a test in virtual time) has a charger that waits forever.
 
-use homeplug::{BROADCAST, Frame, GROUPS, Mac, Message, RunId};
+use control_pilot::Reading;
+use evse_core::slac::{self as core, Event, Machine, Notice, PilotRequest, Random, Timer, TimerCmd, Toggles};
+use homeplug::{Frame, GROUPS, Mac, Message};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +30,10 @@ pub struct Config {
     pub nmk: [u8; 16],
     /// How the charger answers CM_VALIDATE.REQ (validation by control pilot toggles).
     pub validation: Validation,
+    /// The timers and limits of the machine.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub machine: core::Config,
 }
 
 /// The charger's side of the validation by BCB-Toggle (ISO 15118-3 A.9.3).
@@ -54,6 +63,7 @@ impl Default for Config {
             no_report: false,
             nmk: [0x5A; 16],
             validation: Validation::Ready,
+            machine: core::Config::DEFAULT,
         }
     }
 }
@@ -67,26 +77,41 @@ pub fn correction(values: &[i8], g: usize) -> i8 {
     }
 }
 
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
+    /// Waiting for a vehicle, or serving some.
     Unmatched,
-    /// Answered a parameter request from `ev`; waiting for the measurement.
-    Parameters { ev: Mac, run_id: RunId },
-    /// Receiving sounds; `expected` is the number announced.
-    Sounding { ev: Mac, run_id: RunId, expected: u8, received: u8 },
-    /// Sent the report; waiting for the match request.
-    Reported { ev: Mac, run_id: RunId },
     Matched { ev: Mac },
+}
+
+/// The same key every time: a test knows it.
+struct Fixed([u8; 16]);
+
+impl Random for Fixed {
+    fn nmk(&mut self) -> [u8; 16] {
+        self.0
+    }
 }
 
 pub struct Evse {
     config: Config,
-    state: State,
+    machine: Machine<Fixed>,
+    now: u64,
+    deadlines: Vec<Option<u64>>,
     parm_seen: u32,
     match_seen: u32,
     validate_seen: u32,
     /// The EV asked for the second step: the charger counts toggles for this long (ms).
-    counting: Option<(Mac, u32)>,
+    counting: Option<u32>,
+    toggle_timer: Option<Timer>,
+    /// The host reports the pilot itself; otherwise the vehicle is taken to be there and the cable is the link.
+    pilot_driven: bool,
+    no_slac: bool,
+    /// What the machine asked for since the host looked.
+    pub notices: Vec<Notice>,
+    pub pilot_requests: Vec<PilotRequest>,
+    pub keys: Vec<([u8; 7], [u8; 16])>,
 }
 
 /// The network ID for a key ([`homeplug::modem::network_id`]).
@@ -96,124 +121,207 @@ pub fn nid(nmk: &[u8; 16]) -> [u8; 7] {
 
 impl Evse {
     pub fn new(config: Config) -> Self {
-        Self { config, state: State::Unmatched, parm_seen: 0, match_seen: 0, validate_seen: 0, counting: None }
+        let machine_config = core::Config {
+            sounds: 10,
+            attenuation: config.attenuation,
+            attenuation_correction_db: std::array::from_fn(|g| correction(&config.attenuation_correction_db, g)),
+            validation: match config.validation {
+                Validation::NotRequired => core::Validation::NotRequired,
+                Validation::Failure => core::Validation::Failure,
+                _ => core::Validation::Ready,
+            },
+            ..config.machine
+        };
+        let mut machine = Machine::new(machine_config, config.mac, Fixed(config.nmk));
+        let mut tx = [0u8; 256];
+        // A host without a pilot: the vehicle is there.
+        let step = machine.handle(Event::Pilot(Reading::CONNECTED), &mut tx);
+        let mut evse = Self {
+            config,
+            machine,
+            now: 0,
+            deadlines: vec![None; Timer::COUNT],
+            parm_seen: 0,
+            match_seen: 0,
+            validate_seen: 0,
+            counting: None,
+            toggle_timer: None,
+            pilot_driven: false,
+            no_slac: false,
+            notices: Vec::new(),
+            pilot_requests: Vec::new(),
+            keys: Vec::new(),
+        };
+        evse.apply(step);
+        evse
     }
 
     pub fn state(&self) -> State {
-        self.state
+        match self.machine.state() {
+            core::State::Matched { ev, .. } => State::Matched { ev },
+            _ => State::Unmatched,
+        }
     }
 
     pub fn mac(&self) -> Mac {
         self.config.mac
     }
 
-    /// Handles a received frame and returns the frames to send in response.
-    pub fn handle(&mut self, bytes: &[u8]) -> Vec<Vec<u8>> {
-        let Some(frame) = Frame::parse(bytes) else { return Vec::new() };
-        if frame.dst != BROADCAST && frame.dst != self.config.mac {
-            return Vec::new();
-        }
-        let Some(message) = frame.message() else { return Vec::new() };
-        let from = frame.src;
+    /// Sets the time of the next calls (milliseconds on any clock that never goes back).
+    pub fn at(&mut self, now_ms: u64) {
+        self.now = now_ms;
+    }
+
+    /// When [`Evse::poll`] has something to do.
+    pub fn next_deadline(&self) -> Option<u64> {
+        self.deadlines.iter().flatten().min().copied()
+    }
+
+    /// Lets the timers that have run out at `now_ms` fire; returns the frames to send.
+    pub fn poll(&mut self, now_ms: u64) -> Vec<Vec<u8>> {
+        self.now = now_ms;
         let mut out = Vec::new();
-        match (self.state, message) {
-            // A new request restarts the exchange, also from the same EV (V2G3-A09-16).
-            (State::Unmatched | State::Parameters { .. } | State::Sounding { .. } | State::Reported { .. }, Message::ParmReq { run_id }) => {
-                self.parm_seen += 1;
-                if self.parm_seen > self.config.ignore_parm {
-                    self.state = State::Parameters { ev: from, run_id };
-                    out.push(self.frame(
-                        Message::ParmCnf { num_sounds: 10, time_out: 6, forwarding_sta: from, run_id },
-                        from,
-                    ));
-                }
-            }
-            (State::Parameters { ev, run_id }, Message::StartAttenChar { num_sounds, run_id: r, .. }) if ev == from && r == run_id => {
-                self.state = State::Sounding { ev, run_id, expected: num_sounds, received: 0 };
-            }
-            (State::Sounding { ev, run_id, expected, received }, Message::StartAttenChar { .. }) => {
-                // The three repeats of the start message.
-                self.state = State::Sounding { ev, run_id, expected, received };
-            }
-            (State::Sounding { ev, run_id, expected, received }, Message::MnbcSound { run_id: r, .. }) if ev == from && r == run_id => {
-                let received = received + 1;
-                if received >= expected {
-                    self.state = State::Reported { ev, run_id };
-                    if !self.config.no_report {
-                        out.push(self.frame(
-                            Message::AttenCharInd {
-                                source: ev,
-                                run_id,
-                                num_sounds: received,
-                                groups: std::array::from_fn(|g| (i16::from(self.config.attenuation) + i16::from(correction(&self.config.attenuation_correction_db, g))).clamp(0, 255) as u8),
-                            },
-                            ev,
-                        ));
-                    }
-                } else {
-                    self.state = State::Sounding { ev, run_id, expected, received };
-                }
-            }
-            (State::Reported { ev, run_id }, Message::MatchReq { pev, evse, run_id: r })
-                if ev == from && pev == from && evse == self.config.mac && r == run_id =>
-            {
-                self.match_seen += 1;
-                if self.match_seen > self.config.ignore_match {
-                    let nmk = self.config.nmk;
-                    out.push(self.frame(Message::MatchCnf { pev, evse, run_id, nid: nid(&nmk), nmk }, ev));
-                    self.state = State::Matched { ev };
-                }
-            }
-            // A retransmitted request after the answer was lost (V2G3-A09-97).
-            (State::Matched { ev }, Message::MatchReq { pev, evse, run_id }) if ev == from && pev == from && evse == self.config.mac => {
-                let nmk = self.config.nmk;
-                out.push(self.frame(Message::MatchCnf { pev, evse, run_id, nid: nid(&nmk), nmk }, ev));
-            }
-            // Step 1 of the validation (V2G3-A09-75 ff.) and, with a listening time, step 2.
-            (State::Reported { ev, .. } | State::Matched { ev }, Message::ValidateReq { timer, result }) if ev == from => {
-                if result != homeplug::validate_result::READY {
-                    // V2G3-A09-84: anything but "ready" fails the matching; nothing is sent.
-                    return out;
-                }
-                use homeplug::validate_result::{FAILURE, NOT_READY, NOT_REQUIRED, READY};
-                if timer == 0 {
-                    self.validate_seen += 1;
-                    let answer = match self.config.validation {
-                        Validation::Silent => return out,
-                        Validation::Failure => FAILURE,
-                        Validation::NotRequired => NOT_REQUIRED,
-                        Validation::NotReady(n) if self.validate_seen <= n => NOT_READY,
-                        Validation::NotReady(_) | Validation::Ready => READY,
-                    };
-                    out.push(self.frame(Message::ValidateCnf { toggle_num: 0, result: answer }, ev));
-                } else if matches!(self.config.validation, Validation::Ready | Validation::NotReady(_) | Validation::NotRequired) {
-                    self.counting = Some((ev, u32::from(timer) * 100));
-                }
-            }
-            _ => {}
+        while let Some((i, _)) = self.deadlines.iter().enumerate().filter_map(|(i, d)| d.filter(|d| *d <= now_ms).map(|d| (i, d))).min_by_key(|(_, d)| *d) {
+            self.deadlines[i] = None;
+            let timer = Timer::from_index(i).expect("a timer");
+            out.extend(self.feed(Event::TimerExpired(timer)));
         }
         out
+    }
+
+    /// Reports a pilot reading (a host with a pilot; without one the vehicle is connected from the start).
+    pub fn pilot(&mut self, reading: Reading) -> Vec<Vec<u8>> {
+        self.pilot_driven = true;
+        self.feed(Event::Pilot(reading))
+    }
+
+    /// The modem found the vehicle in the network.
+    pub fn link_up(&mut self) -> Vec<Vec<u8>> {
+        self.feed(Event::LinkUp)
+    }
+
+    /// One call of the machine: the frames to send, and whether it asks for the toggle count.
+    fn call(&mut self, event: Event<'_>) -> (Vec<Vec<u8>>, bool) {
+        let mut tx = [0u8; 256];
+        let step = self.machine.handle(event, &mut tx);
+        let mut out = Vec::new();
+        if let Some(n) = step.send {
+            out.extend(self.filtered(tx[..n].to_vec()));
+        }
+        let read = step.toggles == Some(Toggles::Read);
+        self.apply(step);
+        (out, read)
+    }
+
+    fn feed(&mut self, event: Event<'_>) -> Vec<Vec<u8>> {
+        let (mut out, read) = self.call(event);
+        if read {
+            // The listening time is over and nobody counted: a failure (V2G3-A09-88).
+            out.extend(self.call(Event::Toggles(None)).0);
+        }
+        if !self.pilot_driven {
+            // No modem and no pilot: the vehicle that has the key is on the cable, and a charger nobody asked for a
+            // long time waits for the next one as a charger that sees a new plug-in does.
+            if matches!(self.machine.state(), core::State::Matched { linked: false, .. }) {
+                self.call(Event::LinkUp);
+            }
+            if std::mem::take(&mut self.no_slac) {
+                self.call(Event::Pilot(Reading { state: control_pilot::State::A, pwm: control_pilot::Pwm::Off }));
+                self.call(Event::Pilot(Reading::CONNECTED));
+            }
+        }
+        out
+    }
+
+    fn apply(&mut self, step: core::Step) {
+        for (i, d) in self.deadlines.iter_mut().enumerate() {
+            if step.timers.clear.applies(Timer::from_index(i).unwrap()) {
+                *d = None;
+            }
+        }
+        for cmd in step.timers.iter() {
+            match cmd {
+                TimerCmd::Arm { timer, ms } => {
+                    self.deadlines[timer.index()] = Some(self.now + u64::from(ms));
+                    if matches!(timer, Timer::Toggle(_)) {
+                        self.toggle_timer = Some(timer);
+                    }
+                }
+                TimerCmd::Cancel(timer) => self.deadlines[timer.index()] = None,
+            }
+        }
+        if let Some(key) = step.set_key {
+            self.keys.push(key);
+        }
+        if let Some(Toggles::Start { ms }) = step.toggles {
+            self.counting = Some(ms);
+        }
+        self.no_slac |= step.notice == Some(Notice::NoSlac);
+        self.notices.extend(step.notice);
+        self.pilot_requests.extend(step.pilot);
+    }
+
+    /// The faults the test asked for, on what the machine sends.
+    fn filtered(&mut self, bytes: Vec<u8>) -> Vec<Vec<u8>> {
+        let Some(message) = Frame::parse(&bytes).and_then(|f| f.message()) else { return vec![bytes] };
+        match message {
+            Message::AttenCharInd { .. } if self.config.no_report => Vec::new(),
+            Message::ValidateCnf { toggle_num: 0, result } if result != homeplug::validate_result::FAILURE => {
+                self.validate_seen += 1;
+                match self.config.validation {
+                    Validation::Silent => Vec::new(),
+                    Validation::NotReady(n) if self.validate_seen <= n => {
+                        let dst = Frame::parse(&bytes).unwrap().dst;
+                        let mut out = vec![0u8; 256];
+                        let n = Message::ValidateCnf { toggle_num: 0, result: homeplug::validate_result::NOT_READY }.write(dst, self.config.mac, &mut out).unwrap();
+                        out.truncate(n);
+                        vec![out]
+                    }
+                    _ => vec![bytes],
+                }
+            }
+            _ => vec![bytes],
+        }
+    }
+
+    /// Handles a received frame and returns the frames to send in response.
+    pub fn handle(&mut self, bytes: &[u8]) -> Vec<Vec<u8>> {
+        match Frame::parse(bytes).and_then(|f| f.message()) {
+            Some(Message::ParmReq { .. }) => {
+                self.parm_seen += 1;
+                if self.parm_seen <= self.config.ignore_parm {
+                    return Vec::new();
+                }
+            }
+            Some(Message::MatchReq { .. }) => {
+                self.match_seen += 1;
+                if self.match_seen <= self.config.ignore_match {
+                    return Vec::new();
+                }
+            }
+            // The validation: nothing is counted for a charger that does not answer.
+            Some(Message::ValidateReq { timer, .. }) if timer != 0 && matches!(self.config.validation, Validation::Silent) => return Vec::new(),
+            _ => {}
+        }
+        self.feed(Event::Frame(bytes))
     }
 
     /// How long the charger is to count toggles (the listening time of the second request), if
     /// it was asked to. The host waits that long, counts the toggles on the control pilot and
     /// calls [`Self::finish_validation`].
     pub fn validation_window_ms(&self) -> Option<u32> {
-        self.counting.map(|(_, ms)| ms)
+        self.counting
     }
 
     /// The listening time is over: answer with the number of toggles seen.
     pub fn finish_validation(&mut self, counted: u8) -> Vec<Vec<u8>> {
-        match self.counting.take() {
-            Some((ev, _)) => vec![self.frame(Message::ValidateCnf { toggle_num: counted, result: homeplug::validate_result::SUCCESS }, ev)],
-            None => Vec::new(),
+        let (Some(_), Some(timer)) = (self.counting.take(), self.toggle_timer.take()) else { return Vec::new() };
+        self.deadlines[timer.index()] = None;
+        // The window is over: the machine asks for the count, and the host has it.
+        let (mut out, read) = self.call(Event::TimerExpired(timer));
+        if read {
+            out.extend(self.call(Event::Toggles(Some(counted))).0);
         }
-    }
-
-    fn frame(&self, m: Message, dst: Mac) -> Vec<u8> {
-        let mut buf = vec![0u8; 256];
-        let n = m.write(dst, self.config.mac, &mut buf).expect("frame fits");
-        buf.truncate(n);
-        buf
+        out
     }
 }
