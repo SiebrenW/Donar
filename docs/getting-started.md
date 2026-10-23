@@ -16,7 +16,7 @@ The Linux-only tests create network namespaces and virtual Ethernet pairs and op
 Prerequisites: Docker (Docker Desktop, Colima or similar) in your `PATH`, and an editor with dev container support: VS Code with the Dev Containers extension, [Zed](https://zed.dev/docs/dev-containers), or the [`devcontainer` CLI](https://github.com/devcontainers/cli).
 
 1. Open the folder in your editor and accept the offer to open it in the container (VS Code: **Reopen in Container**; Zed: **Open in Container** in the prompt; CLI: `devcontainer up --workspace-folder .`).
-2. The first start builds the image from `.devcontainer/Dockerfile` (Rust, JDK, iproute2) and then runs `cargo xtask setup && cargo xtask vectors`. That downloads the ISO 15118-20 schemas, generates the codecs and builds the reference vectors. It takes a few minutes and needs network access.
+2. The first start builds the image from `.devcontainer/Dockerfile` (Rust, JDK, iproute2) and then runs `cargo xtask setup && cargo xtask vectors`. That downloads the schemas, regenerates the codecs (they are committed, so this changes nothing unless the generator or a schema did) and builds the reference vectors. It takes a few minutes and needs network access.
 3. In a terminal inside the container:
 
    ```sh
@@ -38,11 +38,11 @@ Prerequisites:
 One-time setup:
 
 ```sh
-cargo xtask setup     # download the schemas, generate the codecs
+cargo xtask setup     # download the schemas, regenerate the codecs
 cargo xtask vectors   # build the EXIficient reference vectors
 ```
 
-Both skip what is already there; `setup --force` fetches and generates again. The schemas, generated code and vectors are not in git (the schemas are ISO's; the rest is derived), so a fresh clone needs this step before `cargo test` works.
+Both skip what is already there; `setup --force` fetches and generates again. The generated codecs are in git (`crates/codec/*/src/generated/`; CI regenerates them and fails when they differ from the committed ones). The schemas and the vectors are not (the schemas are ISO's, the vectors are derived), so a fresh clone builds, but the codec tests that compare with the vectors need this step.
 
 ## Running the tests
 
@@ -147,6 +147,7 @@ standards/                         your copies of the standards (not in git)
 ## Troubleshooting
 
 - **`missing .../data/vectors/*.hex`**: run `cargo xtask setup && cargo xtask vectors`.
+- **`cargo xtask gen` changed files under `crates/codec`**: the generator or a schema changed; review the diff and commit it. A different `rustfmt` version can reformat the generated files; use the toolchain CI uses (stable).
 - **OpenSSL not found (macOS)**: `export OPENSSL_DIR=$(brew --prefix openssl@3)`.
 - **`cargo xtask linux-test` cannot reach Docker**: start your Docker VM (`colima start` or Docker Desktop). With Colima the repository must be below your home directory, which it shares by default.
 - **Namespace tests fail with "Operation not permitted"**: the container is not privileged; use `cargo xtask linux-test` or the dev container as configured.

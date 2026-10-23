@@ -75,7 +75,18 @@ pub fn check_revocation(chain: &[Vec<u8>], responses: &[Vec<u8>], trust: &[Vec<u
             if status.status != OcspCertStatus::GOOD {
                 add(&mut found, depth, "V2G20-2415", format!("the certificate status is {}, not good", if status.status == OcspCertStatus::REVOKED { "revoked" } else { "unknown" }));
             }
-            let (this, next) = (to_unix(status.this_update), status.next_update().map(to_unix));
+            // A time that cannot be read is a violation, not a panic: the response is the peer's.
+            let Some(this) = to_unix(status.this_update) else {
+                add(&mut found, depth, "RFC 6960", "thisUpdate cannot be read".into());
+                continue;
+            };
+            let next = match status.next_update().map(to_unix) {
+                Some(None) => {
+                    add(&mut found, depth, "RFC 6960", "nextUpdate cannot be read".into());
+                    continue;
+                }
+                other => other.flatten(),
+            };
             match next {
                 None => add(&mut found, depth, "V2G20-1021", "the response has no nextUpdate".into()),
                 Some(next) => {
@@ -98,17 +109,42 @@ pub fn check_revocation(chain: &[Vec<u8>], responses: &[Vec<u8>], trust: &[Vec<u
     found
 }
 
-/// Seconds since the epoch of a GeneralizedTime. OpenSSL prints it as `Oct 16 20:00:00 2026 GMT`
-/// and has no conversion, so that text is read back as an `Asn1Time`.
-fn to_unix(t: &openssl::asn1::Asn1GeneralizedTimeRef) -> i64 {
-    let text = t.to_string();
+/// Seconds since the epoch of a GeneralizedTime. OpenSSL prints it as `Oct 16 20:00:00 2026 GMT` (with fractional seconds
+/// `20:00:00.5` if the responder wrote them, which RFC 6960 forbids and which are dropped here) and has no conversion, so that
+/// text is read back as an `Asn1Time`. `None` for anything else.
+fn to_unix(t: &openssl::asn1::Asn1GeneralizedTimeRef) -> Option<i64> {
+    unix_of(&t.to_string())
+}
+
+fn unix_of(text: &str) -> Option<i64> {
     let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     let parts: Vec<&str> = text.split_whitespace().collect();
-    let month = months.iter().position(|m| *m == parts[0]).expect("month") + 1;
-    let day: u32 = parts[1].parse().expect("day");
-    let clock: Vec<&str> = parts[2].split(':').collect();
-    let asn1 = format!("{}{month:02}{day:02}{}{}{}Z", parts[3], clock[0], clock[1], clock[2]);
-    let time = openssl::asn1::Asn1Time::from_str_x509(&asn1).expect("time");
-    let diff = openssl::asn1::Asn1Time::from_unix(0).expect("epoch").diff(&time).expect("diff");
-    i64::from(diff.days) * 86_400 + i64::from(diff.secs)
+    let month = months.iter().position(|m| Some(m) == parts.first())? + 1;
+    let day: u32 = parts.get(1)?.parse().ok()?;
+    let clock: Vec<&str> = parts.get(2)?.split('.').next()?.split(':').collect();
+    let [hour, minute, second] = clock[..] else { return None };
+    let asn1 = format!("{}{month:02}{day:02}{hour}{minute}{second}Z", parts.get(3)?);
+    let time = openssl::asn1::Asn1Time::from_str_x509(&asn1).ok()?;
+    let diff = openssl::asn1::Asn1Time::from_unix(0).ok()?.diff(&time).ok()?;
+    Some(i64::from(diff.days) * 86_400 + i64::from(diff.secs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unix_of;
+
+    #[test]
+    fn the_time_text_of_openssl_is_read() {
+        assert_eq!(unix_of("Jan  1 00:00:00 1970 GMT"), Some(0));
+        assert_eq!(unix_of("Oct 16 20:00:00 2026 GMT"), Some(1_792_180_800));
+        // Fractional seconds are dropped.
+        assert_eq!(unix_of("Oct 16 20:00:00.123 2026 GMT"), Some(1_792_180_800));
+    }
+
+    #[test]
+    fn a_time_that_is_not_one_is_none_and_not_a_panic() {
+        for text in ["", "Oct", "Foo 16 20:00:00 2026 GMT", "Oct x 20:00:00 2026 GMT", "Oct 16 20:00 2026 GMT", "Oct 16 20:00:00", "Oct 16 99:00:00 2026 GMT"] {
+            assert_eq!(unix_of(text), None, "{text:?}");
+        }
+    }
 }

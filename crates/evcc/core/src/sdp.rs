@@ -22,13 +22,17 @@ pub struct Config {
     /// Accept a response whose security differs from the request. Off by default: an EV
     /// that asked for TLS should not silently fall back to plain TCP.
     pub accept_other_security: bool,
+    /// Accept a charger address that is not on the link. Off by default: the charger is found by a multicast on the cable and
+    /// uses a link-local address (or a unique local one), so a response that names a global address (or the loopback)
+    /// is forged or wrong, and the vehicle would connect to it through whatever route it has.
+    pub accept_other_address: bool,
     pub request_interval_ms: u32,
     pub max_requests: u8,
 }
 
 impl Config {
     pub const fn new(security: Security) -> Self {
-        Self { security, accept_other_security: false, request_interval_ms: 250, max_requests: 50 }
+        Self { security, accept_other_security: false, accept_other_address: false, request_interval_ms: 250, max_requests: 50 }
     }
 }
 
@@ -117,8 +121,14 @@ impl Client {
         let response = Response::from_payload(frame.payload).ok()?;
         let security_ok = response.security == self.config.security || self.config.accept_other_security;
         // UDP is only allowed for SDP itself, never for V2G messages.
-        (response.transport == Transport::Tcp && response.port != 0 && security_ok).then_some(response)
+        let address_ok = is_on_link(response.address) || self.config.accept_other_address;
+        (response.transport == Transport::Tcp && response.port != 0 && security_ok && address_ok).then_some(response)
     }
+}
+
+/// A link-local (`fe80::/10`) or unique local (`fc00::/7`) unicast address: one that is reached over the cable.
+fn is_on_link(address: [u8; 16]) -> bool {
+    (address[0] == 0xfe && address[1] & 0xc0 == 0x80) || address[0] & 0xfe == 0xfc
 }
 
 #[cfg(test)]
@@ -138,6 +148,35 @@ mod tests {
         let mut buf = [0u8; 32];
         let n = r.to_datagram(&mut buf).unwrap();
         (buf, n)
+    }
+
+    #[test]
+    fn only_an_address_on_the_link_is_accepted() {
+        let mut tx = [0u8; 16];
+        let mut try_address = |address: [u8; 16], accept_other_address: bool| {
+            let mut c = Client::new(Config { accept_other_address, ..Config::new(Security::Tls) });
+            c.handle(Event::Start, &mut tx).unwrap();
+            let (buf, n) = datagram(&Response { address, ..response(Security::Tls) });
+            c.handle(Event::Datagram(&buf[..n]), &mut tx).unwrap().outcome.is_some()
+        };
+        let mut address = [0u8; 16];
+        let mut with = |first: u8, second: u8| {
+            address[0] = first;
+            address[1] = second;
+            address[15] = 1;
+            address
+        };
+        assert!(try_address(with(0xfe, 0x80), false), "link-local");
+        assert!(try_address(with(0xfe, 0xbf), false), "the end of fe80::/10");
+        assert!(try_address(with(0xfd, 0x12), false), "unique local");
+        assert!(!try_address(with(0xfe, 0xc0), false), "site-local is not on the link");
+        assert!(!try_address(with(0x20, 0x01), false), "global");
+        assert!(!try_address(with(0xff, 0x02), false), "multicast");
+        let mut loopback = [0u8; 16];
+        loopback[15] = 1;
+        assert!(!try_address(loopback, false), "loopback");
+        assert!(try_address(loopback, true), "unless the host says so (a test on one machine)");
+        assert!(try_address(with(0x20, 0x01), true));
     }
 
     #[test]

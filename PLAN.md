@@ -132,7 +132,7 @@ The core is a pure `no_std` state machine driven by events (received bytes, time
 
 ### Codec generation and verification
 
-- `exi-gen` reads the XSDs and writes schema-informed, `no_std`, arena-based EXI codecs. The XSDs and the generated code are gitignored (ISO and DIN copyright); `cargo xtask setup` fetches and generates. Generation is hash-cached.
+- `exi-gen` reads the XSDs and writes schema-informed, `no_std`, arena-based EXI codecs. The XSDs are gitignored (ISO and DIN copyright) and `cargo xtask setup` fetches them; the generated code is committed, for repeatability and review, and CI regenerates it and fails when it differs. Generation is skipped when the output is newer than the schemas.
 - Where the XSD bounds a list or string the bound is the validation limit; where it is unbounded the limit is a named constant.
 - EXIficient is the oracle: reference vectors byte for byte in both directions (`cargo xtask vectors`, `cargo xtask grammars` for the derived grammar), plus round-trip and bit-flip tests.
 - Facts the codecs depend on (all verified against EXIficient):
@@ -156,3 +156,13 @@ Cargo workspace, everything under `crates/`; `data/` (downloaded schemas, vector
 - Scenarios are TOML files (parameters, participants, pass criteria); participants run as separate processes in network namespaces; only creating namespaces runs as root, everything else as the invoking user, and no root-owned artifacts are left behind. End-to-end tests are thin wrappers around scenarios; message-level fault tests stay in-process and run anywhere.
 - Package names are kebab-case and independent of the directory; files and modules snake_case; standard names are not repeated in file names.
 - Cite requirement ids in comments only when checked against the standard text.
+
+## Audit of 2026-10-24
+
+A read of the whole repository for bugs, risks and load (the findings, and what was decided). Fixed: the SDP response is accepted only with an address on the link (link-local or unique local; `accept_other_address` for a test on the loopback), a stapled OCSP response with a time that cannot be read is a violation and no longer a panic, and the generated codecs are committed (CI regenerates and compares) instead of fetched and generated on every clone. Left, because they only concern the test tools (the simulators and the web page), not the product:
+
+- The simulator's network key is a constant (`[0x5A; 16]`, `evse_sim::slac::Fixed`), and with `slac_modem = true` it is set on a real modem. A charger needs a random key for every match (V2G3-A09-92); the machine asks a `Random` for it, and the simulator's is fixed so that tests know it. A real charger host brings its own.
+- `Serve::step` sets the key on the modem before it returns the frames, and the modem driver keeps 4 s between two keys; a match that follows a key within seconds (a join failure and an immediate retry) has its confirmation delayed by the sleep.
+- The web page has no login and does not look at the `Host` header; the scenario settings carry file paths. It listens on loopback by default and is for tests.
+- The simulator's SLAC loop ignores socket errors, and the control socket buffers a line without a limit.
+- The charger machine takes `CM_ATTEN_PROFILE.IND` from any source address. SLAC is direct modem to modem; the profile is not secret.
