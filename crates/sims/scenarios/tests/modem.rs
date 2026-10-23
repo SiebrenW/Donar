@@ -348,3 +348,65 @@ fn an_offline_indication_starts_the_debounce_and_an_online_one_ends_it() {
     assert_eq!(took, None);
     assert_eq!(acks, 2);
 }
+
+#[test]
+fn a_chargers_modem_is_up_when_the_link_status_says_so_and_never_by_settle_time_or_network_information() {
+    let Some(mut sb) = sandbox() else { return };
+    let (ev, charger) = (sb.node("ev").unwrap(), sb.node("modem").unwrap());
+    let (ev, charger) = sb.connect(&ev, &charger).unwrap();
+    let (ready, up) = std::sync::mpsc::channel();
+    // The key, then the status: no link, no link, a link. The network information is answered with a joined network
+    // (which would make a station's link): not asked.
+    let modem = std::thread::spawn(move || charger.run_in(|| fake_modem(4, homeplug::modem::SET_KEY_DONE, 0, Some(2), ready)).unwrap());
+    up.recv().unwrap();
+    ev.run_in(|| {
+        let mut driver = QcaModem::open(INTERFACE).unwrap().with_settle(Duration::from_millis(1)).as_coordinator();
+        driver.set_key([1; 7], [2; 16]).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!driver.link_up().unwrap(), "no link yet, though the settle time is over");
+        assert!(!driver.link_up().unwrap());
+        assert!(driver.link_up().unwrap());
+    })
+    .unwrap();
+    let got = modem.join().unwrap();
+    assert_eq!((got.statuses, got.infos), (3, 0));
+}
+
+#[test]
+fn a_chargers_modem_is_up_when_it_indicates_the_link() {
+    let wire = Wire { script: vec![false], indications: vec![(50, homeplug::modem::HAR_LINK_ONLINE)], run_for: Duration::from_millis(600) };
+    let Some(mut sb) = sandbox() else { return };
+    let (ev, charger) = (sb.node("ev").unwrap(), sb.node("modem").unwrap());
+    let (ev, charger) = sb.connect(&ev, &charger).unwrap();
+    let (ready, up) = std::sync::mpsc::channel();
+    let modem = std::thread::spawn(move || charger.run_in(|| scripted_modem(wire, ready)).unwrap());
+    up.recv().unwrap();
+    ev.run_in(|| {
+        let mut driver = QcaModem::open(INTERFACE).unwrap().as_coordinator();
+        driver.set_key([1; 7], [2; 16]).unwrap();
+        assert!(!driver.link_up().unwrap(), "nothing indicated yet");
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(driver.link_up().unwrap());
+    })
+    .unwrap();
+    assert_eq!(modem.join().unwrap(), 1, "the indication is acknowledged");
+}
+
+#[test]
+fn a_chargers_modem_is_checked_to_coordinate_its_network() {
+    let Some(mut sb) = sandbox() else { return };
+    let (ev, charger) = (sb.node("ev").unwrap(), sb.node("modem").unwrap());
+    let (ev, charger) = sb.connect(&ev, &charger).unwrap();
+    let (ready, up) = std::sync::mpsc::channel();
+    // The first answer is of a modem alone in its network (it leads it), the second of one that joined another.
+    let modem = std::thread::spawn(move || charger.run_in(|| fake_modem(3, homeplug::modem::SET_KEY_DONE, 1, None, ready)).unwrap());
+    up.recv().unwrap();
+    ev.run_in(|| {
+        let mut driver = QcaModem::open(INTERFACE).unwrap();
+        driver.set_key([1; 7], [2; 16]).unwrap();
+        assert!(driver.coordinates([1; 7]).unwrap());
+        assert!(!driver.coordinates([1; 7]).unwrap());
+    })
+    .unwrap();
+    modem.join().unwrap();
+}

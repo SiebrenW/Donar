@@ -146,7 +146,7 @@ fn run(args: &Args) -> io::Result<bool> {
         None => None,
     };
     if args.slac || settings.slac_responder {
-        start_slac(&args.interface, settings.slac.clone(), settings.control_pilot_file.clone())?;
+        start_slac(&args.interface, settings.slac.clone(), settings.slac_modem, settings.control_pilot_file.clone())?;
     }
     let ifindex = evcc_linux::sdp::interface_index(&args.interface)?;
     let udp = UdpSocket::bind((Ipv6Addr::UNSPECIFIED, v2gtp::sdp::SDP_PORT))?;
@@ -228,59 +228,65 @@ fn run(args: &Args) -> io::Result<bool> {
 }
 
 #[cfg(target_os = "linux")]
-fn start_slac(interface: &str, config: evse_sim::slac::Config, pilot: Option<String>) -> io::Result<()> {
-    use evcc_linux::slac::PacketSocket;
+fn start_slac(interface: &str, config: evse_sim::slac::Config, modem: bool, pilot: Option<String>) -> io::Result<()> {
+    use evcc_linux::slac::{NoModem, PacketSocket, QcaModem};
+    use evse_sim::slac::{Evse, Serve};
     let socket = PacketSocket::open(interface)?;
-    let mut evse = evse_sim::slac::Evse::new(evse_sim::slac::Config {
-        mac: socket.mac(),
-        ..config
-    });
+    let evse = Evse::new(evse_sim::slac::Config { mac: socket.mac(), ..config });
+    if modem {
+        let modem = QcaModem::open(interface)?.as_coordinator();
+        eprintln!("slac: modem {}", modem.version()?);
+        slac_loop(socket, Serve::new(evse, modem), pilot);
+    } else {
+        slac_loop(socket, Serve::new(evse, NoModem), pilot);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn slac_loop<M: evcc_linux::slac::Modem + Send + 'static>(socket: evcc_linux::slac::PacketSocket, mut serve: evse_sim::slac::Serve<M>, pilot: Option<String>) {
+    use std::time::Duration;
     std::thread::spawn(move || {
         let mut buf = [0u8; 2048];
         let mut matched = false;
         let start = std::time::Instant::now();
         let now_ms = move || start.elapsed().as_millis() as u64;
+        let toggles = |pilot: &Option<String>| pilot.as_deref().and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len());
         loop {
-            // Wait for a frame, but not past the next timer of the machine.
-            let wait = evse.next_deadline().map_or(100, |d| d.saturating_sub(now_ms()).clamp(1, 100));
-            let received = socket.recv(&mut buf, Some(std::time::Duration::from_millis(wait))).ok().flatten();
-            evse.at(now_ms());
-            let mut frames = evse.poll(now_ms());
-            if let Some(n) = received {
-                // Toggles are counted from here on (the file may hold those of an earlier run).
-                let before = pilot.as_deref().and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len());
-                frames.extend(evse.handle(&buf[..n]));
-                for frame in frames.drain(..) {
-                    let _ = socket.send(&frame);
-                }
-                // The vehicle asked for the validation by BCB-Toggle: listen, count, answer.
-                if let Some(ms) = evse.validation_window_ms() {
-                    std::thread::sleep(std::time::Duration::from_millis(ms.into()));
-                    let after = pilot.as_deref().and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len());
-                    eprintln!("slac: validation, {} toggles counted", after - before);
-                    evse.at(now_ms());
-                    for frame in evse.finish_validation((after - before).min(255) as u8) {
-                        let _ = socket.send(&frame);
-                    }
-                }
-            }
-            for frame in frames {
+            // Wait for a frame, but not past the next timer of the machine (the modem's link is asked about every 100 ms).
+            let wait = serve.next_deadline().map_or(100, |d| d.saturating_sub(now_ms()).clamp(1, 100));
+            let received = socket.recv(&mut buf, Some(Duration::from_millis(wait))).ok().flatten();
+            // Toggles are counted from here on (the file may hold those of an earlier run).
+            let before = toggles(&pilot);
+            for frame in serve.step(now_ms(), received.map(|n| &buf[..n])) {
                 let _ = socket.send(&frame);
             }
-            for notice in evse.notices.drain(..) {
+            // The vehicle asked for the validation by BCB-Toggle: listen, count, answer.
+            if let Some(ms) = serve.evse.validation_window_ms() {
+                std::thread::sleep(Duration::from_millis(ms.into()));
+                let counted = toggles(&pilot) - before;
+                eprintln!("slac: validation, {counted} toggles counted");
+                serve.evse.at(now_ms());
+                for frame in serve.evse.finish_validation(counted.min(255) as u8) {
+                    let _ = socket.send(&frame);
+                }
+            }
+            for notice in serve.evse.notices.drain(..) {
                 eprintln!("slac: {notice:?}");
             }
-            if !matched && matches!(evse.state(), evse_sim::slac::State::Matched { .. }) {
+            for error in serve.errors.drain(..) {
+                eprintln!("slac: {error}");
+            }
+            if !matched && matches!(serve.evse.state(), evse_sim::slac::State::Matched { .. }) {
                 matched = true;
                 eprintln!("slac: matched");
             }
         }
     });
-    Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]
-fn start_slac(_interface: &str, _config: evse_sim::slac::Config, _pilot: Option<String>) -> io::Result<()> {
+fn start_slac(_interface: &str, _config: evse_sim::slac::Config, _modem: bool, _pilot: Option<String>) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "SLAC needs Linux",
