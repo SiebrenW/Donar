@@ -20,11 +20,11 @@ Donar (the project was called `evcc-rs`) is an open-source toolkit for the vehic
 
 ## Commands
 
-A fresh clone does not build the codecs: the schemas, generated code and EXIficient vectors are gitignored (`data/`, `standards/`, `crates/codec/*/src/generated/`).
+The generated codecs are committed (`crates/codec/*/src/generated/`), so a fresh clone builds. The schemas and the EXIficient vectors are gitignored (`data/`, `standards/`): the tests that compare with the vectors need `cargo xtask setup && cargo xtask vectors`, and so does a change to the generator.
 
 ```sh
 cargo xtask lint             # clippy with -D warnings (also in the container on a Mac)
-cargo xtask setup            # download the schemas, generate the codecs (needs curl; --force regenerates)
+cargo xtask setup            # download the schemas, regenerate the codecs (needs curl; --force regenerates); commit what changes
 cargo xtask vectors          # reference vectors with EXIficient (needs a JDK)
 cargo xtask grammars         # diff the derived grammar with EXIficient's
 cargo test --workspace       # everything that runs on this machine (the Linux-only tests are cfg'd out on macOS)
@@ -47,7 +47,7 @@ cargo xtask web [PORT]          # the web UI (evcc-web) in the container, defaul
 
 **Control pilot.** `crates/pilot` (`control-pilot`, `no_std`) holds the readings (state A to F, PWM) and the rules for what a change means to the vehicle (`EvWatch`) and to the charger (`EvseWatch`); the host watches the pilot itself (fast path) with the `Guard` the machines publish in `Step::pilot` (armed and disarmed as the session goes) and reports every change with `Event::Pilot`. An emergency ends the session at once and sends nothing; the host does the hardware part itself. The simulators share a pilot "wire" (`evcc_linux::pilot::Wire`, two files in the artifacts directory) which the scenario runner sets up for `evse-sim` scenarios.
 
-**Codecs are generated.** `crates/codec/exi-gen` reads the XSDs (`data/schemas`) and writes `no_std` schema-informed EXI codecs into `crates/codec/{app-protocol,din70121,iso15118-2,iso15118-20}/src/generated/` (via `cargo xtask gen`; runs `rustfmt`). Never edit generated files; change the generator. The runtime is `crates/codec/exi`. EXIficient is the oracle: `cargo xtask vectors` makes byte-exact reference vectors (`data/vectors/*.hex`, inputs in `crates/xtask/vectors/*.xml` + manifest) that the codec tests round-trip. Message signatures use hand-written `signature` modules (xmldsig is not modelled by the generator) over EXI *fragments*. `homeplug` and `v2gtp` are small hand-written codecs.
+**Codecs are generated.** `crates/codec/exi-gen` reads the XSDs (`data/schemas`) and writes `no_std` schema-informed EXI codecs into `crates/codec/{app-protocol,din70121,iso15118-2,iso15118-20}/src/generated/` (via `cargo xtask gen`; runs `rustfmt`). Never edit generated files; change the generator, run `cargo xtask gen --force` and commit the result (CI regenerates and fails when the committed files differ). The runtime is `crates/codec/exi`. EXIficient is the oracle: `cargo xtask vectors` makes byte-exact reference vectors (`data/vectors/*.hex`, inputs in `crates/xtask/vectors/*.xml` + manifest) that the codec tests round-trip. Message signatures use hand-written `signature` modules (xmldsig is not modelled by the generator) over EXI *fragments*. `homeplug` and `v2gtp` are small hand-written codecs.
 
 **Simulators and test harness** (`crates/sims`): `evcc-sim` and `evse-sim` are ordinary commands with TOML settings (the vehicle/charger cores behind sim `Ev`/`Secc` implementations, with fault injection); `sandbox` makes Linux network namespaces; `scenarios` runs a scenario TOML (`crates/sims/scenarios/scenarios/*.toml`, format documented in `scenario.rs`) as two processes in two namespaces, optionally against an external partner (`Kind::Iso15118Python`, `Kind::PySlac`; partner setup in `partners.rs`, venvs at `/opt/iso15118` and `/opt/pyslac` in the container); `web` is the axum UI (one embedded `src/index.html`, compiled into the binary, so rebuild after editing it); `control` is the live-control socket protocol. Every scenario file needs an entry in `tests/scenarios.rs` (a test checks this). Each run captures the cable to `capture.pcap` in its artifacts (`tcpdump`, in the container image) and the vehicle sim discloses its TLS secrets as UDP packets for dSPACE V2Gshark; keep that working when touching the runner or the TLS setup.
 

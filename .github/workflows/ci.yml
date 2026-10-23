@@ -28,6 +28,12 @@ jobs:
       - uses: ./.github/actions/prepare
         with:
           vectors: "false"
+      - name: Generated codecs are the committed ones
+        shell: bash
+        run: |
+          cargo xtask gen --force
+          git status --short -- crates/codec
+          test -z "$(git status --porcelain -- crates/codec)"
       - name: Clippy
         shell: bash
         run: |

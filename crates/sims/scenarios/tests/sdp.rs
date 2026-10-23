@@ -27,7 +27,8 @@ fn charger(security: Security, ignore: u32) -> (std::net::SocketAddr, thread::Jo
 }
 
 fn config(security: Security) -> evcc_core::sdp::Config {
-    evcc_core::sdp::Config { request_interval_ms: 40, ..evcc_core::sdp::Config::new(security) }
+    // The test platform runs on the loopback.
+    evcc_core::sdp::Config { request_interval_ms: 40, accept_other_address: true, ..evcc_core::sdp::Config::new(security) }
 }
 
 #[test]

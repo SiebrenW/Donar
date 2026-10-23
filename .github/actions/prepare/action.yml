@@ -16,7 +16,7 @@ runs:
         targets: ${{ inputs.targets }}
     - uses: Swatinem/rust-cache@v2
       with:
-        # The xtask binary and the generator are part of every build; the schemas and the generated code are not committed.
+        # The xtask binary and the generator are part of every build; the schemas are not committed, the generated code is.
         shared-key: ${{ runner.os }}
     - uses: actions/setup-java@v4
       if: inputs.vectors == 'true'
