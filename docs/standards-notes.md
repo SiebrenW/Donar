@@ -52,6 +52,11 @@ No entries yet. These were read less closely than ISO 15118-20; that is not evid
 | `CM_VALIDATE` | The MMTYPEs (0x6044, 0x6045) are left to the HomePlug specification. | Those of the open HomePlug implementations. Unchecked against hardware. |
 | Network id and key on the modem | The NID octet layout of `CM_SET_KEY` and the vendor `VS_NW_INFO` answer are not in the standard. | The layout was read from captures on a QCA7005; a lone modem was checked, a joined modem was not. |
 | Attenuation thresholds (10 dB direct, 20 dB indirect) | They assume a modem at the plug. Wiring between the plug and the modem adds attenuation that is no part of the path to the charger, per carrier group. The standard has no correction. | Configurable per group in the vehicle and the simulated charger (`attenuation_correction_db`). The transmit level (how loud the modem sounds) is the modem's and not configured. |
+| Repeated `CM_SLAC_MATCH.REQ` | V2G3-A09-97 asks the charger to answer a repeated request from the same vehicle again; V2G3-A09-118 says that once "Matched" no further SLAC message is sent or processed. | The repeat is answered, nothing else is processed. |
+| `Timer` of `CM_VALIDATE.REQ` | Table A.6 gives 0x00 = 100 ms, 0x01 = 200 ms; Table A.5 gives 0x00 in the first request as "step 1" (V2G3-A09-75 tells the two apart by it). | 0 is step 1, any other value n is n x 100 ms (both sides). |
+| V2G3-M07-02 | The charger applies 5 % only when the module "is ready for communication (receive first SLAC message)", which it cannot know before the vehicle has seen the 5 %. | The module is ready when it answers its host (`T_conn_max_comm`); the oscillator is the host's. |
+| `TT_EVSE_SLAC_init` after a failed match | V2G3-A09-12 starts it with the trigger only; the vehicle repeats a failed run for `TT_matching_repetition` (10 s) from its own trigger. | The window runs from the trigger and is not restarted by a failed process; a vehicle that retries after it ran out is not answered. |
+| Measurement without a modem profile | V2G3-A09-43 has the charger "receive and process" `CM_ATTEN_PROFILE.IND`; a host without a modem that reports it (the simulator) has no profile. | The profiles are averaged when they come (V2G3-A09-19); without any, `Config::attenuation` stands in. |
 
 ## Other implementations that deviate from the standard
 

@@ -6,6 +6,7 @@ publish = false
 description = "Sans-IO EVSE (SECC) side of ISO 15118-20: the charger's session machine behind the `Secc` trait."
 
 [dependencies]
+homeplug = { path = "../../codec/homeplug" }
 v2gtp = { path = "../../codec/v2gtp" }
 iso15118-20 = { path = "../../codec/iso15118-20" }
 app-protocol = { path = "../../codec/app-protocol" }

@@ -341,6 +341,7 @@ dependencies = [
  "din70121",
  "evcc-core",
  "exi",
+ "homeplug",
  "iso15118-2",
  "iso15118-20",
  "v2gtp",

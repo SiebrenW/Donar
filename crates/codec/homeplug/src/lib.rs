@@ -35,6 +35,9 @@ pub mod mmtype {
     /// numbering that open implementations use; ISO 15118-3 only refers to the HomePlug spec.
     pub const VALIDATE_REQ: u16 = 0x6044;
     pub const VALIDATE_CNF: u16 = 0x6045;
+    /// CM_ATTEN_PROFILE.IND (HomePlug Green PHY 11.5.60): the EVSE's modem hands the host the profile of one sound.
+    /// The base is 0x6084; the message never goes over the powerline.
+    pub const ATTEN_PROFILE_IND: u16 = 0x6086;
     pub const SLAC_PARM_REQ: u16 = 0x6064;
     pub const SLAC_PARM_CNF: u16 = 0x6065;
     pub const START_ATTEN_CHAR_IND: u16 = 0x606A;
@@ -76,6 +79,9 @@ pub enum Message {
     ValidateReq { timer: u8, result: u8 },
     /// The answer: `toggle_num` is 0 in the first and the number of toggles seen in the second.
     ValidateCnf { toggle_num: u8, result: u8 },
+    /// The profile the charger's modem measured from one M-Sound of `pev` (HomePlug Green PHY Table 11-159), for the host. Not
+    /// sent over the powerline.
+    AttenProfileInd { pev: Mac, groups: [u8; GROUPS] },
     /// Configures the local modem (Table A.8); not sent over the power line.
     SetKeyReq { cco_capability: u8, nid: [u8; 7], nmk: [u8; 16] },
     SetKeyCnf { result: u8 },
@@ -133,6 +139,7 @@ impl Message {
             Message::MatchCnf { .. } => mmtype::SLAC_MATCH_CNF,
             Message::ValidateReq { .. } => mmtype::VALIDATE_REQ,
             Message::ValidateCnf { .. } => mmtype::VALIDATE_CNF,
+            Message::AttenProfileInd { .. } => mmtype::ATTEN_PROFILE_IND,
             Message::SetKeyReq { .. } => mmtype::SET_KEY_REQ,
             Message::SetKeyCnf { .. } => mmtype::SET_KEY_CNF,
         }
@@ -208,6 +215,12 @@ impl Message {
                 out[1] = *toggle_num;
                 out[2] = *result;
                 3
+            }
+            Message::AttenProfileInd { pev, groups } => {
+                out[0..6].copy_from_slice(pev);
+                out[6] = GROUPS as u8;
+                out[8..8 + GROUPS].copy_from_slice(groups);
+                8 + GROUPS
             }
             Message::SetKeyReq { cco_capability, nid, nmk } => {
                 out[0] = 0x01; // key type NMK
@@ -295,6 +308,10 @@ impl Message {
             // No application and security type here: signal type 0 (PEV S2 toggles), then two fields.
             mmtype::VALIDATE_REQ => (b.len() >= 3 && b[0] == 0).then(|| Message::ValidateReq { timer: b[1], result: b[2] }),
             mmtype::VALIDATE_CNF => (b.len() >= 3 && b[0] == 0).then(|| Message::ValidateCnf { toggle_num: b[1], result: b[2] }),
+            mmtype::ATTEN_PROFILE_IND => {
+                (b.len() >= 8 + GROUPS && b[6] as usize == GROUPS).then_some(())?;
+                Some(Message::AttenProfileInd { pev: mac(b), groups: b[8..8 + GROUPS].try_into().unwrap() })
+            }
             mmtype::SET_KEY_REQ => {
                 (b.len() >= 38 && b[0] == 0x01 && b[21] == 0x01).then_some(())?;
                 Some(Message::SetKeyReq { cco_capability: b[13], nid: b[14..21].try_into().unwrap(), nmk: b[22..38].try_into().unwrap() })
@@ -325,6 +342,7 @@ mod tests {
     #[test]
     fn every_message_survives_a_round_trip() {
         round_trip(Message::ParmReq { run_id: RUN });
+        round_trip(Message::AttenProfileInd { pev: EV, groups: std::array::from_fn(|g| g as u8) });
         round_trip(Message::ValidateReq { timer: 22, result: validate_result::READY });
         round_trip(Message::ValidateCnf { toggle_num: 3, result: validate_result::SUCCESS });
         round_trip(Message::ParmCnf { num_sounds: 10, time_out: 6, forwarding_sta: EV, run_id: RUN });

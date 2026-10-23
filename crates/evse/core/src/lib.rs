@@ -23,6 +23,7 @@ pub mod din;
 pub mod iso2;
 pub mod secc;
 pub mod session;
+pub mod slac;
 
 pub use secc::{Action, DcLoopAnswer, AcLoopAnswer, MobilityNeeds, Progress, Secc};
 pub use session::{Buffers, Session};
