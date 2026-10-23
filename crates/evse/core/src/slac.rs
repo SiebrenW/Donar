@@ -16,8 +16,9 @@
 //!   ([`Config::attenuation_correction_db`]); a host whose modem reports no profile gives a fixed
 //!   [`Config::attenuation`];
 //! * a vehicle that sends no sound at all gets a `CM_ATTEN_CHAR.IND` with `NumSounds` 0 (HomePlug Green PHY 11.5.47);
-//! * the validation window is the `Timer` field of the second request times 100 ms, where the table of
-//!   the standard says 0x00 is 100 ms and, in the first request, 0x00 means "step 1" (the vehicle side reads it the same way);
+//! * the validation window is the `Timer` field of the second request plus one, times 100 ms (HomePlug Green PHY Table
+//!   11-148 and ISO 15118-3 Table A.6: 0x00 is 100 ms); a toggle sequence takes 600 ms or more, so a 0x00 is the first step again
+//!   (V2G3-A09-77) and is told by the state;
 //! * the key is drawn at every return to "Unmatched" and set on the modem when the vehicle is answered with it, or
 //!   at once when the network is left (V2G3-A09-121: "reset the NMK").
 //!
@@ -53,8 +54,10 @@ pub struct Config {
     pub retries: u8,
     /// Number of sounds announced in `CM_SLAC_PARM.CNF` (`C_EV_match_MNBC`).
     pub sounds: u8,
-    /// The attenuation (dB) of every group when the modem reports no profile.
-    pub attenuation: u8,
+    /// The attenuation (dB) of every group when the modem reports no profile: for a host without a modem that measures (the
+    /// simulator). `None` reports the largest attenuation and no sounds, which a vehicle ignores; a charger that claimed to be
+    /// close because its modem failed to report would be matched with a vehicle on the next socket.
+    pub attenuation: Option<u8>,
     /// Correction (dB) added to the attenuation of each group before it is reported: the modem measures through the wiring
     /// to the plug, which is no part of the path to the vehicle (negative where it costs).
     pub attenuation_correction_db: [i8; GROUPS],
@@ -103,7 +106,7 @@ impl Config {
         link_ready_ms: 200,
         retries: 2,
         sounds: 10,
-        attenuation: 5,
+        attenuation: None,
         attenuation_correction_db: [0; GROUPS],
         validation: Validation::Ready,
         step_ef_ms: 4_000,
@@ -440,7 +443,12 @@ impl<R: Random> Machine<R> {
                 _ => Step::default(),
             },
             Event::LinkError => self.on_error(),
-            Event::LinkTerminate => self.leave(),
+            // Nothing more is matched until the pilot starts the next process (V2G3-A09-121: the module is "Unmatched" and the
+            // vehicle has been told to end the session).
+            Event::LinkTerminate => {
+                self.init_open = false;
+                self.leave()
+            }
             Event::LinkPause => {
                 if let Some(m) = self.matched.as_mut() {
                     m.paused = true;
@@ -765,13 +773,27 @@ impl<R: Random> Machine<R> {
         if p.phase != Phase::Sounding {
             return Step::default();
         }
-        // The profiles the modem gave are averaged (V2G3-A09-19); without any, the fixed measurement stands in.
-        let counted = if p.profiles > 0 { p.profiles } else { p.sounds };
-        for (g, out) in p.report.iter_mut().enumerate() {
-            let mean = if p.profiles > 0 { i32::from(p.sum[g] / u16::from(p.profiles)) } else { i32::from(fixed) };
-            *out = (mean + i32::from(corrections[g])).clamp(0, 255) as u8;
+        // The profiles the modem gave are averaged (V2G3-A09-19, rounded); without any, the fixed measurement stands in, or the
+        // largest attenuation and no sounds (V2G3-A09-36: a vehicle ignores that report).
+        match (p.profiles, fixed) {
+            (0, None) => {
+                p.report = [255; GROUPS];
+                p.reported_sounds = 0;
+            }
+            (0, Some(fixed)) => {
+                for (g, out) in p.report.iter_mut().enumerate() {
+                    *out = (i32::from(fixed) + i32::from(corrections[g])).clamp(0, 255) as u8;
+                }
+                p.reported_sounds = p.sounds;
+            }
+            (n, _) => {
+                for (g, out) in p.report.iter_mut().enumerate() {
+                    let mean = (p.sum[g] + u16::from(n) / 2) / u16::from(n);
+                    *out = (i32::from(mean) + i32::from(corrections[g])).clamp(0, 255) as u8;
+                }
+                p.reported_sounds = n;
+            }
         }
-        p.reported_sounds = counted;
         p.phase = Phase::Reported { left: retries };
         let mut step = self.send_report(s, tx).cancel(Timer::Mnbc(s)).arm(Timer::Response(s), self.config.response_ms);
         step = step.arm(Timer::Session(s), self.config.session_ms);
@@ -842,7 +864,8 @@ impl<R: Random> Machine<R> {
         if !matches!(phase, Phase::Validating { .. }) {
             return Step::default();
         }
-        let window = u32::from(timer) * 100;
+        // `Timer` + 1 units of 100 ms (HomePlug Green PHY Table 11-148). 0 is the first step, which the vehicle repeats.
+        let window = (u32::from(timer) + 1) * 100;
         self.processes[usize::from(s)].as_mut().unwrap().phase = Phase::Counting;
         let mut out = step.cancel(Timer::Sequence(s)).arm(Timer::Toggle(s), window);
         out.toggles = Some(Toggles::Start { ms: window });

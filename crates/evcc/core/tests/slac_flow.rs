@@ -18,6 +18,8 @@ struct Result {
     set_key: Vec<([u8; 7], [u8; 16])>,
     /// The control pilot toggles the EV asked for, with the time.
     toggles: Vec<(u64, Toggle)>,
+    /// Where the validation requests went.
+    validate_to: Vec<Mac>,
 }
 
 /// What the control pilot shows the charger: the toggles the EV made, plus `offset`.
@@ -60,6 +62,7 @@ fn drive_with(config: Config, evses: &mut [Evse], link_up_after_ms: Option<u64>,
     let mut sent = Vec::new();
     let mut set_key = Vec::new();
     let mut toggles: Vec<(u64, Toggle)> = Vec::new();
+    let mut validate_to = Vec::new();
     // Chargers counting toggles: (time the window ends, charger index).
     let mut counting: Vec<(u64, usize)> = Vec::new();
     let mut event = Event::Start { mac: EV, run_id: RUN };
@@ -74,7 +77,11 @@ fn drive_with(config: Config, evses: &mut [Evse], link_up_after_ms: Option<u64>,
         }
         if let Some(n) = step.send {
             let frame = tx[..n].to_vec();
-            sent.push((now, Frame::parse(&frame).unwrap().message().unwrap()));
+            let parsed = Frame::parse(&frame).unwrap();
+            if matches!(parsed.message(), Some(Message::ValidateReq { .. })) {
+                validate_to.push(parsed.dst);
+            }
+            sent.push((now, parsed.message().unwrap()));
             for (i, evse) in evses.iter_mut().enumerate() {
                 queue.extend(evse.handle(&frame));
                 if let Some(ms) = evse.validation_window_ms()
@@ -92,7 +99,7 @@ fn drive_with(config: Config, evses: &mut [Evse], link_up_after_ms: Option<u64>,
             link = link_up_after_ms.map(|d| now + d);
         }
         if let Some(outcome) = step.outcome {
-            return Result { outcome, elapsed_ms: now, sent, set_key, toggles };
+            return Result { outcome, elapsed_ms: now, sent, set_key, toggles, validate_to };
         }
         if let Some(f) = queue.pop_front() {
             frame_storage = f;
@@ -315,12 +322,22 @@ fn an_ambiguous_charger_is_validated_by_toggling_the_control_pilot_and_then_matc
     let [(at, toggle)] = r.toggles[..] else { panic!("{:?}", r.toggles) };
     assert!((1..=3).contains(&toggle.count) && toggle.state_ms == 300);
     // The listening time covers the 2n+1 states of the sequence and is at most 3.5 s.
-    assert!(u32::from(reqs[1].1) * 100 >= (2 * u32::from(toggle.count) + 1) * 300);
-    assert!(reqs[1].1 <= 35);
+    // (the field is the time in units of 100 ms less one: 0x00 is 100 ms).
+    assert!((u32::from(reqs[1].1) + 1) * 100 >= (2 * u32::from(toggle.count) + 1) * 300);
+    assert!(reqs[1].1 <= 34);
     assert_eq!(at, reqs[1].0);
     // The match request follows the answer, which came when the listening time was over.
     let match_at = r.sent.iter().find(|(_, m)| m.mmtype() == mmtype::SLAC_MATCH_REQ).unwrap().0;
-    assert_eq!(match_at, reqs[1].0 + u64::from(reqs[1].1) * 100);
+    assert_eq!(match_at, reqs[1].0 + (u64::from(reqs[1].1) + 1) * 100);
+}
+
+#[test]
+fn both_validation_requests_go_to_the_charger_address() {
+    // Table A.6 says broadcast for the second one; a charger may refuse a broadcast one, and one that does not look at the
+    // address takes either.
+    let mut evses = [evse_at(0, 15)];
+    let r = drive(validating(Validation::Ambiguous), &mut evses, Some(10), &[]);
+    assert_eq!(r.validate_to, vec![evses[0].mac(); 2]);
 }
 
 #[test]
@@ -339,8 +356,8 @@ fn the_toggles_and_their_timing_follow_the_configuration() {
     let config = Config { toggles: 2, toggle_state_ms: 200, ..validating(Validation::Ambiguous) };
     let r = drive(config, &mut evses, Some(10), &[]);
     assert_eq!(r.toggles.iter().map(|(_, t)| (t.count, t.state_ms)).collect::<Vec<_>>(), [(2, 200)]);
-    // Five states of 200 ms, in units of 100 ms, and one more.
-    assert_eq!(validate_reqs(&r)[1].1, 11);
+    // Five states of 200 ms, in units of 100 ms, and one more, less one for the encoding (0x00 is 100 ms).
+    assert_eq!(validate_reqs(&r)[1].1, 10);
 }
 
 #[test]

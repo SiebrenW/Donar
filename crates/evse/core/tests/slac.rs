@@ -52,7 +52,7 @@ impl Bench {
     }
 
     fn new() -> Self {
-        Self::with(Config::DEFAULT)
+        Self::with(Config { attenuation: Some(5), ..Config::DEFAULT })
     }
 
     fn event(&mut self, e: Event<'_>) -> Step {
@@ -212,7 +212,7 @@ fn no_start_message_fails_the_process() {
 
 #[test]
 fn the_report_goes_out_when_all_sounds_are_in_and_carries_the_fixed_attenuation() {
-    let config = Config { attenuation: 7, ..Config::DEFAULT };
+    let config = Config { attenuation: Some(7), ..Config::DEFAULT };
     let mut b = Bench::with(config);
     b.parm(EV, RUN);
     let start = b.start(EV, RUN);
@@ -253,6 +253,25 @@ fn the_profiles_of_the_modem_are_averaged_with_the_correction_per_group() {
     assert_eq!(groups[0], 53, "the mean 55 less 2");
     assert_eq!(groups[1], 155, "clamped values are exact below 256");
     assert_eq!(groups[2], 110);
+}
+
+#[test]
+fn the_mean_is_rounded_and_a_report_without_profiles_claims_no_closeness() {
+    // Profiles 10, 11 and 11 average 10.67, which is 11.
+    let mut b = Bench::with(Config::DEFAULT);
+    b.parm(EV, RUN);
+    b.start(EV, RUN);
+    let mut last = Step::default();
+    for level in [10, 11, 11, 11, 11, 11, 11, 11, 11, 11] {
+        last = b.frame(&frame(Message::AttenProfileInd { pev: EV, groups: [level; GROUPS] }, EVSE, [0x00, 0xB0, 0x52, 0, 0, 1]));
+    }
+    let Some(Message::AttenCharInd { groups, .. }) = b.sent(&last) else { panic!() };
+    assert_eq!(groups[0], 11, "10.9 rounds up");
+    // Sounds but no profile from the modem and no fixed measurement: the largest attenuation and no sounds, which a vehicle
+    // ignores.
+    let mut c = Bench::with(Config::DEFAULT);
+    let report = c.measured(EV, RUN);
+    assert_eq!(c.sent(&report), Some(Message::AttenCharInd { source: EV, run_id: RUN, num_sounds: 0, groups: [255; GROUPS] }));
 }
 
 #[test]
@@ -379,7 +398,8 @@ fn terminate_leaves_the_network_with_a_new_key_and_reports_no_link() {
     assert_eq!(step.notice, Some(Notice::LinkReady(false)), "V2G3-M09-18");
     let fresh = nmk(2);
     assert_eq!(step.set_key, Some((homeplug::modem::network_id(&fresh), fresh)), "V2G3-A09-121");
-    assert_eq!(b.m.state(), State::Unmatched { processes: 0 });
+    assert_eq!(b.m.state(), State::Idle, "nothing is matched until the pilot starts the next process");
+    assert_eq!(b.parm(EV, [6; 8]).send, None);
     // Terminate without a link up announced reports nothing.
     let mut c = Bench::new();
     c.matched();
@@ -463,8 +483,8 @@ mod validation {
         // V2G3-A09-77: a repeated step 1 is answered with the same.
         let again = b.validate(EV, 0, validate_result::READY);
         assert_eq!(b.sent(&again), Some(Message::ValidateCnf { toggle_num: 0, result: validate_result::READY }));
-        // Step 2: 2.2 s of listening.
-        let two = b.validate(EV, 22, validate_result::READY);
+        // Step 2: the field is 21, which is 2.2 s of listening (0x00 is 100 ms).
+        let two = b.validate(EV, 21, validate_result::READY);
         assert_eq!(two.toggles, Some(Toggles::Start { ms: 2200 }), "V2G3-A09-85");
         assert_eq!(b.armed(Timer::Toggle(0)), Some(2200));
         assert_eq!(b.armed(Timer::Sequence(0)), None);
@@ -675,6 +695,9 @@ mod against_the_vehicle {
 
     use super::*;
 
+    /// A charger whose modem measures 5 dB, as the simulator's does.
+    const CLOSE: Config = Config { attenuation: Some(5), ..Config::DEFAULT };
+
     struct Vehicle {
         mac: Mac,
         m: ev::Machine,
@@ -876,7 +899,7 @@ mod against_the_vehicle {
 
     #[test]
     fn the_vehicle_matches_and_joins_and_the_higher_layers_are_told() {
-        let mut w = World::new(Config::DEFAULT, &[(EV, ev::Config::DEFAULT)]);
+        let mut w = World::new(CLOSE, &[(EV, ev::Config::DEFAULT)]);
         w.run(60_000);
         let key = nmk(1);
         assert_eq!(w.vehicles[0].outcome, Some(ev::Outcome::Matched { evse: EVSE, nid: homeplug::modem::network_id(&key), nmk: key }));
@@ -892,7 +915,7 @@ mod against_the_vehicle {
     #[test]
     fn a_vehicle_that_is_not_sure_validates_by_toggles_and_is_matched_when_the_numbers_agree() {
         let vehicle = ev::Config { validation: ev::Validation::Always, toggles: 2, ..ev::Config::DEFAULT };
-        let mut w = World::new(Config::DEFAULT, &[(EV, vehicle)]);
+        let mut w = World::new(CLOSE, &[(EV, vehicle)]);
         w.run(60_000);
         assert!(matches!(w.vehicles[0].outcome, Some(ev::Outcome::Matched { .. })), "{:?}", w.vehicles[0].outcome);
         let counted: Vec<u8> = w
@@ -910,7 +933,7 @@ mod against_the_vehicle {
     fn a_charger_that_cannot_count_leaves_the_decision_to_a_vehicle_that_is_sure() {
         // V2G3-A09-51: the attenuation is below the direct threshold, so "failure" does not stop the match.
         let vehicle = ev::Config { validation: ev::Validation::Always, ..ev::Config::DEFAULT };
-        let mut w = World::new(Config { validation: Validation::Failure, ..Config::DEFAULT }, &[(EV, vehicle)]);
+        let mut w = World::new(Config { validation: Validation::Failure, ..CLOSE }, &[(EV, vehicle)]);
         w.run(60_000);
         assert!(matches!(w.vehicles[0].outcome, Some(ev::Outcome::Matched { .. })));
     }
@@ -918,7 +941,7 @@ mod against_the_vehicle {
     #[test]
     fn several_vehicles_at_once_one_gets_the_key() {
         let macs = [EV, EV2, [2, 0, 0, 0, 0, 3]];
-        let mut w = World::new(Config::DEFAULT, &macs.map(|m| (m, ev::Config::DEFAULT)));
+        let mut w = World::new(CLOSE, &macs.map(|m| (m, ev::Config::DEFAULT)));
         w.run(60_000);
         let State::Matched { ev: winner, .. } = w.evse.state() else { panic!("{:?}", w.evse.state()) };
         let matched: Vec<Mac> = w.vehicles.iter().filter(|v| matches!(v.outcome, Some(ev::Outcome::Matched { .. }))).map(|v| v.mac).collect();

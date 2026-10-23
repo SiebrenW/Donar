@@ -126,7 +126,7 @@ impl Evse {
     pub fn new(config: Config) -> Self {
         let machine_config = core::Config {
             sounds: 10,
-            attenuation: config.attenuation,
+            attenuation: Some(config.attenuation),
             attenuation_correction_db: std::array::from_fn(|g| correction(&config.attenuation_correction_db, g)),
             validation: match config.validation {
                 Validation::NotRequired => core::Validation::NotRequired,
@@ -514,6 +514,6 @@ mod tests {
         let out = serve.step(2, Some(&frame(Message::ValidateReq { timer: 0, result: validate_result::READY }, mac)));
         assert_eq!(out.len(), 1);
         serve.step(3, Some(&frame(Message::ValidateReq { timer: 5, result: validate_result::READY }, mac)));
-        assert_eq!(serve.evse.validation_window_ms(), Some(500));
+        assert_eq!(serve.evse.validation_window_ms(), Some(600));
     }
 }

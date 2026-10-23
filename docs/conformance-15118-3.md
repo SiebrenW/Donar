@@ -10,7 +10,7 @@ Status: **done** (in the machine, tested), **host** (the host has to do it; the 
 | V2G3-A09-14, 35, 41, 47, 76, 98 | Content that deviates from the tables is ignored (the codec drops it) | done |
 | V2G3-A09-15, 99 | The answers go out in the step that handles the request (`TP_match_response`, `TP_match_sequence` are the host's latency) | done |
 | V2G3-A09-16 | A repeated request of a served vehicle starts its process over | done |
-| V2G3-A09-19, 20, 43 to 45 | Average over the modem's `CM_ATTEN_PROFILE.IND`, corrected per group; calculation when all sounds are in or `TT_EVSE_match_MNBC` expires; `CM_ATTEN_CHAR.IND` with the count; a fixed attenuation without profiles | done |
+| V2G3-A09-19, 20, 43 to 45 | Average (rounded) over the modem's `CM_ATTEN_PROFILE.IND`, corrected per group; calculation when all sounds are in or `TT_EVSE_match_MNBC` expires; `CM_ATTEN_CHAR.IND` with the count; without profiles the largest attenuation and no sounds (a fixed attenuation only for a host without a modem) | done |
 | V2G3-A09-39, 40 | `TT_match_sequence` from the parameter answer; stopped by one start message; failure without it | done |
 | V2G3-A09-46 | Report repeated `C_EV_match_retry` times on `TT_match_response`, then failed | done |
 | V2G3-A09-48 to 53, 58, 75 to 90 | Validation: step 1 ready, not ready (another vehicle validating), not required or failure; repeated answer; `TT_match_sequence` and retries; step 2 counts for the vehicle's window; success with the count, failure when the host could not count | done (the counting is the host's, `Toggles`) |
@@ -19,7 +19,7 @@ Status: **done** (in the machine, tested), **host** (the host has to do it; the 
 | V2G3-A09-103, 104 | `TT_match_join`; failure and a new key when no link | done |
 | V2G3-A09-117, 120 | The higher layers are told the link is up after `TT_amp_map_exchange` | done |
 | V2G3-A09-106 to 116, 119 | Amplitude map exchange | modem |
-| V2G3-A09-121, M09-17, 18 | `D-LINK_TERMINATE.request`: new key (the modem leaves), "Unmatched", `D-LINK_READY(no link)` | done |
+| V2G3-A09-121, M09-17, 18 | `D-LINK_TERMINATE.request`: new key (the modem leaves), "Unmatched" and no more matching until the pilot starts the next process, `D-LINK_READY(no link)` | done |
 | V2G3-A09-126, 127, M09-19 | State A leaves the network and stops; E and F stop the matching | done |
 | V2G3-M09-01 | `C_EVSE_match_parallel` = 5 processes at once | done |
 | V2G3-M06-11 | The matching starts with a transition from A, E or F to B, C or D | done |
