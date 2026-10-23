@@ -82,7 +82,8 @@ pub fn correction(values: &[i8], g: usize) -> i8 {
 pub enum State {
     /// Waiting for a vehicle, or serving some.
     Unmatched,
-    Matched { ev: Mac },
+    /// The key is given to `ev`; `linked` once the link is up.
+    Matched { ev: Mac, linked: bool },
 }
 
 /// The same key every time: a test knows it.
@@ -107,6 +108,8 @@ pub struct Evse {
     toggle_timer: Option<Timer>,
     /// The host reports the pilot itself; otherwise the vehicle is taken to be there and the cable is the link.
     pilot_driven: bool,
+    /// The link comes from a modem ([`Serve`]), not from the cable.
+    modem_link: bool,
     no_slac: bool,
     /// What the machine asked for since the host looked.
     pub notices: Vec<Notice>,
@@ -147,6 +150,7 @@ impl Evse {
             counting: None,
             toggle_timer: None,
             pilot_driven: false,
+            modem_link: false,
             no_slac: false,
             notices: Vec::new(),
             pilot_requests: Vec::new(),
@@ -158,7 +162,7 @@ impl Evse {
 
     pub fn state(&self) -> State {
         match self.machine.state() {
-            core::State::Matched { ev, .. } => State::Matched { ev },
+            core::State::Matched { ev, linked } => State::Matched { ev, linked },
             _ => State::Unmatched,
         }
     }
@@ -200,6 +204,22 @@ impl Evse {
         self.feed(Event::LinkUp)
     }
 
+    /// The modem lost the link.
+    pub fn link_down(&mut self) -> Vec<Vec<u8>> {
+        self.feed(Event::LinkDown)
+    }
+
+    /// The link is the modem's to report ([`Evse::link_up`], [`Evse::link_down`]); the cable no longer counts as one.
+    pub fn link_from_modem(mut self) -> Self {
+        self.modem_link = true;
+        self
+    }
+
+    /// The keys the machine asked the modem to take since the host looked (`CM_SET_KEY`).
+    pub fn take_keys(&mut self) -> Vec<([u8; 7], [u8; 16])> {
+        std::mem::take(&mut self.keys)
+    }
+
     /// One call of the machine: the frames to send, and whether it asks for the toggle count.
     fn call(&mut self, event: Event<'_>) -> (Vec<Vec<u8>>, bool) {
         let mut tx = [0u8; 256];
@@ -222,7 +242,7 @@ impl Evse {
         if !self.pilot_driven {
             // No modem and no pilot: the vehicle that has the key is on the cable, and a charger nobody asked for a
             // long time waits for the next one as a charger that sees a new plug-in does.
-            if matches!(self.machine.state(), core::State::Matched { linked: false, .. }) {
+            if !self.modem_link && matches!(self.machine.state(), core::State::Matched { linked: false, .. }) {
                 self.call(Event::LinkUp);
             }
             if std::mem::take(&mut self.no_slac) {
@@ -323,5 +343,177 @@ impl Evse {
             out.extend(self.call(Event::Toggles(Some(counted))).0);
         }
         out
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub use serve::Serve;
+
+#[cfg(target_os = "linux")]
+mod serve {
+use super::*;
+
+/// The charger's SLAC with the modem next to it: a [`Evse`] whose keys go to the modem and whose link comes from it. The
+/// host reads the frames of the interface and calls [`Serve::step`] with the time, at least as often as
+/// [`Serve::next_deadline`] and the modem's polling need.
+pub struct Serve<M> {
+    pub evse: Evse,
+    modem: M,
+    /// What went wrong with the modem since the host looked.
+    pub errors: Vec<String>,
+    keyed: bool,
+}
+
+impl<M: evcc_linux::slac::Modem> Serve<M> {
+    pub fn new(evse: Evse, modem: M) -> Self {
+        Self { evse: evse.link_from_modem(), modem, errors: Vec::new(), keyed: false }
+    }
+
+    pub fn next_deadline(&self) -> Option<u64> {
+        self.evse.next_deadline()
+    }
+
+    /// One round: the timers, the frame (if one came), the keys to the modem, the link from the modem. Returns the frames to
+    /// send.
+    pub fn step(&mut self, now_ms: u64, frame: Option<&[u8]>) -> Vec<Vec<u8>> {
+        self.evse.at(now_ms);
+        let mut out = self.evse.poll(now_ms);
+        if let Some(bytes) = frame {
+            out.extend(self.evse.handle(bytes));
+        }
+        for (nid, nmk) in self.evse.take_keys() {
+            match self.modem.set_key(nid, nmk) {
+                Ok(()) => self.keyed = true,
+                Err(e) => self.errors.push(format!("the modem refused the key: {e}")),
+            }
+        }
+        match self.evse.state() {
+            State::Matched { linked: false, .. } if self.keyed => match self.modem.link_up() {
+                Ok(true) => out.extend(self.evse.link_up()),
+                Ok(false) => {}
+                Err(e) => self.errors.push(format!("the link check failed: {e}")),
+            },
+            State::Matched { linked: true, .. } => match self.modem.link_lost() {
+                Ok(true) => out.extend(self.evse.link_down()),
+                Ok(false) => {}
+                Err(e) => self.errors.push(format!("the link check failed: {e}")),
+            },
+            _ => {}
+        }
+        out
+    }
+}
+
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use std::cell::RefCell;
+    use std::io;
+    use std::rc::Rc;
+
+    use evcc_linux::slac::Modem;
+    use homeplug::{BROADCAST, validate_result};
+
+    use super::*;
+    use super::serve::Serve;
+
+    const EV: Mac = [0x02, 0, 0, 0, 0, 0x01];
+    const RUN: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+
+    #[derive(Default)]
+    struct Wire {
+        keys: Vec<([u8; 7], [u8; 16])>,
+        link: bool,
+        lost: bool,
+    }
+
+    struct Fake(Rc<RefCell<Wire>>);
+
+    impl Modem for Fake {
+        fn set_key(&mut self, nid: [u8; 7], nmk: [u8; 16]) -> io::Result<()> {
+            self.0.borrow_mut().keys.push((nid, nmk));
+            Ok(())
+        }
+
+        fn link_up(&mut self) -> io::Result<bool> {
+            Ok(self.0.borrow().link)
+        }
+
+        fn link_lost(&mut self) -> io::Result<bool> {
+            Ok(self.0.borrow().lost)
+        }
+    }
+
+    fn frame(m: Message, dst: Mac) -> Vec<u8> {
+        let mut buf = vec![0u8; 256];
+        let n = m.write(dst, EV, &mut buf).unwrap();
+        buf.truncate(n);
+        buf
+    }
+
+    /// The vehicle's side up to the match request; returns the time.
+    fn match_up(serve: &mut Serve<Fake>, evse: Mac) -> u64 {
+        let mut now = 0;
+        serve.step(now, Some(&frame(Message::ParmReq { run_id: RUN }, BROADCAST)));
+        serve.step(now, Some(&frame(Message::StartAttenChar { num_sounds: 3, time_out: 6, forwarding_sta: BROADCAST, run_id: RUN }, BROADCAST)));
+        for cnt in (0..3).rev() {
+            now += 20;
+            serve.step(now, Some(&frame(Message::MnbcSound { cnt, run_id: RUN, rnd: [0; 16] }, BROADCAST)));
+        }
+        serve.step(now, Some(&frame(Message::AttenCharRsp { source: EV, run_id: RUN, result: 0 }, evse)));
+        let out = serve.step(now, Some(&frame(Message::MatchReq { pev: EV, evse, run_id: RUN }, evse)));
+        assert_eq!(out.len(), 1, "CM_SLAC_MATCH.CNF");
+        now
+    }
+
+    fn charger() -> (Serve<Fake>, Rc<RefCell<Wire>>, Mac) {
+        let wire = Rc::new(RefCell::new(Wire::default()));
+        let evse = Evse::new(Config::default());
+        let mac = evse.mac();
+        (Serve::new(evse, Fake(wire.clone())), wire, mac)
+    }
+
+    #[test]
+    fn the_key_goes_to_the_modem_and_the_link_is_the_modems_to_report() {
+        let (mut serve, wire, mac) = charger();
+        let now = match_up(&mut serve, mac);
+        let nmk = Config::default().nmk;
+        assert_eq!(wire.borrow().keys, vec![(nid(&nmk), nmk)]);
+        // The cable is no link: the charger is matched but the modem has not found the vehicle.
+        serve.step(now + 5_000, None);
+        assert_eq!(serve.evse.state(), State::Matched { ev: EV, linked: false });
+        assert!(serve.evse.notices.iter().all(|n| *n != Notice::LinkReady(true)));
+        wire.borrow_mut().link = true;
+        serve.step(now + 6_000, None);
+        assert!(serve.next_deadline().is_some(), "the amplitude map window runs");
+        serve.step(now + 6_300, None);
+        assert!(serve.evse.notices.contains(&Notice::LinkReady(true)));
+        // And lost again.
+        wire.borrow_mut().lost = true;
+        serve.step(now + 7_000, None);
+        assert_eq!(serve.evse.notices.last(), Some(&Notice::LinkReady(false)));
+    }
+
+    #[test]
+    fn a_vehicle_the_modem_never_finds_fails_the_match_and_the_modem_gets_a_new_key() {
+        let (mut serve, wire, mac) = charger();
+        let now = match_up(&mut serve, mac);
+        serve.step(now + 12_000, None);
+        assert_eq!(serve.evse.notices.last(), Some(&Notice::Failed { ev: EV, reason: core::Failure::NoLink }));
+        assert_eq!(wire.borrow().keys.len(), 2, "the key of the match, then the one that leaves the network");
+        assert_eq!(serve.evse.state(), State::Unmatched);
+    }
+
+    #[test]
+    fn a_validating_vehicle_is_still_counted_with_a_modem() {
+        let (mut serve, _wire, mac) = charger();
+        serve.step(0, Some(&frame(Message::ParmReq { run_id: RUN }, BROADCAST)));
+        serve.step(0, Some(&frame(Message::StartAttenChar { num_sounds: 1, time_out: 6, forwarding_sta: BROADCAST, run_id: RUN }, BROADCAST)));
+        serve.step(1, Some(&frame(Message::MnbcSound { cnt: 0, run_id: RUN, rnd: [0; 16] }, BROADCAST)));
+        let out = serve.step(2, Some(&frame(Message::ValidateReq { timer: 0, result: validate_result::READY }, mac)));
+        assert_eq!(out.len(), 1);
+        serve.step(3, Some(&frame(Message::ValidateReq { timer: 5, result: validate_result::READY }, mac)));
+        assert_eq!(serve.evse.validation_window_ms(), Some(500));
     }
 }

@@ -36,4 +36,6 @@ Status: **done** (in the machine, tested), **host** (the host has to do it; the 
 | V2G3-M09-05, 09 | The vehicle decides (signal strength, validation) | vehicle |
 | ISO 15118-3 Annex B (G3-PLC) | Not implemented | open |
 
-Not covered by anything here yet: a driver for the charger's modem (key, link detection, the profile messages), the simulator's pilot following the machine's `PilotRequest`s, scenarios against `pyslac` as the vehicle. The simulator has no modem and no pilot reading: the vehicle is taken to be there, the cable is the link, and the window of `TT_EVSE_SLAC_init` is reopened when it runs out. See PLAN.md.
+The charger's modem: `QcaModem::as_coordinator` (evcc-linux) takes the key, reads the link from the link status and the modem's indications (never from the network information or a settle time) and can check that the modem coordinates its network; `evse_sim::slac::Serve` ties it to the machine. Tested against a fake modem only. The `CM_ATTEN_PROFILE.IND` of the modem reach the machine as ordinary frames of the interface; their layout is the one of the HomePlug Green PHY specification, not seen from a modem here.
+
+Not covered by anything here yet: the simulator's pilot following the machine's `PilotRequest`s, scenarios against `pyslac` as the vehicle. The simulator has no modem and no pilot reading: the vehicle is taken to be there, the cable is the link, and the window of `TT_EVSE_SLAC_init` is reopened when it runs out. See PLAN.md.

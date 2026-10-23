@@ -315,6 +315,11 @@ pub struct QcaModem {
     down_since: Cell<Option<Instant>>,
     /// When the link status was last asked for while watching.
     last_poll: Option<Instant>,
+    /// The modem is the central coordinator of the logical network (the charger's): the link is up when another station is
+    /// in the network, which only the link status and the modem's indications tell.
+    coordinator: bool,
+    /// What the modem's last link indication said.
+    indicated: Cell<Option<bool>>,
 }
 
 impl QcaModem {
@@ -346,7 +351,24 @@ impl QcaModem {
             watching: false,
             down_since: Cell::new(None),
             last_poll: None,
+            coordinator: false,
+            indicated: Cell::new(None),
         }
+    }
+
+    /// The modem of a charger: it coordinates the network. The link is up when the modem says another station is in its
+    /// network (link status or indication); the network information (which tells a station that it joined) and the settle
+    /// time do not apply.
+    pub fn as_coordinator(mut self) -> Self {
+        self.coordinator = true;
+        self
+    }
+
+    /// Whether the modem coordinates the network of `nid`, as a charger's modem has to (ISO 15118-3 V2G3-A06-03; the role
+    /// itself is a setting of the modem's firmware).
+    pub fn coordinates(&self, nid: [u8; 7]) -> io::Result<bool> {
+        let info = self.network_info()?;
+        Ok(info.first.is_some_and(|n| n.nid == nid && n.cco == info.modem))
     }
 
     /// How long to wait for the modem's answer to a request.
@@ -438,8 +460,16 @@ impl QcaModem {
     fn answer_indication(&self, frame: &[u8]) -> io::Result<bool> {
         let Some(ind) = homeplug::modem::parse_hst_action_ind(frame) else { return Ok(false) };
         match ind.action {
-            homeplug::modem::HAR_LINK_ONLINE => self.down_since.set(None),
-            homeplug::modem::HAR_LINK_OFFLINE if self.down_since.get().is_none() => self.down_since.set(Some(Instant::now())),
+            homeplug::modem::HAR_LINK_ONLINE => {
+                self.indicated.set(Some(true));
+                self.down_since.set(None);
+            }
+            homeplug::modem::HAR_LINK_OFFLINE => {
+                self.indicated.set(Some(false));
+                if self.down_since.get().is_none() {
+                    self.down_since.set(Some(Instant::now()));
+                }
+            }
             _ => {}
         }
         let mut out = [0u8; homeplug::modem::FRAME_MAX];
@@ -482,11 +512,33 @@ impl Modem for QcaModem {
         self.link_check = None;
         self.watching = false;
         self.down_since.set(None);
+        self.indicated.set(None);
         Ok(())
     }
 
     fn link_up(&mut self) -> io::Result<bool> {
         let Some((at, nid)) = self.keyed else { return Ok(false) };
+        if self.coordinator {
+            // The indications are answered as they come; then the status, unless an indication said it all.
+            let mut buf = [0u8; 2048];
+            while let Some(n) = self.socket.recv(&mut buf, Some(Duration::from_millis(1)))? {
+                self.answer_indication(&buf[..n])?;
+            }
+            let up = match self.indicated.get() {
+                Some(true) => true,
+                _ => match self.link_status() {
+                    Ok(s) => s.status == 0 && s.link,
+                    Err(e) if e.kind() == ErrorKind::TimedOut => false,
+                    Err(e) => return Err(e),
+                },
+            };
+            if up {
+                self.watching = true;
+                self.last_poll = Some(Instant::now());
+                self.down_since.set(None);
+            }
+            return Ok(up);
+        }
         // The way that worked before first; otherwise the link status, then the network information.
         let order = match self.link_check {
             Some(LinkCheck::Info) => [LinkCheck::Info, LinkCheck::Status],

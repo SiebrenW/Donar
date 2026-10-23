@@ -110,6 +110,9 @@ impl From<CertificateChecks> for evcc_linux::tls::CertificateChecks {
 pub struct Settings {
     /// Answer SLAC on the interface (the responder follows `slac`).
     pub slac_responder: bool,
+    /// The charger's powerline modem is a QCA7000 family modem behind the interface (the central coordinator): the
+    /// network key is given to it and the link is read from it. Without, the cable is the link.
+    pub slac_modem: bool,
     /// A directory shared with the simulated vehicle that stands for the control pilot (the cable, see
     /// `evcc_linux::pilot::Wire`): the charger switches its oscillator there and reads the vehicle's state, and
     /// reacts to it like a real charger (IEC 61851-23 CC.4.3; V2G20-917 to 922).
@@ -135,7 +138,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { slac_responder: false, control_pilot_wire: None, tls_versions: TlsVersions::Tls13, backwards_compatible: false, disclose_secrets: false, certificate_checks: CertificateChecks::Off, control_pilot_file: None, sessions: 1, session: Config::default(), slac: Default::default() }
+        Self { slac_responder: false, slac_modem: false, control_pilot_wire: None, tls_versions: TlsVersions::Tls13, backwards_compatible: false, disclose_secrets: false, certificate_checks: CertificateChecks::Off, control_pilot_file: None, sessions: 1, session: Config::default(), slac: Default::default() }
     }
 }
 
