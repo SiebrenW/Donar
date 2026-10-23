@@ -1,6 +1,6 @@
 # ISO 15118-3 requirements on the charger side
 
-What ISO 15118-3:2015 asks of the charger's low-layer communication (clauses 6, 7, 9 and Annex A), and where it is. The matching machine is `evse_core::slac` (sans-IO, `no_std`); `evse-sim` still runs its own simulated responder (`evse_sim::slac`) which the machine is to replace.
+What ISO 15118-3:2015 asks of the charger's low-layer communication (clauses 6, 7, 9 and Annex A), and where it is. The matching machine is `evse_core::slac` (sans-IO, `no_std`); `evse-sim` runs it behind a clock (`evse_sim::slac::Evse`, with the faults the tests inject).
 
 Status: **done** (in the machine, tested), **host** (the host has to do it; the machine asks for it or reports it), **modem** (the modem's firmware, not the host's), **open**.
 
@@ -36,4 +36,4 @@ Status: **done** (in the machine, tested), **host** (the host has to do it; the 
 | V2G3-M09-05, 09 | The vehicle decides (signal strength, validation) | vehicle |
 | ISO 15118-3 Annex B (G3-PLC) | Not implemented | open |
 
-Not covered by anything here yet: a driver for the charger's modem (key, link detection, the profile messages), the host loop for the machine in `evse-sim`, scenarios against `pyslac` as the vehicle. See PLAN.md.
+Not covered by anything here yet: a driver for the charger's modem (key, link detection, the profile messages), the simulator's pilot following the machine's `PilotRequest`s, scenarios against `pyslac` as the vehicle. The simulator has no modem and no pilot reading: the vehicle is taken to be there, the cable is the link, and the window of `TT_EVSE_SLAC_init` is reopened when it runs out. See PLAN.md.
