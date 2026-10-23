@@ -251,20 +251,49 @@ pub fn run_with_pilot(
 }
 
 
+/// Which message gives a QCA modem its network key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyMessage {
+    /// The standard CM_SET_KEY.REQ (HomePlug AV): the host works out the network id. Checked on a QCA7005.
+    #[default]
+    Standard,
+    /// The vendor VS_SET_KEY.REQ (Qualcomm Atheros): the modem works the network id out itself. The layout is the one of the
+    /// Qualcomm Atheros QCA7000 documentation as other stacks use it; it was not checked on a modem here.
+    Vendor,
+}
+
+/// How the link to the charger is read from a QCA modem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinkCheck {
+    /// VS_PL_LNK_STATUS: the modem says whether it has a link.
+    Status,
+    /// VS_NW_INFO: the modem has joined the network of its key and someone else coordinates it.
+    Info,
+}
+
 /// A Qualcomm QCA7000 family modem (QCA7000, QCA7005, QCA7020) behind a network interface of the
 /// host, such as the `qcaspi` driver's: the modem takes its network key from a standard
-/// CM_SET_KEY.REQ sent to the local device address, and reports its software version to a vendor
-/// message ([`homeplug::modem`]).
+/// CM_SET_KEY.REQ sent to the local device address (or the vendor VS_SET_KEY.REQ, see
+/// [`KeyMessage`]), and reports its software version to a vendor message ([`homeplug::modem`]).
 ///
-/// The link check asks the modem (VS_NW_INFO): the link is up when the modem has joined the
-/// network of the key it was given and someone else coordinates it. A modem that does not answer
-/// that message gets the fallback of a settle time after the key (the modem needs a moment to
-/// form the network with the charger's; the discovery that follows repeats its requests, so a
-/// link that is up a little later only costs a repeat).
+/// The modem is known to misbehave when it is given keys in quick succession (other stacks leave 4 s between two
+/// key requests), so a key request waits until [`QcaModem::KEY_SPACING`] has passed since the last one.
+///
+/// The link check asks the modem for its link status (VS_PL_LNK_STATUS) and, if it does not know that
+/// message, which network it joined (VS_NW_INFO: up when it has joined the network of the key it was
+/// given and someone else coordinates it). A modem that answers neither gets the fallback of a settle
+/// time after the key (the modem needs a moment to form the network with the charger's; the discovery
+/// that follows repeats its requests, so a link that is up a little later only costs a repeat).
 pub struct QcaModem {
     socket: PacketSocket,
     settle: Duration,
     reply_timeout: Duration,
+    key_message: KeyMessage,
+    key_spacing: Duration,
+    /// When the last key request went out.
+    last_key: Option<Instant>,
+    /// The way the modem answered a link check before.
+    link_check: Option<LinkCheck>,
     /// When the modem was given its key, and the network id of that key.
     keyed: Option<(Instant, [u8; 7])>,
 }
@@ -272,13 +301,24 @@ pub struct QcaModem {
 impl QcaModem {
     /// The default settle time after the key.
     pub const SETTLE: Duration = Duration::from_millis(1500);
+    /// The shortest time between two key requests.
+    pub const KEY_SPACING: Duration = Duration::from_secs(4);
 
     pub fn open(interface: &str) -> io::Result<Self> {
         Ok(Self::new(PacketSocket::open_any(interface)?))
     }
 
     pub fn new(socket: PacketSocket) -> Self {
-        Self { socket, settle: Self::SETTLE, reply_timeout: Duration::from_millis(1000), keyed: None }
+        Self {
+            socket,
+            settle: Self::SETTLE,
+            reply_timeout: Duration::from_millis(1000),
+            key_message: KeyMessage::default(),
+            key_spacing: Self::KEY_SPACING,
+            last_key: None,
+            link_check: None,
+            keyed: None,
+        }
     }
 
     /// How long to wait for the modem's answer to a request.
@@ -289,6 +329,18 @@ impl QcaModem {
 
     pub fn with_settle(mut self, settle: Duration) -> Self {
         self.settle = settle;
+        self
+    }
+
+    /// The message that sets the key.
+    pub fn with_key_message(mut self, message: KeyMessage) -> Self {
+        self.key_message = message;
+        self
+    }
+
+    /// The shortest time between two key requests (the default is [`QcaModem::KEY_SPACING`]).
+    pub fn with_key_spacing(mut self, spacing: Duration) -> Self {
+        self.key_spacing = spacing;
         self
     }
 
@@ -313,6 +365,14 @@ impl QcaModem {
         self.wait_for(homeplug::modem::parse_nw_info_cnf)
     }
 
+    /// Whether the modem has a link to another station (VS_PL_LNK_STATUS).
+    pub fn link_status(&self) -> io::Result<homeplug::modem::LinkStatus> {
+        let mut out = [0u8; homeplug::modem::FRAME_MAX];
+        let n = homeplug::modem::lnk_status_req(self.socket.mac(), &mut out).ok_or_else(|| io::Error::from(ErrorKind::InvalidInput))?;
+        self.socket.send(&out[..n])?;
+        self.wait_for(homeplug::modem::parse_lnk_status_cnf)
+    }
+
     /// Frames until `parse` accepts one or the reply timeout passes.
     fn wait_for<T>(&self, parse: impl Fn(&[u8]) -> Option<T>) -> io::Result<T> {
         let deadline = Instant::now() + self.reply_timeout;
@@ -333,24 +393,64 @@ impl QcaModem {
 
 impl Modem for QcaModem {
     fn set_key(&mut self, nid: [u8; 7], nmk: [u8; 16]) -> io::Result<()> {
+        if let Some(last) = self.last_key {
+            let wait = self.key_spacing.saturating_sub(last.elapsed());
+            if !wait.is_zero() {
+                std::thread::sleep(wait);
+            }
+        }
         let mut out = [0u8; homeplug::modem::FRAME_MAX];
-        let n = homeplug::modem::set_key_req(self.socket.mac(), nid, nmk, &mut out).ok_or_else(|| io::Error::from(ErrorKind::InvalidInput))?;
+        let n = match self.key_message {
+            KeyMessage::Standard => homeplug::modem::set_key_req(self.socket.mac(), nid, nmk, &mut out),
+            KeyMessage::Vendor => homeplug::modem::vs_set_key_req(self.socket.mac(), nmk, &mut out),
+        }
+        .ok_or_else(|| io::Error::from(ErrorKind::InvalidInput))?;
+        self.last_key = Some(Instant::now());
         self.socket.send(&out[..n])?;
-        let result = self.wait_for(homeplug::modem::parse_set_key_cnf)?;
-        if result != homeplug::modem::SET_KEY_DONE {
-            return Err(io::Error::other(format!("the modem refused the key (result {result})")));
+        let refused = match self.key_message {
+            KeyMessage::Standard => {
+                let result = self.wait_for(homeplug::modem::parse_set_key_cnf)?;
+                (result != homeplug::modem::SET_KEY_DONE).then(|| format!("result {result}"))
+            }
+            KeyMessage::Vendor => {
+                let status = self.wait_for(homeplug::modem::parse_vs_set_key_cnf)?;
+                (status != 0).then(|| format!("status {status}"))
+            }
+        };
+        if let Some(why) = refused {
+            return Err(io::Error::other(format!("the modem refused the key ({why})")));
         }
         self.keyed = Some((Instant::now(), nid));
+        self.link_check = None;
         Ok(())
     }
 
     fn link_up(&mut self) -> io::Result<bool> {
         let Some((at, nid)) = self.keyed else { return Ok(false) };
-        match self.network_info() {
-            Ok(info) => Ok(info.joined(nid)),
-            // A modem that does not know the message: the settle time has to do.
-            Err(e) if e.kind() == ErrorKind::TimedOut => Ok(at.elapsed() >= self.settle),
-            Err(e) => Err(e),
+        // The way that worked before first; otherwise the link status, then the network information.
+        let order = match self.link_check {
+            Some(LinkCheck::Info) => [LinkCheck::Info, LinkCheck::Status],
+            _ => [LinkCheck::Status, LinkCheck::Info],
+        };
+        for check in order {
+            let answer = match check {
+                LinkCheck::Status => self.link_status().map(|s| s.status == 0 && s.link),
+                LinkCheck::Info => self.network_info().map(|info| info.joined(nid)),
+            };
+            match answer {
+                Ok(up) => {
+                    self.link_check = Some(check);
+                    return Ok(up);
+                }
+                Err(e) if e.kind() == ErrorKind::TimedOut => {}
+                Err(e) => return Err(e),
+            }
+            // A way that answered once is not tried again after it stayed silent only to be told otherwise.
+            if self.link_check == Some(check) {
+                self.link_check = None;
+            }
         }
+        // A modem that knows neither message: the settle time has to do.
+        Ok(at.elapsed() >= self.settle)
     }
 }

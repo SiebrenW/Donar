@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use evcc_linux::slac::{Modem, PacketSocket, QcaModem};
+use evcc_linux::slac::{KeyMessage, Modem, PacketSocket, QcaModem};
 use homeplug::modem::{self, LOCAL_DEVICE};
 use sandbox::{INTERFACE, Options, Sandbox};
 
@@ -19,12 +19,15 @@ fn sandbox() -> Option<Sandbox> {
 struct Seen {
     versions: u32,
     infos: u32,
+    statuses: u32,
     keys: Vec<([u8; 7], [u8; 16])>,
 }
 
 /// A modem: answers the first `answers` requests, the key request with `result`; the first `lone_infos`
-/// network information requests with a network of its own, the later ones with one it has joined.
-fn fake_modem(answers: u32, result: u8, lone_infos: u32, ready: std::sync::mpsc::Sender<()>) -> Seen {
+/// network information requests with a network of its own, the later ones with one it has joined. With
+/// `down_statuses` it also answers the link status request (no link for that many, then a link); without it
+/// ignores that request.
+fn fake_modem(answers: u32, result: u8, lone_infos: u32, down_statuses: Option<u32>, ready: std::sync::mpsc::Sender<()>) -> Seen {
     let socket = PacketSocket::open(INTERFACE).unwrap();
     ready.send(()).unwrap();
     let mut seen = Seen::default();
@@ -51,6 +54,16 @@ fn fake_modem(answers: u32, result: u8, lone_infos: u32, ready: std::sync::mpsc:
                 // Version 1, the type, the fragmentation information, the result, nonces, protocol id.
                 reply.extend_from_slice(&[0x01, 0x09, 0x60, 0x00, 0x00, result, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0]);
             }
+            modem::VS_SET_KEY_REQ => {
+                // Version 0, the type, the OUI, the status; no network id in the request.
+                seen.keys.push(([0; 7], frame[21..37].try_into().unwrap()));
+                reply.extend_from_slice(&[0x00, 0x51, 0xA0, 0x00, 0xB0, 0x52, result]);
+            }
+            modem::VS_PL_LNK_STATUS_REQ => {
+                seen.statuses += 1;
+                let Some(down) = down_statuses else { continue };
+                reply.extend_from_slice(&[0x00, 0xB9, 0xA0, 0x00, 0xB0, 0x52, 0x00, u8::from(seen.statuses > down)]);
+            }
             modem::VS_NW_INFO_REQ => {
                 seen.infos += 1;
                 // The network of the key given (the test's), led by the modem itself or by a charger.
@@ -75,7 +88,7 @@ fn the_driver_reads_the_version_and_sets_the_key() {
     let (ev, charger) = (sb.node("ev").unwrap(), sb.node("modem").unwrap());
     let (ev, charger) = sb.connect(&ev, &charger).unwrap();
     let (ready, up) = std::sync::mpsc::channel();
-    let modem = std::thread::spawn(move || charger.run_in(|| fake_modem(4, homeplug::modem::SET_KEY_DONE, 1, ready)).unwrap());
+    let modem = std::thread::spawn(move || charger.run_in(|| fake_modem(5, homeplug::modem::SET_KEY_DONE, 1, None, ready)).unwrap());
     up.recv().unwrap();
     let seen = ev
         .run_in(|| {
@@ -92,7 +105,8 @@ fn the_driver_reads_the_version_and_sets_the_key() {
         })
         .unwrap();
     let got = modem.join().unwrap();
-    assert_eq!(got, Seen { versions: 1, infos: 2, keys: vec![seen] });
+    // The link status request goes unanswered once (a modem that does not know it); then the network information it is.
+    assert_eq!(got, Seen { versions: 1, infos: 2, statuses: 1, keys: vec![seen] });
 }
 
 #[test]
@@ -101,7 +115,7 @@ fn a_refused_key_is_an_error() {
     let (ev, charger) = (sb.node("ev").unwrap(), sb.node("modem").unwrap());
     let (ev, charger) = sb.connect(&ev, &charger).unwrap();
     let (ready, up) = std::sync::mpsc::channel();
-    let modem = std::thread::spawn(move || charger.run_in(|| fake_modem(1, 0, 0, ready)).unwrap());
+    let modem = std::thread::spawn(move || charger.run_in(|| fake_modem(1, 0, 0, None, ready)).unwrap());
     up.recv().unwrap();
     let error = ev
         .run_in(|| {
@@ -129,7 +143,7 @@ fn a_modem_without_the_network_message_falls_back_to_the_settle_time() {
     let (ev, charger) = sb.connect(&ev, &charger).unwrap();
     let (ready, up) = std::sync::mpsc::channel();
     // It answers the key request only; the network information request goes unanswered.
-    let modem = std::thread::spawn(move || charger.run_in(|| fake_modem(1, homeplug::modem::SET_KEY_DONE, 0, ready)).unwrap());
+    let modem = std::thread::spawn(move || charger.run_in(|| fake_modem(1, homeplug::modem::SET_KEY_DONE, 0, None, ready)).unwrap());
     up.recv().unwrap();
     ev.run_in(|| {
         let mut driver = QcaModem::open(INTERFACE).unwrap().with_settle(Duration::from_millis(500)).with_reply_timeout(Duration::from_millis(50));
@@ -140,4 +154,66 @@ fn a_modem_without_the_network_message_falls_back_to_the_settle_time() {
     })
     .unwrap();
     modem.join().unwrap();
+}
+
+#[test]
+fn the_link_is_read_from_the_link_status_when_the_modem_has_it() {
+    let Some(mut sb) = sandbox() else { return };
+    let (ev, charger) = (sb.node("ev").unwrap(), sb.node("modem").unwrap());
+    let (ev, charger) = sb.connect(&ev, &charger).unwrap();
+    let (ready, up) = std::sync::mpsc::channel();
+    let modem = std::thread::spawn(move || charger.run_in(|| fake_modem(3, homeplug::modem::SET_KEY_DONE, 0, Some(1), ready)).unwrap());
+    up.recv().unwrap();
+    ev.run_in(|| {
+        let mut driver = QcaModem::open(INTERFACE).unwrap();
+        driver.set_key([1; 7], [2; 16]).unwrap();
+        assert!(!driver.link_up().unwrap(), "no link yet");
+        assert!(driver.link_up().unwrap());
+    })
+    .unwrap();
+    let got = modem.join().unwrap();
+    assert_eq!((got.statuses, got.infos), (2, 0), "the network information is not asked when the link status is answered");
+}
+
+#[test]
+fn the_vendor_key_message_gives_the_key_without_a_network_id() {
+    let Some(mut sb) = sandbox() else { return };
+    let (ev, charger) = (sb.node("ev").unwrap(), sb.node("modem").unwrap());
+    let (ev, charger) = sb.connect(&ev, &charger).unwrap();
+    let (ready, up) = std::sync::mpsc::channel();
+    let modem = std::thread::spawn(move || charger.run_in(|| fake_modem(1, 0, 0, None, ready)).unwrap());
+    up.recv().unwrap();
+    ev.run_in(|| {
+        let mut driver = QcaModem::open(INTERFACE).unwrap().with_key_message(KeyMessage::Vendor);
+        // The vendor message reports success as status 0.
+        driver.set_key([1; 7], [0x77; 16]).unwrap();
+    })
+    .unwrap();
+    let got = modem.join().unwrap();
+    assert_eq!(got.keys, vec![([0; 7], [0x77; 16])]);
+}
+
+#[test]
+fn two_keys_are_given_at_a_distance() {
+    let Some(mut sb) = sandbox() else { return };
+    let (ev, charger) = (sb.node("ev").unwrap(), sb.node("modem").unwrap());
+    let (ev, charger) = sb.connect(&ev, &charger).unwrap();
+    let (ready, up) = std::sync::mpsc::channel();
+    let modem = std::thread::spawn(move || charger.run_in(|| fake_modem(2, homeplug::modem::SET_KEY_DONE, 0, None, ready)).unwrap());
+    up.recv().unwrap();
+    let spacing = Duration::from_millis(400);
+    let (first_took, second_took) = ev
+        .run_in(|| {
+            let mut driver = QcaModem::open(INTERFACE).unwrap().with_key_spacing(spacing);
+            let t = std::time::Instant::now();
+            driver.set_key([1; 7], [2; 16]).unwrap();
+            let first = t.elapsed();
+            let t = std::time::Instant::now();
+            driver.set_key([3; 7], [4; 16]).unwrap();
+            (first, t.elapsed())
+        })
+        .unwrap();
+    assert!(first_took < spacing, "the first key does not wait: {first_took:?}");
+    assert!(second_took >= spacing - Duration::from_millis(50), "the second waits for the spacing: {second_took:?}");
+    assert_eq!(modem.join().unwrap().keys.len(), 2);
 }
