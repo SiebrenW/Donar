@@ -92,7 +92,7 @@ On Linux `evcc_linux::run_with_pilot` takes a `PilotSource`: it polls it every 2
 
 All of it sans-IO state machines too, driven the same way:
 
-- **SLAC** (powerline matching): `evcc_core::slac::Machine`; on Linux `evcc_linux::slac::run` over a `PacketSocket`. After matching it hands the network key to your PLC modem through the `Modem` trait: `QcaModem` implements it for the QCA7000 family (checked on a QCA7005), `NoModem` is for a modem that is already configured. Control pilot toggling for validation: the `ControlPilot` trait.
+- **SLAC** (powerline matching): `evcc_core::slac::Machine`; on Linux `evcc_linux::slac::run` over a `PacketSocket`. After matching it hands the network key to your PLC modem through the `Modem` trait: `QcaModem` implements it for the QCA7000 family (key and version checked on a QCA7005; the link status and the vendor key message only against a fake modem), `NoModem` is for a modem that is already configured. Control pilot toggling for validation: the `ControlPilot` trait.
 - **SDP** (find the charger): `evcc_core::sdp::Client`; on Linux `evcc_linux::sdp::{socket, discover, connect}`.
 - **TLS 1.3** (required for -20): `evcc_linux::tls` (OpenSSL: `Credentials`, `client_context`, `connect`, with the certificate profile and OCSP checks of Annex B). On other platforms bring your own TLS and give the core a byte stream and the `secured` flag.
 - **Plug & Charge**: implement `Contract` yourself (or use `evcc_linux::pnc::PemContract` from PEM files).

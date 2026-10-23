@@ -51,6 +51,14 @@ pub const VS_SW_VER_CNF: u16 = 0xA001;
 pub const VS_NW_INFO_REQ: u16 = 0xA038;
 pub const VS_NW_INFO_CNF: u16 = 0xA039;
 
+/// Vendor message: link status, request and confirmation.
+pub const VS_PL_LNK_STATUS_REQ: u16 = 0xA0B8;
+pub const VS_PL_LNK_STATUS_CNF: u16 = 0xA0B9;
+
+/// Vendor message: set key, request and confirmation.
+pub const VS_SET_KEY_REQ: u16 = 0xA050;
+pub const VS_SET_KEY_CNF: u16 = 0xA051;
+
 /// `KeyType` of CM_SET_KEY: the network membership key.
 const KEY_TYPE_NMK: u8 = 0x01;
 /// `PID` of CM_SET_KEY.REQ: the key is given by the host (the modem does not run the key exchange).
@@ -195,6 +203,52 @@ pub fn parse_nw_info_cnf(frame: &[u8]) -> Option<NwInfo> {
     Some(NwInfo { modem: frame.get(6..12)?.try_into().ok()?, networks, first })
 }
 
+/// `EKS` of VS_SET_KEY.REQ: the key is a network membership key.
+const VS_EKS_NMK: u8 = 0x01;
+/// `PEKS` of VS_SET_KEY.REQ: the key is set on this station ("local set").
+const VS_PEKS_LOCAL: u8 = 0x0F;
+
+/// VS_SET_KEY.REQ: the vendor message that gives the modem its network membership key; the modem works the network id
+/// out itself. Management message version 0, the OUI, `EKS` (NMK), the key, `PEKS` (local set), then the destination
+/// address and the device access key, which stay zero. The layout is the one of the Qualcomm Atheros
+/// QCA7000 documentation as other stacks use it; it was not checked on a modem here.
+pub fn vs_set_key_req(src: Mac, nmk: [u8; 16], out: &mut [u8]) -> Option<usize> {
+    let mut p = [0u8; 3 + 1 + 16 + 1 + 6 + 16];
+    p[..3].copy_from_slice(&QCA_OUI);
+    p[3] = VS_EKS_NMK;
+    p[4..20].copy_from_slice(&nmk);
+    p[20] = VS_PEKS_LOCAL;
+    frame(LOCAL_DEVICE, src, 0x00, VS_SET_KEY_REQ, &p, out)
+}
+
+/// The `MSTATUS` of VS_SET_KEY.CNF: 0 when the modem took the key.
+pub fn parse_vs_set_key_cnf(frame: &[u8]) -> Option<u8> {
+    body_vendor(frame, VS_SET_KEY_CNF)?.first().copied()
+}
+
+/// VS_PL_LNK_STATUS.REQ: asks whether the modem has a powerline link to another station. Management message
+/// version 0, the OUI and nothing else (the layout of the QCA7000 documentation as other stacks use it; not checked on a modem here).
+pub fn lnk_status_req(src: Mac, out: &mut [u8]) -> Option<usize> {
+    frame(LOCAL_DEVICE, src, 0x00, VS_PL_LNK_STATUS_REQ, &QCA_OUI, out)
+}
+
+/// VS_PL_LNK_STATUS.CNF: `MSTATUS` (0 for success) and the link status (1 for a link, 0 for none). `None` when it is
+/// not the confirmation or too short.
+pub fn parse_lnk_status_cnf(frame: &[u8]) -> Option<LinkStatus> {
+    let body = body_vendor(frame, VS_PL_LNK_STATUS_CNF)?;
+    let (&status, &link) = (body.first()?, body.get(1)?);
+    Some(LinkStatus { status, link: link == 1 })
+}
+
+/// What a modem answers to VS_PL_LNK_STATUS.REQ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkStatus {
+    /// 0 for success.
+    pub status: u8,
+    /// The modem is a member of a network with another station.
+    pub link: bool,
+}
+
 /// The payload of a standard message of type `mmtype` (after the header).
 fn body(frame: &[u8], mmtype: u16) -> Option<&[u8]> {
     if frame.len() < 17 || frame[12..14] != ETHERTYPE.to_be_bytes() || u16::from_le_bytes([frame[15], frame[16]]) != mmtype {
@@ -311,6 +365,49 @@ mod tests {
         // As plctool -m sent it: version 1, type 0xA038, FMI, OUI, zeros.
         assert_eq!(&out[..22], &hex("00b052000001 000187 05f505 88e1 01 38a0 0000 00b052")[..]);
         assert_eq!(n, MIN_FRAME);
+    }
+
+    #[test]
+    fn the_vendor_key_request_carries_the_key_and_no_network_id() {
+        let nmk = [0xAA; 16];
+        let mut out = [0u8; FRAME_MAX];
+        let n = vs_set_key_req([2, 0, 0, 0, 0, 1], nmk, &mut out).unwrap();
+        assert_eq!(n, MIN_FRAME);
+        assert_eq!(&out[..6], &LOCAL_DEVICE);
+        // Version 0: no fragmentation information; type 0xA050 little endian.
+        assert_eq!(&out[12..17], &[0x88, 0xE1, 0x00, 0x50, 0xA0]);
+        assert_eq!(&out[17..20], &QCA_OUI);
+        assert_eq!(out[20], 1);
+        assert_eq!(&out[21..37], &nmk);
+        assert_eq!(out[37], 0x0F);
+        assert!(out[38..60].iter().all(|b| *b == 0), "destination and device access key stay zero");
+        // The answer: OUI, status.
+        let mut cnf = hex("0001 8705 f505 0001 8705 f506 88e1 00 51a0 00b052 00");
+        cnf.resize(60, 0);
+        assert_eq!(parse_vs_set_key_cnf(&cnf), Some(0));
+        cnf[20] = 1;
+        assert_eq!(parse_vs_set_key_cnf(&cnf), Some(1));
+        assert_eq!(parse_vs_set_key_cnf(&cnf[..18]), None);
+    }
+
+    #[test]
+    fn the_link_status_is_asked_and_read() {
+        let mut out = [0u8; FRAME_MAX];
+        let n = lnk_status_req([0x00, 0x01, 0x87, 0x05, 0xF5, 0x05], &mut out).unwrap();
+        assert_eq!(n, MIN_FRAME);
+        assert_eq!(&out[..20], &hex("00b052000001 000187 05f505 88e1 00 b8a0 00b052")[..]);
+        let mut cnf = hex("0001 8705 f505 0001 8705 f506 88e1 00 b9a0 00b052 00 01");
+        cnf.resize(60, 0);
+        assert_eq!(parse_lnk_status_cnf(&cnf), Some(LinkStatus { status: 0, link: true }));
+        cnf[21] = 0;
+        assert_eq!(parse_lnk_status_cnf(&cnf), Some(LinkStatus { status: 0, link: false }));
+        // Another message type, a foreign OUI, a truncated frame.
+        cnf[15] = 0x39;
+        assert_eq!(parse_lnk_status_cnf(&cnf), None);
+        cnf[15] = 0xB9;
+        cnf[17] = 0x01;
+        assert_eq!(parse_lnk_status_cnf(&cnf), None);
+        assert_eq!(parse_lnk_status_cnf(&cnf[..21]), None);
     }
 
     fn hex(s: &str) -> std::vec::Vec<u8> {
