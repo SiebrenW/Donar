@@ -58,6 +58,15 @@ pub const VS_PL_LNK_STATUS_CNF: u16 = 0xA0B9;
 /// Vendor message: set key, request and confirmation.
 pub const VS_SET_KEY_REQ: u16 = 0xA050;
 pub const VS_SET_KEY_CNF: u16 = 0xA051;
+/// VS_HST_ACTION.IND: the modem tells its host something happened (it started, its link came up or went down).
+pub const VS_HST_ACTION_IND: u16 = 0xA062;
+/// VS_HST_ACTION.RSP: the host's acknowledgement; a modem repeats the indication until it gets it.
+pub const VS_HST_ACTION_RSP: u16 = 0xA063;
+
+/// `HAR` of VS_HST_ACTION.IND: the modem is a member of a network and there are peers.
+pub const HAR_LINK_ONLINE: u8 = 0x0A;
+/// `HAR` of VS_HST_ACTION.IND: the modem left its network and has no peers.
+pub const HAR_LINK_OFFLINE: u8 = 0x0B;
 
 /// `KeyType` of CM_SET_KEY: the network membership key.
 const KEY_TYPE_NMK: u8 = 0x01;
@@ -249,6 +258,53 @@ pub struct LinkStatus {
     pub link: bool,
 }
 
+/// A VS_HST_ACTION.IND: what the modem reports and what the answer has to repeat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostAction {
+    /// The modem's address (the answer goes there).
+    pub from: Mac,
+    /// The host action request: [`HAR_LINK_ONLINE`], [`HAR_LINK_OFFLINE`] or another reason (a reboot, a firmware step).
+    pub action: u8,
+    /// The version of the indication, major and minor. From 0.1 on it carries a session id and a retry count, which the answer
+    /// repeats.
+    pub version: (u8, u8),
+    session_id: u8,
+    outstanding_retries: [u8; 2],
+}
+
+/// VS_HST_ACTION.IND as the modem sends it: the OUI, the `HAR`, the version (major, minor) and, from version 0.1 on, the
+/// session id, the outstanding retries (two octets) and the retry timer. `None` when it is not that message or too short
+/// (the layout is the one of the QCA7000 documentation as other stacks use it; not checked on a modem here).
+pub fn parse_hst_action_ind(frame: &[u8]) -> Option<HostAction> {
+    let b = body_vendor(frame, VS_HST_ACTION_IND)?;
+    let (&action, &major, &minor) = (b.first()?, b.get(1)?, b.get(2)?);
+    let mut found = HostAction { from: frame[6..12].try_into().ok()?, action, version: (major, minor), session_id: 0, outstanding_retries: [0; 2] };
+    if (major, minor) == (0, 1) {
+        found.session_id = *b.get(3)?;
+        found.outstanding_retries = [*b.get(4)?, *b.get(5)?];
+    }
+    Some(found)
+}
+
+/// VS_HST_ACTION.RSP: tells the modem the indication `ind` arrived (`MSTATUS` 0), or that the host could not take it. Management
+/// message version 0, the OUI, `MSTATUS` and the version, then for version 0.1 the `HAR`, the session id and the outstanding
+/// retries of the indication. Without it the modem repeats the indication.
+pub fn hst_action_rsp(src: Mac, ind: &HostAction, success: bool, out: &mut [u8]) -> Option<usize> {
+    let mut p = [0u8; 3 + 1 + 2 + 1 + 1 + 2];
+    p[..3].copy_from_slice(&QCA_OUI);
+    p[3] = u8::from(!success);
+    (p[4], p[5]) = ind.version;
+    let len = if ind.version == (0, 1) {
+        p[6] = ind.action;
+        p[7] = ind.session_id;
+        p[8..10].copy_from_slice(&ind.outstanding_retries);
+        10
+    } else {
+        6
+    };
+    frame(ind.from, src, 0x00, VS_HST_ACTION_RSP, &p[..len], out)
+}
+
 /// The payload of a standard message of type `mmtype` (after the header).
 fn body(frame: &[u8], mmtype: u16) -> Option<&[u8]> {
     if frame.len() < 17 || frame[12..14] != ETHERTYPE.to_be_bytes() || u16::from_le_bytes([frame[15], frame[16]]) != mmtype {
@@ -266,6 +322,41 @@ fn body_vendor(frame: &[u8], mmtype: u16) -> Option<&[u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_link_indication_is_read_and_answered_with_what_it_carried() {
+        // From the modem: version 0.1, session 3, two retries outstanding, a retry timer of 100 x 10 ms.
+        let ind = hex("0001 8705 f505 00b0 5200 0001 88e1 00 62a0 00b052 0a 00 01 03 0200 6400");
+        let found = parse_hst_action_ind(&ind).unwrap();
+        assert_eq!((found.action, found.version), (HAR_LINK_ONLINE, (0, 1)));
+        assert_eq!(found.from, [0x00, 0xB0, 0x52, 0x00, 0x00, 0x01]);
+        let mut out = [0u8; FRAME_MAX];
+        let n = hst_action_rsp([0x00, 0x01, 0x87, 0x05, 0xF5, 0x05], &found, true, &mut out).unwrap();
+        assert_eq!(n, MIN_FRAME);
+        assert_eq!(&out[..6], &found.from);
+        assert_eq!(&out[12..17], &[0x88, 0xE1, 0x00, 0x63, 0xA0]);
+        // OUI, MSTATUS 0, version 0.1, HAR, session, retries.
+        assert_eq!(&out[17..27], &[0x00, 0xB0, 0x52, 0, 0, 1, 0x0A, 3, 2, 0]);
+    }
+
+    #[test]
+    fn an_indication_of_version_0_0_is_answered_without_the_session() {
+        let ind = hex("0001 8705 f505 00b0 5200 0001 88e1 00 62a0 00b052 0b 00 00");
+        let found = parse_hst_action_ind(&ind).unwrap();
+        assert_eq!((found.action, found.version), (HAR_LINK_OFFLINE, (0, 0)));
+        let mut out = [0u8; FRAME_MAX];
+        hst_action_rsp([0; 6], &found, false, &mut out).unwrap();
+        assert_eq!(&out[17..23], &[0x00, 0xB0, 0x52, 1, 0, 0]);
+        assert_eq!(&out[23..27], &[0; 4]);
+    }
+
+    #[test]
+    fn a_short_or_foreign_indication_is_not_read() {
+        let ind = hex("0001 8705 f505 00b0 5200 0001 88e1 00 62a0 00b052 0a 00 01 03");
+        assert_eq!(parse_hst_action_ind(&ind), None);
+        let other = hex("0001 8705 f505 00b0 5200 0001 88e1 00 62a0 123456 0a 00 00");
+        assert_eq!(parse_hst_action_ind(&other), None);
+    }
 
     #[test]
     fn the_version_request_is_what_the_vendor_tool_sends() {

@@ -6,6 +6,7 @@
 //! modem (a virtual Ethernet pair in the tests) [`NoModem`] does nothing and reports the link
 //! as up.
 
+use std::cell::Cell;
 use std::io::{self, ErrorKind};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::time::{Duration, Instant};
@@ -137,6 +138,12 @@ pub trait Modem {
     fn set_key(&mut self, nid: [u8; 7], nmk: [u8; 16]) -> io::Result<()>;
     /// Whether the link to the charger is up. Polled after the key is set.
     fn link_up(&mut self) -> io::Result<bool>;
+    /// Whether the link, once up, has been gone for longer than a short debounce time (a modem drops its link for a moment
+    /// when the powerline is noisy). Polled by the host while the session runs; a modem that has to be answered between
+    /// the requests is served by this call as well.
+    fn link_lost(&mut self) -> io::Result<bool> {
+        Ok(false)
+    }
 }
 
 /// No modem: the interface is the link already.
@@ -279,6 +286,10 @@ enum LinkCheck {
 /// The modem is known to misbehave when it is given keys in quick succession (other stacks leave 4 s between two
 /// key requests), so a key request waits until [`QcaModem::KEY_SPACING`] has passed since the last one.
 ///
+/// A modem that reports its link by indication (VS_HST_ACTION.IND) is answered whenever the driver reads from it, and
+/// [`Modem::link_lost`] counts an indication of a lost link, like a link status without a link, as lost once it lasted for
+/// [`QcaModem::LINK_LOSS_DEBOUNCE`] (the modem drops its link for a moment when the powerline is noisy).
+///
 /// The link check asks the modem for its link status (VS_PL_LNK_STATUS) and, if it does not know that
 /// message, which network it joined (VS_NW_INFO: up when it has joined the network of the key it was
 /// given and someone else coordinates it). A modem that answers neither gets the fallback of a settle
@@ -296,6 +307,14 @@ pub struct QcaModem {
     link_check: Option<LinkCheck>,
     /// When the modem was given its key, and the network id of that key.
     keyed: Option<(Instant, [u8; 7])>,
+    link_loss_debounce: Duration,
+    link_poll: Duration,
+    /// The link was up ([`Modem::link_up`]) and is watched.
+    watching: bool,
+    /// Since when the modem reports no link (by indication or link status) while it is watched.
+    down_since: Cell<Option<Instant>>,
+    /// When the link status was last asked for while watching.
+    last_poll: Option<Instant>,
 }
 
 impl QcaModem {
@@ -303,6 +322,10 @@ impl QcaModem {
     pub const SETTLE: Duration = Duration::from_millis(1500);
     /// The shortest time between two key requests.
     pub const KEY_SPACING: Duration = Duration::from_secs(4);
+    /// The default time the link may be gone before [`Modem::link_lost`] says so.
+    pub const LINK_LOSS_DEBOUNCE: Duration = Duration::from_millis(500);
+    /// How often the watched link is asked for between the modem's indications.
+    pub const LINK_POLL: Duration = Duration::from_secs(1);
 
     pub fn open(interface: &str) -> io::Result<Self> {
         Ok(Self::new(PacketSocket::open_any(interface)?))
@@ -318,6 +341,11 @@ impl QcaModem {
             last_key: None,
             link_check: None,
             keyed: None,
+            link_loss_debounce: Self::LINK_LOSS_DEBOUNCE,
+            link_poll: Self::LINK_POLL,
+            watching: false,
+            down_since: Cell::new(None),
+            last_poll: None,
         }
     }
 
@@ -341,6 +369,18 @@ impl QcaModem {
     /// The shortest time between two key requests (the default is [`QcaModem::KEY_SPACING`]).
     pub fn with_key_spacing(mut self, spacing: Duration) -> Self {
         self.key_spacing = spacing;
+        self
+    }
+
+    /// How long the link may be gone before [`Modem::link_lost`] says so (the default is [`QcaModem::LINK_LOSS_DEBOUNCE`]).
+    pub fn with_link_loss_debounce(mut self, debounce: Duration) -> Self {
+        self.link_loss_debounce = debounce;
+        self
+    }
+
+    /// How often the watched link is asked for between the modem's indications (the default is [`QcaModem::LINK_POLL`]).
+    pub fn with_link_poll(mut self, interval: Duration) -> Self {
+        self.link_poll = interval;
         self
     }
 
@@ -382,12 +422,30 @@ impl QcaModem {
             if left.is_zero() {
                 return Err(io::Error::new(ErrorKind::TimedOut, "the modem did not answer"));
             }
-            if let Some(n) = self.socket.recv(&mut buf, Some(left))?
-                && let Some(found) = parse(&buf[..n])
-            {
-                return Ok(found);
+            if let Some(n) = self.socket.recv(&mut buf, Some(left))? {
+                if self.answer_indication(&buf[..n])? {
+                    continue;
+                }
+                if let Some(found) = parse(&buf[..n]) {
+                    return Ok(found);
+                }
             }
         }
+    }
+
+    /// Acknowledges a VS_HST_ACTION.IND (the modem repeats it until it is) and notes what it says about the link. False for
+    /// any other frame.
+    fn answer_indication(&self, frame: &[u8]) -> io::Result<bool> {
+        let Some(ind) = homeplug::modem::parse_hst_action_ind(frame) else { return Ok(false) };
+        match ind.action {
+            homeplug::modem::HAR_LINK_ONLINE => self.down_since.set(None),
+            homeplug::modem::HAR_LINK_OFFLINE if self.down_since.get().is_none() => self.down_since.set(Some(Instant::now())),
+            _ => {}
+        }
+        let mut out = [0u8; homeplug::modem::FRAME_MAX];
+        let n = homeplug::modem::hst_action_rsp(self.socket.mac(), &ind, true, &mut out).ok_or_else(|| io::Error::from(ErrorKind::InvalidInput))?;
+        self.socket.send(&out[..n])?;
+        Ok(true)
     }
 }
 
@@ -422,6 +480,8 @@ impl Modem for QcaModem {
         }
         self.keyed = Some((Instant::now(), nid));
         self.link_check = None;
+        self.watching = false;
+        self.down_since.set(None);
         Ok(())
     }
 
@@ -440,6 +500,11 @@ impl Modem for QcaModem {
             match answer {
                 Ok(up) => {
                     self.link_check = Some(check);
+                    if up {
+                        self.watching = true;
+                        self.last_poll = Some(Instant::now());
+                        self.down_since.set(None);
+                    }
                     return Ok(up);
                 }
                 Err(e) if e.kind() == ErrorKind::TimedOut => {}
@@ -452,5 +517,28 @@ impl Modem for QcaModem {
         }
         // A modem that knows neither message: the settle time has to do.
         Ok(at.elapsed() >= self.settle)
+    }
+
+    fn link_lost(&mut self) -> io::Result<bool> {
+        // The modem's indications first (they are answered as they come), then the link status once in a while.
+        let mut buf = [0u8; 2048];
+        while let Some(n) = self.socket.recv(&mut buf, Some(Duration::from_millis(1)))? {
+            self.answer_indication(&buf[..n])?;
+        }
+        if !self.watching {
+            return Ok(false);
+        }
+        if self.last_poll.is_none_or(|at| at.elapsed() >= self.link_poll) {
+            self.last_poll = Some(Instant::now());
+            match self.link_status() {
+                Ok(s) if s.status == 0 && s.link => self.down_since.set(None),
+                Ok(_) if self.down_since.get().is_none() => self.down_since.set(Some(Instant::now())),
+                Ok(_) => {}
+                // A modem that does not answer is not told to have lost the link: the session has its own timeouts.
+                Err(e) if e.kind() == ErrorKind::TimedOut => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(self.down_since.get().is_some_and(|since| since.elapsed() >= self.link_loss_debounce))
     }
 }

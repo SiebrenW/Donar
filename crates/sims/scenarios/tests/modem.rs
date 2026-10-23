@@ -217,3 +217,134 @@ fn two_keys_are_given_at_a_distance() {
     assert!(second_took >= spacing - Duration::from_millis(50), "the second waits for the spacing: {second_took:?}");
     assert_eq!(modem.join().unwrap().keys.len(), 2);
 }
+
+/// What the scripted modem does: answers the key request, the link status requests with `script` (the last entry for
+/// every later one) and sends the indications `(milliseconds after the start, HAR)`.
+struct Wire {
+    script: Vec<bool>,
+    indications: Vec<(u64, u8)>,
+    run_for: Duration,
+}
+
+/// Runs `wire` and returns how many times the host acknowledged an indication.
+fn scripted_modem(wire: Wire, ready: std::sync::mpsc::Sender<()>) -> u32 {
+    let socket = PacketSocket::open(INTERFACE).unwrap();
+    ready.send(()).unwrap();
+    let start = std::time::Instant::now();
+    let (mut statuses, mut acks, mut sent) = (0, 0, 0);
+    let mut buf = [0u8; 2048];
+    while start.elapsed() < wire.run_for {
+        while let Some(&(at, har)) = wire.indications.get(sent) {
+            if start.elapsed() < Duration::from_millis(at) {
+                break;
+            }
+            // Version 0.1: the action, the version, session 7, one retry outstanding, the retry timer.
+            let mut ind = vec![0xFF; 6];
+            ind.extend_from_slice(&[0x00, 0x01, 0x87, 0x05, 0xF5, 0x06, 0x88, 0xE1, 0x00, 0x62, 0xA0, 0x00, 0xB0, 0x52, har, 0x00, 0x01, 7, 1, 0, 0x64, 0x00]);
+            ind.resize(60, 0);
+            socket.send(&ind).unwrap();
+            sent += 1;
+        }
+        let Some(n) = socket.recv(&mut buf, Some(Duration::from_millis(10))).unwrap() else { continue };
+        let frame = &buf[..n];
+        if frame.len() < 17 {
+            continue;
+        }
+        let mut reply = Vec::new();
+        reply.extend_from_slice(&frame[6..12]);
+        reply.extend_from_slice(&[0x00, 0x01, 0x87, 0x05, 0xF5, 0x06, 0x88, 0xE1]);
+        match u16::from_le_bytes([frame[15], frame[16]]) {
+            modem::SET_KEY_REQ => reply.extend_from_slice(&[0x01, 0x09, 0x60, 0x00, 0x00, 1, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0]),
+            modem::VS_PL_LNK_STATUS_REQ => {
+                let link = wire.script[statuses.min(wire.script.len() - 1)];
+                statuses += 1;
+                reply.extend_from_slice(&[0x00, 0xB9, 0xA0, 0x00, 0xB0, 0x52, 0x00, u8::from(link)]);
+            }
+            modem::VS_HST_ACTION_RSP => {
+                // Version 0.1: OUI, status 0, version, then what the indication carried.
+                assert_eq!(&frame[17..27], &[0x00, 0xB0, 0x52, 0, 0, 1, frame[23], 7, 1, 0], "the answer repeats the indication");
+                acks += 1;
+                continue;
+            }
+            _ => continue,
+        }
+        reply.resize(60, 0);
+        socket.send(&reply).unwrap();
+    }
+    acks
+}
+
+/// The driver with a link that is up, watched; runs `check` on it.
+fn watched<T: Send + 'static>(wire: Wire, link_poll: Duration, check: impl FnOnce(&mut QcaModem) -> T + Send + 'static) -> Option<(T, u32)> {
+    let mut sb = sandbox()?;
+    let (ev, charger) = (sb.node("ev").unwrap(), sb.node("modem").unwrap());
+    let (ev, charger) = sb.connect(&ev, &charger).unwrap();
+    let (ready, up) = std::sync::mpsc::channel();
+    let modem = std::thread::spawn(move || charger.run_in(|| scripted_modem(wire, ready)).unwrap());
+    up.recv().unwrap();
+    let result = ev
+        .run_in(move || {
+            let mut driver = QcaModem::open(INTERFACE).unwrap().with_link_poll(link_poll).with_link_loss_debounce(Duration::from_millis(300));
+            driver.set_key([1; 7], [2; 16]).unwrap();
+            assert!(driver.link_up().unwrap());
+            check(&mut driver)
+        })
+        .unwrap();
+    Some((result, modem.join().unwrap()))
+}
+
+/// Calls `link_lost` every 20 ms for up to `within`; how long it took until it said so.
+fn until_lost(driver: &mut QcaModem, within: Duration) -> Option<Duration> {
+    let start = std::time::Instant::now();
+    while start.elapsed() < within {
+        if driver.link_lost().unwrap() {
+            return Some(start.elapsed());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    None
+}
+
+#[test]
+fn a_link_indication_of_the_modem_is_acknowledged() {
+    let wire = Wire { script: vec![true], indications: vec![(50, homeplug::modem::HAR_LINK_ONLINE)], run_for: Duration::from_millis(800) };
+    let Some((lost, acks)) = watched(wire, Duration::from_millis(50), |driver| {
+        std::thread::sleep(Duration::from_millis(200));
+        driver.link_lost().unwrap()
+    }) else {
+        return;
+    };
+    assert!(!lost);
+    assert_eq!(acks, 1);
+}
+
+#[test]
+fn a_link_that_stays_down_is_lost_after_the_debounce() {
+    let wire = Wire { script: vec![true, true, false], indications: vec![], run_for: Duration::from_millis(2000) };
+    let Some((took, _)) = watched(wire, Duration::from_millis(50), |driver| until_lost(driver, Duration::from_millis(1500))) else { return };
+    let took = took.expect("the lost link is reported");
+    // The first status without a link is polled 100 ms in; the debounce runs from there.
+    assert!(took >= Duration::from_millis(300), "{took:?}");
+}
+
+#[test]
+fn a_link_that_comes_back_within_the_debounce_is_not_lost() {
+    let wire = Wire { script: vec![true, true, false, true], indications: vec![], run_for: Duration::from_millis(1500) };
+    let Some((took, _)) = watched(wire, Duration::from_millis(50), |driver| until_lost(driver, Duration::from_millis(900))) else { return };
+    assert_eq!(took, None);
+}
+
+#[test]
+fn an_offline_indication_starts_the_debounce_and_an_online_one_ends_it() {
+    use homeplug::modem::{HAR_LINK_OFFLINE, HAR_LINK_ONLINE};
+    // The status (up) is not asked in this time; only the indications speak.
+    let (rarely, within) = (Duration::from_secs(30), Duration::from_millis(900));
+    let wire = Wire { script: vec![true], indications: vec![(50, HAR_LINK_OFFLINE)], run_for: Duration::from_millis(1200) };
+    let Some((took, acks)) = watched(wire, rarely, move |driver| until_lost(driver, within)) else { return };
+    assert!(took.expect("the lost link is reported") >= Duration::from_millis(250));
+    assert_eq!(acks, 1);
+    let wire = Wire { script: vec![true], indications: vec![(50, HAR_LINK_OFFLINE), (150, HAR_LINK_ONLINE)], run_for: Duration::from_millis(1200) };
+    let Some((took, acks)) = watched(wire, rarely, move |driver| until_lost(driver, within)) else { return };
+    assert_eq!(took, None);
+    assert_eq!(acks, 2);
+}
