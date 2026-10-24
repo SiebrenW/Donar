@@ -50,7 +50,7 @@ ISO 15118-20 requires TLS 1.3; the session refuses a plain connection unless `Co
 Documented at the top of [`session/mod.rs`](crates/evcc/core/src/session/mod.rs). In short:
 
 1. Connect, then `machine.handle(Event::Start { secured })`.
-2. Read bytes straight into `machine.rx_space()`, then `handle(Event::Received(n))`.
+2. Read bytes straight into `machine.rx_space()`, then `handle(Event::Received(n))`. One call handles one frame: while `machine.frame_pending()` (a second frame came in the same read; they do when a side stream runs beside the main stream), call `handle(Event::Received(0))` and carry out its step too, before you wait for the stream again.
 3. After **every** call carry out the returned `Step`: write `machine.tx()[..send]` to the stream; apply `timers` (`TimerCmd::Arm { timer, ms }` replaces a pending expiry of that timer, `Cancel` removes it); handle `notice`; close the connection when `end` is set.
 4. When a timer fires, `handle(Event::TimerExpired(timer))`.
 

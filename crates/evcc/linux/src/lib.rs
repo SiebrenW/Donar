@@ -252,6 +252,10 @@ fn next_step_with_pilot(
     pilot: &mut dyn pilot::PilotSource,
 ) -> io::Result<Next> {
     loop {
+        // A frame that came with the one before is handled before anything else is waited for.
+        if session.frame_pending() {
+            return Ok(Next::Step(session.handle(Event::Received(0))));
+        }
         if let Some(reading) = pilot.poll() {
             return Ok(Next::Step(session.handle(Event::Pilot(reading))));
         }
@@ -264,10 +268,7 @@ fn next_step_with_pilot(
             }
             timeout = timeout.min(left.max(Duration::from_millis(1)));
         }
-        match stream.set_read_timeout(Some(timeout)) {
-            Err(e) if e.kind() == ErrorKind::InvalidInput => return Err(ErrorKind::ConnectionAborted.into()),
-            other => other?,
-        }
+        stream.set_read_timeout(Some(timeout))?;
         let space = session.rx_space();
         if space.is_empty() {
             return Err(io::Error::new(ErrorKind::OutOfMemory, "RX buffer full"));
@@ -299,6 +300,9 @@ fn next_step_plain(
     session: &mut impl Machine,
     deadlines: &mut Deadlines,
 ) -> io::Result<Next> {
+    if session.frame_pending() {
+        return Ok(Next::Step(session.handle(Event::Received(0))));
+    }
     let pending = deadlines.next();
     let timeout = match pending {
         Some((timer, d)) => {
