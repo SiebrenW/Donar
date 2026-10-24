@@ -288,11 +288,13 @@ dependencies = [
  "control-pilot",
  "evcc-core",
  "exi",
+ "foreign-types",
  "homeplug",
  "iso15118-2",
  "iso15118-20",
  "libc",
  "openssl",
+ "openssl-sys",
  "v2gtp",
  "x509-parser",
 ]

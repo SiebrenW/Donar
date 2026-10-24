@@ -260,3 +260,37 @@ fn the_sub_ca_statuses_openssl_cannot_deliver_fail_the_strict_check() {
     let err = ocsp_session(Some(OcspFlaw::Good), true).unwrap_err();
     assert!(err.to_string().contains("V2G20-2416"), "{err}");
 }
+
+type Names = Option<Vec<Vec<u8>>>;
+
+/// Both sides handshake and report the authorities the other announced.
+fn announced(server: Credentials<'_>, client: Credentials<'_>) -> (Names, Names) {
+    let (server, client) = (tls::server_context(&server).unwrap(), tls::client_context(&client).unwrap());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let thread = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut stream = tls::accept(&server, stream).unwrap();
+        // The handshake is done once the client's first byte arrives.
+        std::io::Read::read(&mut stream, &mut [0u8; 1]).unwrap();
+        tls::peer_authorities(stream.ssl())
+    });
+    let mut stream = tls::connect(&client, TcpStream::connect(addr).unwrap()).unwrap();
+    std::io::Write::write_all(&mut stream, b"x").unwrap();
+    let seen_by_client = tls::peer_authorities(stream.ssl());
+    (thread.join().unwrap(), seen_by_client)
+}
+
+#[test]
+fn the_trust_anchors_are_announced_as_certificate_authorities() {
+    // V2G20-1006 (the vehicle's ClientHello), 2401 (the charger's CertificateRequest).
+    let subject = |p: &Pki| openssl::x509::X509::from_pem(&p.pem).unwrap().subject_name().to_der().unwrap();
+    let (ca, secc) = pki(Curve::P521, "SECC");
+    let (vca, evcc) = pki(Curve::P521, "EVCC");
+    let (by_server, by_client) = announced(credentials(&secc, &vca), credentials(&evcc, &ca));
+    assert_eq!(by_server, Some(vec![subject(&ca)]), "what the charger saw in the ClientHello");
+    assert_eq!(by_client, Some(vec![subject(&vca)]), "what the vehicle saw in the CertificateRequest");
+    // V2G20-3374, 3382: in CPM4PE neither side sends the extension.
+    let (by_server, by_client) = announced(credentials(&secc, &vca).without_authorities(), credentials(&evcc, &ca).without_authorities());
+    assert_eq!((by_server, by_client), (None, None));
+}
