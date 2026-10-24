@@ -6,6 +6,9 @@ pki = "p521"
 [secc]
 kind = "evse-sim"
 tls = true
+[secc.settings]
+slac_responder = true
+
 [secc.settings.session]
 offered_authorization = ["EIM", "PnC"]
 [secc.settings.session.pnc]
@@ -16,6 +19,7 @@ kind = "evcc-sim"
 tls = true
 pnc = true
 [evcc.settings]
+slac = true
 poll_interval_ms = 10
 charge_loop_interval_ms = 10
 

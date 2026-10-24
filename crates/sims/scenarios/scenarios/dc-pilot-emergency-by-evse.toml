@@ -4,12 +4,16 @@ timeout_s = 30
 
 [secc]
 kind = "evse-sim"
+[secc.settings]
+slac_responder = true
+
 [secc.settings.session]
 pilot_emergency_after_loops = 2
 
 [evcc]
 kind = "evcc-sim"
 [evcc.settings]
+slac = true
 poll_interval_ms = 10
 charge_loop_interval_ms = 10
 stop_after = 0

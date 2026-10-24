@@ -7,12 +7,14 @@ pki = "p521"
 kind = "evse-sim"
 tls = true
 [secc.settings]
+slac_responder = true
 sessions = 2
 
 [evcc]
 kind = "evcc-sim"
 tls = true
 [evcc.settings]
+slac = true
 stop_after = 3
 pause_after = 2
 resume_after_ms = 500

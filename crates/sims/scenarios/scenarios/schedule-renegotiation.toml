@@ -4,6 +4,9 @@ timeout_s = 30
 
 [secc]
 kind = "evse-sim"
+[secc.settings]
+slac_responder = true
+
 [secc.settings.session]
 schedule_renegotiation_after_loops = 2
 schedule_ongoing_responses = 2
@@ -11,6 +14,7 @@ schedule_ongoing_responses = 2
 [evcc]
 kind = "evcc-sim"
 [evcc.settings]
+slac = true
 stop_after = 0
 stop_when_rescheduled = true
 poll_interval_ms = 10

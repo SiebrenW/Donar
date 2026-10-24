@@ -4,6 +4,9 @@ timeout_s = 30
 
 [secc]
 kind = "evse-sim"
+[secc.settings]
+slac_responder = true
+
 [secc.settings.session]
 mobility_departure_s = 7200
 mobility_minimum_soc = 20
@@ -12,6 +15,7 @@ mobility_target_soc = 90
 [evcc]
 kind = "evcc-sim"
 [evcc.settings]
+slac = true
 mobility_needs_by_secc = true
 poll_interval_ms = 10
 charge_loop_interval_ms = 10

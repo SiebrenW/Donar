@@ -30,6 +30,22 @@ fn every_scenario_file_loads() {
     }
 }
 
+/// The bring-up of a charging session starts with SLAC (ISO 15118-3): every simulator scenario runs it, unless it is listed
+/// here with the reason. (A charger that offers a nominal duty cycle, 10 to 96 %, is basic charging with no SLAC and no
+/// high level communication; evse-sim has no such policy yet, so nothing is exempt.)
+const WITHOUT_SLAC: &[(&str, &str)] = &[];
+
+#[test]
+fn every_simulator_scenario_runs_slac_unless_it_is_exempt() {
+    for file in files(&directory()) {
+        let scenario = Scenario::load(&file).unwrap();
+        let name = file.file_stem().unwrap().to_string_lossy().into_owned();
+        let (secc, evcc) = (scenario.secc_settings(), scenario.evcc_settings());
+        let exempt = WITHOUT_SLAC.iter().any(|(n, _)| *n == name);
+        assert_eq!(secc.slac_responder && evcc.slac, !exempt, "{name}: SLAC on both ends (or the scenario is in WITHOUT_SLAC with a reason)");
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod run {
     use super::*;

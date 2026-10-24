@@ -4,6 +4,9 @@ timeout_s = 30
 
 [secc]
 kind = "evse-sim"
+[secc.settings]
+slac_responder = true
+
 [secc.settings.session]
 authorization_ongoing_responses = 2
 cable_check_ongoing_responses = 3
@@ -13,6 +16,7 @@ cpd_ongoing_responses = 2
 [evcc]
 kind = "evcc-sim"
 [evcc.settings]
+slac = true
 protocol = "din70121"
 connector = "extended"
 poll_interval_ms = 10

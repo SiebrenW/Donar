@@ -4,12 +4,19 @@ timeout_s = 30
 
 [secc]
 kind = "evse-sim"
+[secc.settings]
+slac_responder = true
+
 [secc.settings.session]
 schedule_prices = true
+
+[secc.settings.slac]
+ac = true
 
 [evcc]
 kind = "evcc-sim"
 [evcc.settings]
+slac = true
 ac = true
 scheduled = true
 poll_interval_ms = 10

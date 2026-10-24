@@ -393,16 +393,19 @@ function start() {
         pre.append(text);
         if (atEnd) pre.scrollTop = pre.scrollHeight;
       });
-      es.addEventListener("result", e => {
-        verdict.textContent = e.data.trim();
-        verdict.className = /^PASS/m.test(e.data) ? "pass" : "fail";
-      });
-      es.addEventListener("end", () => {
+      // The verdict is the end of the run: the stream is closed here, or the browser would reconnect and replay the logs.
+      const finish = () => {
         es.close();
         running = false;
         const button = document.getElementById("run");
         if (button) button.disabled = false;
+      };
+      es.addEventListener("result", e => {
+        verdict.textContent = e.data.trim();
+        verdict.className = /^PASS/m.test(e.data) ? "pass" : "fail";
+        finish();
       });
+      es.addEventListener("end", finish);
       es.onerror = () => { if (es.readyState === EventSource.CLOSED) running = false; };
     })
     .catch(e => { verdict.className = "fail"; verdict.textContent = e.message; });

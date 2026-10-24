@@ -7,12 +7,14 @@ pki = "p256"
 kind = "evse-sim"
 tls = true
 [secc.settings]
+slac_responder = true
 backwards_compatible = true
 
 [evcc]
 kind = "evcc-sim"
 tls = true
 [evcc.settings]
+slac = true
 poll_interval_ms = 10
 charge_loop_interval_ms = 10
 [evcc.settings.tls]
