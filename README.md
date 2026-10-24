@@ -118,6 +118,10 @@ How the codec compares with EXIficient, OpenV2G and libcbv2g (round trip, speed,
 
 Test it against something: `cargo xtask linux-test` (everything), `cargo xtask interop` (the Python library as charger), `cargo xtask web` (the web page).
 
+## The standards are not included
+
+The standards (ISO 15118-2, -3, -20, DIN SPEC 70121, and their XML schemas) are not part of this repository and are not covered by its license. Get them from ISO and DIN. `cargo xtask setup` downloads the schemas into `data/` and `standards/` (both gitignored) to regenerate the codecs; the generated codecs in `crates/codec/*/src/generated/` are committed so a fresh clone builds without them. The generator copies no text from the schemas. Requirement ids in comments and `docs/` only point into the standards.
+
 ## License
 
 Licensed under either of [0BSD](LICENSE-0BSD) or [Apache License 2.0](LICENSE-APACHE), at your option. Unless you state otherwise, a contribution you submit is licensed under both, without further terms.
