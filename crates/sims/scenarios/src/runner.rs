@@ -201,8 +201,19 @@ fn start_capture(sb: &Sandbox, node: &sandbox::Node) -> Option<Process> {
     let path = sb.artifacts().join(CAPTURE);
     // `-U --immediate-mode`: every packet is delivered and written at once, so the file is complete when the process is killed.
     let spawn = Spawn::new("tcpdump").args(["-i", sandbox::INTERFACE, "-n", "-U", "--immediate-mode", "-w"]).arg(&path).net_raw().label("tcpdump");
-    let mut process = sb.spawn(node, spawn).ok()?;
-    process.wait_for_log("listening on", Duration::from_secs(5)).unwrap_or(false).then_some(process)
+    let mut process = match sb.spawn(node, spawn) {
+        Ok(process) => process,
+        Err(e) => {
+            eprintln!("capture: tcpdump could not be started ({e}); the run goes on without {CAPTURE}");
+            return None;
+        }
+    };
+    if process.wait_for_log("listening on", Duration::from_secs(5)).unwrap_or(false) {
+        return Some(process);
+    }
+    eprintln!("capture: tcpdump did not start ({}); the run goes on without {CAPTURE}. Is tcpdump installed (a dev container made before it was added to the Dockerfile has to be rebuilt)?", process.log().trim());
+    process.kill();
+    None
 }
 
 fn finish(scenario: &Scenario, sb: &Sandbox, mut failures: Vec<String>, secc: &mut Process, car: Option<&mut Process>, capture: &mut Option<Process>) -> Report {
