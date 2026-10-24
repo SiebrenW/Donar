@@ -20,14 +20,16 @@ Donar (the project was called `evcc-rs`) is an open-source toolkit for the vehic
 
 ## Commands
 
+Linux is the only supported platform. Develop in the dev container (`.devcontainer/`, repository at `/workspaces/evcc-rs`); from a host terminal `cargo xtask lint|linux-test|interop|web` run in the same container image.
+
 The generated codecs are committed (`crates/codec/*/src/generated/`), so a fresh clone builds. The schemas and the EXIficient vectors are gitignored (`data/`, `standards/`): the tests that compare with the vectors need `cargo xtask setup && cargo xtask vectors`, and so does a change to the generator.
 
 ```sh
-cargo xtask lint             # clippy with -D warnings (also in the container on a Mac)
+cargo xtask lint             # clippy with -D warnings
 cargo xtask setup            # download the schemas, regenerate the codecs (needs curl; --force regenerates); commit what changes
 cargo xtask vectors          # reference vectors with EXIficient (needs a JDK)
 cargo xtask grammars         # diff the derived grammar with EXIficient's
-cargo test --workspace       # everything that runs on this machine (the Linux-only tests are cfg'd out on macOS)
+cargo test --workspace       # everything (Linux only; some tests need root)
 cargo test -p evcc-core --test slac_flow          # one test file
 cargo test -p evcc-core <name>                    # one test by name
 cargo xtask linux-test [cargo test args]          # inside the privileged Linux container (network namespaces, raw sockets)
@@ -36,7 +38,7 @@ cargo xtask interop [name...]   # scenarios in scenarios/interop/ against the Py
 cargo xtask web [PORT]          # the web UI (evcc-web) in the container, default http://127.0.0.1:8080/
 ```
 
-`cargo xtask` is an alias for the `xtask` crate (`.cargo/config.toml`). In the dev container run `cargo test` directly. The repository must be at `/workspaces/evcc-rs` in the container (cargo bakes `CARGO_MANIFEST_DIR` into outputs on a shared volume). Browser tests (`crates/sims/web/tests/browser.rs`) need Chrome/Chromium/Brave (`CHROME`), are skipped without one unless `EVCC_REQUIRE_BROWSER` is set (the container sets it). macOS `sed` has no `\b`; check renames with a grep afterwards.
+`cargo xtask` is an alias for the `xtask` crate (`.cargo/config.toml`). In the dev container run `cargo test` directly. The repository must be at `/workspaces/evcc-rs` in the container (cargo bakes `CARGO_MANIFEST_DIR` into outputs on a shared volume). Browser tests (`crates/sims/web/tests/browser.rs`) need Chrome/Chromium/Brave (`CHROME`), are skipped without one unless `EVCC_REQUIRE_BROWSER` is set (the container sets it).
 
 ## Architecture
 
@@ -55,7 +57,7 @@ cargo xtask web [PORT]          # the web UI (evcc-web) in the container, defaul
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` (clippy with `-D warnings`, the `no_std` build for a bare-metal target, the whole workspace on Linux as root, macOS, the interop scenarios; see `docs/getting-started.md`). Keep clippy clean with `cargo xtask lint` (it also runs in the Linux container when you are on a Mac: a good part of the code is compiled on Linux only, and the first CI run failed on exactly that). The Linux job runs the tests natively on the runner, not in the container, so a change that needs a new tool needs it installed in the workflow as well as in `.devcontainer/Dockerfile`.
+`.github/workflows/ci.yml` (clippy with `-D warnings`, the `no_std` build for a bare-metal target, the whole workspace on Linux as root, the interop scenarios; see `docs/getting-started.md`). Keep clippy clean with `cargo xtask lint`. The Linux job runs the tests natively on the runner, not in the container, so a change that needs a new tool needs it installed in the workflow as well as in `.devcontainer/Dockerfile`.
 
 ## Working conventions
 

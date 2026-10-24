@@ -2,7 +2,7 @@
 //! the page (a name that does not exist, a failed build of a view) shows up here and nowhere else.
 //!
 //! The browser is Chrome or Chromium, driven over the DevTools protocol on a WebSocket. Found through `CHROME`, or by
-//! name on the path, or at the usual place on macOS. Without one the tests say so and pass, unless
+//! name on the path. Without one the tests say so and pass, unless
 //! `EVCC_REQUIRE_BROWSER` is set (the dev container sets it).
 
 mod common;
@@ -22,9 +22,8 @@ fn find_browser() -> Option<PathBuf> {
         return Some(PathBuf::from(path));
     }
     let names = ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "chrome"];
-    let on_path = std::env::var_os("PATH").into_iter().flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).flat_map(|dir| names.iter().map(move |n| dir.join(n)));
-    let mac = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Chromium.app/Contents/MacOS/Chromium", "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"].into_iter().map(PathBuf::from);
-    on_path.chain(mac).find(|p| p.exists())
+    let mut on_path = std::env::var_os("PATH").into_iter().flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).flat_map(|dir| names.iter().map(move |n| dir.join(n)));
+    on_path.find(|p| p.exists())
 }
 
 /// A headless browser with one page, and what it reported.

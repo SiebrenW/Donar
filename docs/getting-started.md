@@ -2,14 +2,9 @@
 
 Donar is a toolkit for the vehicle-to-charger high level communication (ISO 15118-20, ISO 15118-2, DIN SPEC 70121, SLAC): an EV communication controller (EVCC), a charger side (EVSE/SECC) and simulators to test them against each other. This page gets you from a fresh clone to a green test run. The plan and the status of the standard's requirements are in [PLAN.md](../PLAN.md).
 
-## Two ways to work
+## Linux only
 
-| | Where | What runs |
-|---|---|---|
-| **Dev container** (recommended) | Linux container, started by VS Code or the `devcontainer` CLI | everything, including the network namespace tests |
-| **Local** | your macOS or Linux machine | everything except the Linux-only network tests, which you run through `cargo xtask linux-test` (needs Docker) |
-
-The Linux-only tests create network namespaces and virtual Ethernet pairs and open raw packet sockets (SLAC). They need root and a Linux kernel, hence the container.
+Donar targets Linux: vehicles and chargers do not run macOS or Windows, so there is no other platform to keep working. Develop in the dev container (below), which is a Linux environment with everything installed; on a Mac or Windows machine that is the only supported way. On a Linux machine you may work natively (see Local setup). The tests create network namespaces and virtual Ethernet pairs and open raw packet sockets (SLAC); they need root and a Linux kernel.
 
 ## Dev container
 
@@ -25,15 +20,15 @@ Prerequisites: Docker (Docker Desktop, Colima or similar) in your `PATH`, and an
 
 Zed ignores the `customizations.vscode` block (extensions, settings) of `devcontainer.json` and brings its own rust-analyzer. The setup has been tried with VS Code's settings format and the plain Docker commands; the Zed route is untested, in particular whether Zed passes `--privileged` from `runArgs`. If the namespace tests fail with "Operation not permitted" in a Zed container, run them from a normal terminal with `cargo xtask linux-test`.
 
-The repository is mounted at `/workspaces/evcc-rs` in the container, both by the dev container and by `cargo xtask linux-test`; keep it that way, because cargo bakes the path into build outputs (`env!("CARGO_MANIFEST_DIR")`) that live in a shared volume. You work as the user `developer` (UID 1000, which an editor may change to your own UID) with passwordless `sudo`. Only the test binaries run as root: the image sets `CARGO_TARGET_*_RUNNER` to `.devcontainer/test-runner.sh`, which starts programs from cargo's `deps` directory through `sudo`, so the namespace and raw-socket tests get their privileges while building and `cargo xtask` stay unprivileged. The container is **privileged** (the namespace tests need it), so use it on a machine and Docker VM you trust. Build output lives in the named volume `evcc-rs-target-v2` (`CARGO_TARGET_DIR=/target`), so it never mixes with a `target/` directory made on macOS.
+The repository is mounted at `/workspaces/evcc-rs` in the container, both by the dev container and by `cargo xtask linux-test`; keep it that way, because cargo bakes the path into build outputs (`env!("CARGO_MANIFEST_DIR")`) that live in a shared volume. You work as the user `developer` (UID 1000, which an editor may change to your own UID) with passwordless `sudo`. Only the test binaries run as root: the image sets `CARGO_TARGET_*_RUNNER` to `.devcontainer/test-runner.sh`, which starts programs from cargo's `deps` directory through `sudo`, so the namespace and raw-socket tests get their privileges while building and `cargo xtask` stay unprivileged. The container is **privileged** (the namespace tests need it), so use it on a machine and Docker VM you trust. Build output lives in the named volume `evcc-rs-target-v2` (`CARGO_TARGET_DIR=/target`), so it never mixes with a `target/` directory made on the host.
 
-## Local setup
+## Local setup (Linux)
 
 Prerequisites:
 
 - Rust (stable, edition 2024; `rustup` is the easiest way) with `rustfmt`, which the generator uses.
-- A C toolchain and the OpenSSL development files for `evcc-linux`: on macOS `brew install openssl@3` (set `OPENSSL_DIR=$(brew --prefix openssl@3)` if the build does not find it), on Debian/Ubuntu `apt install libssl-dev pkg-config`.
-- `curl` and a JDK (`java` and `javac`; on macOS `brew install openjdk`) for the one-time setup below. The JDK is only used to produce reference vectors with EXIficient.
+- A C toolchain and the OpenSSL development files for `evcc-linux`: on Debian/Ubuntu `apt install libssl-dev pkg-config`.
+- `curl` and a JDK (`java` and `javac`) for the one-time setup below. The JDK is only used to produce reference vectors with EXIficient.
 
 One-time setup:
 
@@ -47,7 +42,7 @@ Both skip what is already there; `setup --force` fetches and generates again. Th
 ## Running the tests
 
 ```sh
-cargo test --workspace                    # everything that runs on this machine
+cargo test --workspace                    # everything
 cargo test -p evcc-core                   # one crate
 cargo test -p scenarios --test tls        # one test file
 cargo bench -p iso15118-20                # codec throughput over the reference vectors
@@ -55,7 +50,7 @@ cargo xtask linux-test                    # the whole workspace inside the Linux
 cargo xtask linux-test -p scenarios --test scenarios   # only the scenarios
 ```
 
-`cargo xtask linux-test [cargo test arguments]` builds the image, starts a privileged container with the repository mounted and runs `cargo test` in it. It is what you use from macOS without the dev container. In the dev container you run `cargo test` directly.
+`cargo xtask linux-test [cargo test arguments]` builds the image, starts a privileged container with the repository mounted and runs `cargo test` in it. It is the way in from a terminal on the host, outside the dev container. In the dev container you run `cargo test` directly.
 
 ### Scenarios
 
@@ -103,9 +98,7 @@ These scenarios run `evcc-sim` against an independent ISO 15118-20 charger in an
 | `crates/sims/web/tests/web.rs` | The web server over HTTP: scenario list, schemas, refusal of bad scenarios; a run with its logs streamed (Linux) | the run: yes |
 | `crates/sims/web/tests/browser.rs` | The web page in a headless Chrome or Chromium over the DevTools protocol: it builds, every choice can be made, no script error anywhere (skipped without a browser unless `EVCC_REQUIRE_BROWSER` is set; `CHROME` names the binary; the dev container has Chromium) | no |
 | `crates/sims/scenarios/tests/pnc.rs`, `.../certificates.rs` | Plug & Charge (signed `AuthorizationReq`, contract chain, fallback to EIM) and the Annex B certificate profile and OCSP checks, with chains made to the profiles and chains that break one rule | no |
-| `crates/sims/scenarios/tests/scenarios.rs` | Every scenario file in two network namespaces: multicast SDP, SLAC on a raw packet socket (matched and too far away), TLS 1.3 with P-521 and Ed448 certificates, a delayed cable, a charger that ends the charge; plus a check that all scenario files load | **yes** (Linux only; the loading check runs everywhere) |
-
-Tests that need root are compiled only on Linux, so `cargo test --workspace` on macOS simply does not contain them.
+| `crates/sims/scenarios/tests/scenarios.rs` | Every scenario file in two network namespaces: multicast SDP, SLAC on a raw packet socket (matched and too far away), TLS 1.3 with P-521 and Ed448 certificates, a delayed cable, a charger that ends the charge; plus a check that all scenario files load | **yes** |
 
 ## Continuous integration
 
@@ -113,10 +106,9 @@ Tests that need root are compiled only on Linux, so `cargo test --workspace` on 
 
 | Job | What | Where it differs from your machine |
 |---|---|---|
-| `lint` | `cargo clippy --workspace --all-targets -- -D warnings` | run it yourself with `cargo xtask lint` (on a Mac it also runs in the container, for the code that is compiled on Linux only) |
+| `lint` | `cargo clippy --workspace --all-targets -- -D warnings` | run it yourself with `cargo xtask lint` (outside the dev container it runs in the container) |
 | `no-std` | the cores, the codecs and `control-pilot` build for `thumbv7em-none-eabihf` | catches `std` that crept into the portable parts |
 | `linux` | `cargo xtask grammars`, then every test of the workspace as root through `.github/ci-runner.sh`: the scenarios in network namespaces (each with its `capture.pcap`), TLS, SLAC, the web page in headless Chrome | the same as `cargo xtask linux-test`, without the container |
-| `macos` | the tests that need no privileges | the Linux-only tests are `cfg`'d out |
 | `interop` | the interop scenarios against the Python `iso15118` SECC and `pyslac` | the partners are installed into virtual environments below `target/venv` (`ISO15118_PYTHON_VENV`, `PYSLAC_VENV`) |
 
 The schemas and the EXIficient jars are downloaded in the run (`.github/actions/prepare`), and the vectors made once are cached (`data/`). When a scenario fails, the logs, settings and captures of the runs are uploaded as an artifact (`scenario-artifacts`, `interop-artifacts`; open the `.pcap` with Wireshark). `.github/workflows/audit.yml` checks `Cargo.lock` against the RustSec database weekly, and Dependabot proposes updates of the crates and the actions.
@@ -148,10 +140,9 @@ standards/                         your copies of the standards (not in git)
 
 - **`missing .../data/vectors/*.hex`**: run `cargo xtask setup && cargo xtask vectors`.
 - **`cargo xtask gen` changed files under `crates/codec`**: the generator or a schema changed; review the diff and commit it. A different `rustfmt` version can reformat the generated files; use the toolchain CI uses (stable).
-- **OpenSSL not found (macOS)**: `export OPENSSL_DIR=$(brew --prefix openssl@3)`.
 - **`cargo xtask linux-test` cannot reach Docker**: start your Docker VM (`colima start` or Docker Desktop). With Colima the repository must be below your home directory, which it shares by default.
 - **Namespace tests fail with "Operation not permitted"**: the container is not privileged; use `cargo xtask linux-test` or the dev container as configured.
-- **"Permission denied" writing in the repository from the container (Linux host)**: the image's `developer` has UID 1000; the dev container keeps it (`updateRemoteUserUID` is off, so that it and `cargo xtask linux-test` share the build volumes), and so does `cargo xtask linux-test`. If your UID is not 1000, run `docker run --user $(id -u) ...` yourself or use the dev container. On macOS with Colima or Docker Desktop this does not occur.
+- **"Permission denied" writing in the repository from the container (Linux host)**: the image's `developer` has UID 1000; the dev container keeps it (`updateRemoteUserUID` is off, so that it and `cargo xtask linux-test` share the build volumes), and so does `cargo xtask linux-test`. If your UID is not 1000, run `docker run --user $(id -u) ...` yourself or use the dev container.
 - **Build output owned by root after an older image**: the container runs `own-volumes` (a `chown` of the two volumes) on start, in the dev container and in `cargo xtask linux-test`.
 - **Tests fail in the container with a path like `/work/...` or `Permission denied` from `cargo xtask`**: the build volume was made by an earlier layout with the repository at another path. Remove the volumes (`docker volume rm evcc-rs-target-v2 evcc-rs-cargo-v2` with no container using them) and rebuild.
 - **Leftover namespaces after an aborted run**: `ip netns list` inside the container shows them; they vanish when the container ends.
