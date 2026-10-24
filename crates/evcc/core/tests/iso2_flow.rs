@@ -107,9 +107,13 @@ fn run(connector: DcConnector, evse: EvseConfig, config: Config, stop_after: Opt
 #[derive(Default)]
 struct Host {
     inject: Option<(u32, control_pilot::Reading)>,
+    /// The reading the host has before the session starts.
+    first: Option<control_pilot::Reading>,
+    /// The reading it reports once the vehicle holds the first request for it.
+    settle: Option<control_pilot::Reading>,
 }
 
-fn run_host(connector: DcConnector, evse: EvseConfig, config: Config, stop_after: Option<u32>, host: Host) -> Run {
+fn run_host(connector: DcConnector, evse: EvseConfig, config: Config, stop_after: Option<u32>, mut host: Host) -> Run {
     let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
     let sent: Sent = Rc::default();
     let mut session = Session::new(config, TestEv::new(connector), Log(sent.clone()), Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
@@ -117,6 +121,9 @@ fn run_host(connector: DcConnector, evse: EvseConfig, config: Config, stop_after
     let (mut states, mut notices) = (Vec::new(), Vec::new());
     let mut loops = 0;
     let mut queue = std::collections::VecDeque::from([Input::Event(Event::Start { secured: false })]);
+    if let Some(first) = host.first {
+        queue.push_front(Input::Event(Event::Pilot(first)));
+    }
     let mut guard = 0;
     let mut expired = false;
     while let Some(input) = queue.pop_front() {
@@ -130,6 +137,9 @@ fn run_host(connector: DcConnector, evse: EvseConfig, config: Config, stop_after
             }
         };
         states.push(session.state());
+        if session.state() == State::AwaitDutyCycle && let Some(reading) = host.settle.take() {
+            queue.push_front(Input::Event(Event::Pilot(reading)));
+        }
         if let Some(reason) = step.end {
             let sent = sent.borrow().clone();
             return Run { end: reason, states, notices, log: evse.take_log(), sent };
@@ -305,7 +315,7 @@ fn an_emergency_on_the_pilot_ends_the_session_at_once_and_sends_nothing_more() {
         Reading { state: Cp::B, pwm: Pwm::Duty(5) },
         Reading { state: Cp::Invalid, pwm: Pwm::Duty(5) },
     ] {
-        let r = run_host(DcConnector::Extended, EvseConfig::default(), iso2(), None, Host { inject: Some((2, reading)) });
+        let r = run_host(DcConnector::Extended, EvseConfig::default(), iso2(), None, Host { inject: Some((2, reading)), ..Host::default() });
         assert_eq!(r.end, EndReason::Emergency(reading), "{:?}", r.states);
         assert_eq!(r.sent.iter().filter(|m| *m == "PowerDeliveryReq").count(), 1, "only the start of the power: {:?}", r.sent);
         assert!(!r.sent.iter().any(|m| m == "SessionStopReq"), "{:?}", r.sent);
@@ -318,7 +328,7 @@ fn a_pilot_in_state_e_or_f_closes_the_connection() {
     use control_pilot::{Pwm, Reading, State as Cp};
     for state in [Cp::E, Cp::F] {
         let reading = Reading { state, pwm: Pwm::Off };
-        let r = run_host(DcConnector::Extended, EvseConfig::default(), iso2(), None, Host { inject: Some((2, reading)) });
+        let r = run_host(DcConnector::Extended, EvseConfig::default(), iso2(), None, Host { inject: Some((2, reading)), ..Host::default() });
         assert_eq!(r.end, EndReason::PilotFault(reading));
     }
 }
@@ -344,4 +354,45 @@ fn an_ac_session_asks_for_the_pilot_around_the_power_delivery() {
     let first_pilot = r.notices.iter().position(|n| matches!(n, Notice::ControlPilot(_))).unwrap();
     let last_pilot = r.notices.iter().rposition(|n| matches!(n, Notice::ControlPilot(_))).unwrap();
     assert!(r.notices[first_pilot + 1..last_pilot].iter().any(|n| matches!(n, Notice::ChargeLoop(_))), "C before the charge loop, B after it: {:?}", r.notices);
+}
+
+#[test]
+fn an_ac_vehicle_holds_the_first_charge_parameter_request_until_it_measured_5_percent_or_nominal() {
+    // V2G2-930: 5 % or a nominal duty cycle (10 to 95 %) before the first ChargeParameterDiscoveryReq.
+    use control_pilot::{Pwm, Reading, State as Cp};
+    let reading = |pwm| Reading { state: Cp::B, pwm };
+    for (first, held) in [(Pwm::Duty(2), true), (Pwm::Off, true), (Pwm::Duty(100), true), (Pwm::Duty(5), false), (Pwm::Duty(7), false), (Pwm::Duty(53), false), (Pwm::Duty(95), false)] {
+        let host = Host { first: Some(reading(first)), settle: Some(reading(Pwm::Duty(5))), ..Host::default() };
+        let r = run_host(DcConnector::Extended, EvseConfig::default(), Config::ac(false), Some(2), host);
+        assert_eq!(r.end, EndReason::Completed, "{first:?}: {:?}\n{:?}", r.states, r.log);
+        assert_eq!(r.states.contains(&State::AwaitDutyCycle), held, "{first:?}");
+        // The request went out after the wait, and every message of the session is there once.
+        assert_eq!(r.sent.iter().filter(|m| m.contains("ChargeParameterDiscoveryReq")).count(), 1, "{first:?}");
+    }
+}
+
+#[test]
+fn an_ac_vehicle_whose_pilot_never_settles_ends_on_the_sequence_timer() {
+    let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
+    let mut session = Session::new(Config::ac(false), TestEv::new(DcConnector::Extended), NoLog, Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
+    let mut evse = Evse::new(EvseConfig::default());
+    session.handle(Event::Pilot(control_pilot::Reading { state: control_pilot::State::B, pwm: control_pilot::Pwm::Duty(2) }));
+    let mut step = session.handle(Event::Start { secured: false });
+    for _ in 0..50 {
+        if session.state() == State::AwaitDutyCycle {
+            break;
+        }
+        if let Some(n) = step.send {
+            let frame = session.tx()[..n].to_vec();
+            for out in evse.handle(&frame) {
+                if let Some(bytes) = out.send {
+                    session.rx_space()[..bytes.len()].copy_from_slice(&bytes);
+                    step = session.handle(Event::Received(bytes.len()));
+                }
+            }
+        }
+    }
+    assert_eq!(session.state(), State::AwaitDutyCycle);
+    let step = session.handle(Event::TimerExpired(Timer::Sequence));
+    assert_eq!(step.end, Some(EndReason::Timeout));
 }

@@ -133,8 +133,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         r
     }
 
-    /// The vehicle's preferred BPT cycling range as it goes on the wire: both values or none (V2G20-2681), only in a BPT
-    /// session, and in the order minimum energy <= minimum V2X <= maximum V2X <= maximum energy (V2G20-2682).
+    /// The vehicle's preferred BPT cycling range as it goes on the wire: both values or none (V2G20-2679, 2681), only in a BPT
+    /// session, and in the order minimum energy <= minimum V2X <= maximum V2X <= maximum energy (V2G20-2680, 2682; the two pairs are
+    /// the DC and the AC message).
     pub(super) fn v2x_range(&self, r: &crate::ev::ScheduleRequest) -> (Option<RationalNumber>, Option<RationalNumber>) {
         let Some(range) = self.ev.v2x_energy_range().filter(|_| self.config.bpt()) else { return (None, None) };
         let value = super::config::rational_to_volts;

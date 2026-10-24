@@ -47,7 +47,7 @@ impl Phase {
             AwaitSupportedAppProtocolRes | AwaitSessionSetupRes => Phase::Setup,
             AwaitAuthorizationSetupRes | AwaitAuthorizationRes | AwaitContractAuthenticationRes | AwaitPaymentDetailsRes => Phase::Authorization,
             AwaitServiceDiscoveryRes | AwaitServiceDetailRes | AwaitServiceSelectionRes | AwaitServicePaymentSelectionRes => Phase::Service,
-            AwaitChargeParameterDiscoveryRes => Phase::ChargeParameters,
+            AwaitChargeParameterDiscoveryRes | AwaitDutyCycle => Phase::ChargeParameters,
             AwaitScheduleExchangeRes => Phase::ScheduleExchange,
             AwaitControlPilotC | AwaitCableCheckRes => Phase::CableCheck,
             AwaitPreChargeRes | AwaitContactors => Phase::PreCharge,

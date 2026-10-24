@@ -53,6 +53,4 @@ Status: **covered**, **partly** (behaviour exists, the stimulus or one verdict c
 
 ## Next steps (not started)
 
-- Add the duty cycle check (V2G20-1408 says 5 %, the PAS accepts 3 to 7 %) to the simulators; it is the host's hardware, so only the sim's wire can show it.
-- Check V2G20-2679/2680 on the vehicle.
 - Obtain ISO 15118-21 and see whether the scenario runner can take the tester role.

@@ -13,7 +13,7 @@ use super::{Machine, MAX_ENTRIES, Mode, Schedule, EvseLimits, frame};
 use crate::ev::{DcConnector, Ev, MAX_DIGEST_LEN, MAX_SIGNATURE_LEN, MAX_SUB_CERTIFICATES};
 use crate::log::{LogSink, MsgKind, Record};
 use crate::session::{EndReason, Notice, State, Step};
-use crate::{Timer, TimerCmd};
+use crate::{Timer, TimerCmd, Timers};
 
 impl<E: Ev, L: LogSink> Machine<E, L> {
     pub(super) fn send_supported_app_protocol_req(&mut self, tx: &mut [u8]) -> Step {
@@ -196,7 +196,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             EvseProcessing::Ongoing | EvseProcessing::OngoingWaitingForCustomerInteraction => self.pause_then_repeat(tx),
             EvseProcessing::Finished => {
                 let step = self.phase_done(Step::default());
-                let mut next = self.next(tx, |m, tx| m.send_charge_parameter_discovery_req(tx));
+                let mut next = self.next(tx, |m, tx| m.first_charge_parameter_discovery_req(tx));
                 next.timers = super::charge::merge(step.timers, next.timers);
                 if next.end.is_none() {
                     next.notice = Some(Notice::Authorized);
@@ -246,6 +246,16 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
     }
 
     /// The vehicle's limits and needs: DC (9.5.3 of the DC charge parameter) or AC.
+    /// V2G2-930: in AC the vehicle measures 5 % or a nominal duty cycle before the first `ChargeParameterDiscoveryReq`. A host that
+    /// reports no pilot, or a pilot that is right already, does not hold it up.
+    fn first_charge_parameter_discovery_req(&mut self, tx: &mut [u8]) -> Step {
+        if self.ac && self.pilot.last().is_some_and(|r| !(r.pwm.is_five_percent() || r.pwm.is_nominal())) {
+            self.goto(State::AwaitDutyCycle);
+            return Step { timers: Timers::one(TimerCmd::Arm { timer: Timer::Sequence, ms: self.config.sequence_performance_ms }), ..Step::default() };
+        }
+        self.send_charge_parameter_discovery_req(tx)
+    }
+
     pub(super) fn send_charge_parameter_discovery_req(&mut self, tx: &mut [u8]) -> Step {
         let schedule = self.ev.schedule_request();
         let parameter = if self.ac {
