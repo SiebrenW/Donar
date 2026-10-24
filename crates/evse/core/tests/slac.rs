@@ -751,7 +751,7 @@ mod against_the_vehicle {
                 evse_toggle_window: None,
                 vehicles: vehicles
                     .iter()
-                    .map(|(mac, c)| Vehicle { mac: *mac, m: ev::Machine::new(*c), timers: [None; 3], outcome: None, toggles: Vec::new(), link: None })
+                    .map(|(mac, c)| Vehicle { mac: *mac, m: ev::Machine::new(ev::Config { pilot_gate: false, ..*c }), timers: [None; 3], outcome: None, toggles: Vec::new(), link: None })
                     .collect(),
                 notices: Vec::new(),
                 keys: Vec::new(),

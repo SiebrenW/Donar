@@ -327,6 +327,9 @@ pub struct Settings {
     pub qca_modem: bool,
     /// `TT_matching_repetition` (default 10 s): how long SLAC keeps trying.
     pub slac_repetition_ms: Option<u32>,
+    /// How long SLAC waits for the charger's 5 % control pilot before giving up (only with the control pilot wire; default:
+    /// as long as the car is plugged in).
+    pub slac_pilot_wait_ms: Option<u32>,
     /// When SLAC validates the charger by control pilot toggles; the toggles are written to
     /// `control_pilot_file` for the simulated charger to count.
     pub slac_validation: SlacValidation,
@@ -401,6 +404,7 @@ impl Default for Settings {
             slac: false,
             slac_only: false,
             slac_repetition_ms: None,
+            slac_pilot_wait_ms: None,
             slac_validation: SlacValidation::Never,
             qca_modem: false,
             slac_toggles: 0,
@@ -435,6 +439,9 @@ impl Settings {
         let mut config = evcc_core::slac::Config::DEFAULT;
         if let Some(ms) = self.slac_repetition_ms {
             config.repetition_ms = ms;
+        }
+        if let Some(ms) = self.slac_pilot_wait_ms {
+            config.pilot_wait_ms = ms;
         }
         config.validation = match self.slac_validation {
             SlacValidation::Never => evcc_core::slac::Validation::Never,

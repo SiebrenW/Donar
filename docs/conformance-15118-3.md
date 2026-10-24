@@ -37,6 +37,8 @@ Status: **done** (in the machine, tested), **host** (the host has to do it; the 
 | V2G3-M09-05, 09 | The vehicle decides (signal strength, validation) | vehicle |
 | ISO 15118-3 Annex B (G3-PLC) | Not implemented | open |
 
+**The vehicle's start (not a requirement list of its own):** `evcc_core::slac::Machine` begins matching on a 5 % pilot in B, C or D only (a measurement of 3 to 7 % is 5 %), ends with `Outcome::BasicCharging` on a nominal duty cycle (10 to 96 %), aborts on A, E, F or an invalid voltage while matching (`Outcome::Aborted`), and does not stop for a change of the duty cycle (V2G3-M06-15). Tests: `crates/evcc/core/tests/slac_flow.rs` (the gate tests at the end), `slac_ac_restarts` (the car aborts at the charger's E and starts over). See `docs/standards-notes.md` for the decision.
+
 The charger's modem: `QcaModem::as_coordinator` (evcc-linux) takes the key, reads the link from the link status and the modem's indications (never from the network information or a settle time) and can check that the modem coordinates its network; `evse_sim::slac::Serve` ties it to the machine. Tested against a fake modem only. The `CM_ATTEN_PROFILE.IND` of the modem reach the machine as ordinary frames of the interface; their layout is the one of the HomePlug Green PHY specification, not seen from a modem here.
 
 Not covered by anything here yet: scenarios against `pyslac` as the vehicle. The simulator has no modem and no pilot reading: the vehicle is taken to be there, the cable is the link, and the window of `TT_EVSE_SLAC_init` is reopened when it runs out. See PLAN.md.

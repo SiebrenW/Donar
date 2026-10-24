@@ -17,6 +17,16 @@
 //! (V2G3-A09-25) and the EVs sends right away instead of waiting out `TP_match_sequence`, a
 //! maximum.
 //!
+//! The control pilot gates the start (ISO 15118-3 6.2, IEC 61851-1 Annex A): matching is only for a charger that
+//! offers 5 % (digital communication; a measurement from 3 to 7 % counts, V2G20-1408). The host reports every
+//! pilot reading with [`Event::Pilot`], also before [`Event::Start`]; `Start` says that the vehicle wants SLAC, and
+//! the machine begins when it has seen 5 % in state B, C or D. A nominal duty cycle (10 to 96 %) is basic
+//! charging: the machine ends with [`Outcome::BasicCharging`] and never matches. While matching, state A, E, F or
+//! an invalid voltage ends it with [`Outcome::Aborted`] (the charger signals an error or the plug is gone); a
+//! change of the duty cycle does not interrupt it (V2G3-M06-15). [`Step::pilot`] publishes the guard for the
+//! host's fast monitor (see `control_pilot::Guard`). A host without a pilot (a bench) sets
+//! [`Config::pilot_gate`] to false and the machine begins at `Start`.
+//!
 //! Validation by control pilot toggling (A.9.3, ISO 15118-3 9.4), per [`Config::validation`]:
 //! a charger whose attenuation is between the thresholds ("potentially found"), or any chosen
 //! one when asked to, is asked with CM_VALIDATE.REQ (step 1) whether it can validate; when it
@@ -28,6 +38,8 @@
 
 pub use homeplug::GROUPS;
 use homeplug::{BROADCAST, Frame, Mac, Message, RunId};
+
+use control_pilot::{Guard, Reading, Side, State as PilotState};
 
 use crate::{Timer, TimerCmd, Timers};
 
@@ -70,6 +82,11 @@ pub struct Config {
     pub toggles: u8,
     /// `TP_EV_vald_state_duration` (200 to 400 ms): how long each B or C state lasts.
     pub toggle_state_ms: u32,
+    /// Begin matching only on a 5 % control pilot (see the module documentation). Off for a host that has no pilot.
+    pub pilot_gate: bool,
+    /// How long `Start` waits for the pilot to offer 5 % before the machine gives up with [`Failure::NoFivePercent`];
+    /// 0 waits as long as the vehicle is plugged in (the host decides when to stop).
+    pub pilot_wait_ms: u32,
 }
 
 /// When the EV validates a match by control pilot toggles.
@@ -101,6 +118,8 @@ impl Config {
         validation: Validation::Never,
         toggles: 0,
         toggle_state_ms: 300,
+        pilot_gate: true,
+        pilot_wait_ms: 0,
     };
 }
 
@@ -119,6 +138,8 @@ pub enum Event<'a> {
     TimerExpired(Timer),
     /// The powerline link to the charger is established (the local modem joined the network).
     LinkUp,
+    /// The control pilot as the host measured it: report every change, and the state at the start.
+    Pilot(Reading),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +156,8 @@ pub enum Failure {
     JoinTimeout,
     /// Every candidate failed the validation by control pilot toggles.
     ValidationFailed,
+    /// The control pilot did not offer 5 % within [`Config::pilot_wait_ms`] (and no nominal duty cycle either).
+    NoFivePercent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +166,12 @@ pub enum Outcome {
     Matched { evse: Mac, nid: [u8; 7], nmk: [u8; 16] },
     /// Matching failed and the time for repetitions is used up.
     Failed(Failure),
+    /// The charger offers a nominal duty cycle (10 to 96 %): basic charging by IEC 61851-1, no digital communication,
+    /// no matching. The host charges without high level communication, if the vehicle may.
+    BasicCharging,
+    /// The control pilot went to this state (A: unplugged, E, F: the charger signals an error, or an invalid voltage)
+    /// while matching: it was stopped. The host starts over with [`Event::Start`] when the vehicle is connected again.
+    Aborted(PilotState),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -155,6 +184,9 @@ pub struct Step {
     pub toggle: Option<Toggle>,
     pub timers: Timers,
     pub outcome: Option<Outcome>,
+    /// What the host's pilot monitor is to judge from now on; set when it changes (matching begins: A, E and F end the
+    /// session; the outcome is there: nothing is judged).
+    pub pilot: Option<Guard>,
 }
 
 /// The BCB-Toggle sequence of ISO 15118-3 Figure 12: from state B, `count` times C and B again,
@@ -178,6 +210,8 @@ struct Candidate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     Idle,
+    /// `Start` came, the pilot does not yet offer 5 %.
+    AwaitPilot,
     /// CM_SLAC_PARM.REQ sent; `left` retries remain.
     Parm { left: u8 },
     /// Sending `StartAttenChar` number `sent` (1-based) or, after those, sound `sent`.
@@ -211,6 +245,8 @@ pub struct Machine {
     dropped: [bool; MAX_EVSE],
     /// A validation was attempted in this run (decides which failure is reported).
     validated: bool,
+    /// The last control pilot reading the host reported.
+    pilot: Option<Reading>,
 }
 
 impl Machine {
@@ -226,19 +262,81 @@ impl Machine {
             out_of_time: false,
             dropped: [false; MAX_EVSE],
             validated: false,
+            pilot: None,
         }
     }
 
+    /// The matching is over (or has not begun and will not): nothing is judged any more.
+    fn ended(mut step: Step) -> Step {
+        if step.outcome.is_some() && step.pilot.is_none() {
+            step.pilot = Some(Guard::disarmed(Side::Vehicle));
+        }
+        step
+    }
+
     pub fn handle(&mut self, event: Event<'_>, tx: &mut [u8]) -> Step {
+        Self::ended(self.event(event, tx))
+    }
+
+    /// Whether the pilot offers digital communication: 5 % with the vehicle connected.
+    fn offers_hlc(r: Reading) -> bool {
+        matches!(r.state, PilotState::B | PilotState::C | PilotState::D) && r.pwm.is_five_percent()
+    }
+
+    /// Matching begins: A, E and F end it.
+    fn start_matching(&mut self, tx: &mut [u8]) -> Step {
+        self.attempt = 0;
+        self.out_of_time = false;
+        let mut step = self.begin(tx);
+        step.timers = step.timers.with(TimerCmd::Arm { timer: Timer::SlacOverall, ms: self.config.repetition_ms });
+        step.pilot = Some(Guard { close_on_fault: true, ..Guard::disarmed(Side::Vehicle) });
+        step
+    }
+
+    /// `Start` is in and the machine waits: what the pilot says now.
+    fn await_pilot(&mut self, tx: &mut [u8]) -> Step {
+        match self.pilot {
+            // Arming the overall time again replaces the wait for 5 %.
+            Some(r) if Self::offers_hlc(r) => self.start_matching(tx),
+            Some(r) if matches!(r.state, PilotState::B | PilotState::C | PilotState::D) && r.pwm.is_nominal() => {
+                self.state = State::Done;
+                Step { outcome: Some(Outcome::BasicCharging), timers: Timers::one(TimerCmd::Cancel(Timer::SlacOverall)), ..Step::default() }
+            }
+            _ => Step::default(),
+        }
+    }
+
+    fn event(&mut self, event: Event<'_>, tx: &mut [u8]) -> Step {
         match event {
             Event::Start { mac, run_id } => {
                 self.mac = mac;
                 self.base_run = run_id;
-                self.attempt = 0;
-                self.out_of_time = false;
-                let mut step = self.begin(tx);
-                step.timers = step.timers.with(TimerCmd::Arm { timer: Timer::SlacOverall, ms: self.config.repetition_ms });
+                if !self.config.pilot_gate {
+                    return self.start_matching(tx);
+                }
+                self.state = State::AwaitPilot;
+                let mut step = self.await_pilot(tx);
+                if self.state == State::AwaitPilot && self.config.pilot_wait_ms > 0 {
+                    step = step.arm(Timer::SlacOverall, self.config.pilot_wait_ms);
+                }
                 step
+            }
+            Event::Pilot(r) => {
+                self.pilot = Some(r);
+                match self.state {
+                    State::AwaitPilot => self.await_pilot(tx),
+                    State::Idle | State::Done => Step::default(),
+                    // V2G3-M06-15: a change of the duty cycle does not interrupt the matching; a fault state does.
+                    _ if matches!(r.state, PilotState::A | PilotState::E | PilotState::F | PilotState::Invalid) => {
+                        self.state = State::Done;
+                        Step {
+                            timers: Timers::one(TimerCmd::Cancel(Timer::Slac)).with(TimerCmd::Cancel(Timer::SlacResults)).with(TimerCmd::Cancel(Timer::SlacOverall)),
+                            outcome: Some(Outcome::Aborted(r.state)),
+                            ..Step::default()
+                        }
+                    }
+                    _ => Step::default(),
+                }
             }
             Event::TimerExpired(timer) => self.timer(timer, tx),
             Event::Frame(bytes) => match Frame::parse(bytes) {
@@ -278,6 +376,7 @@ impl Machine {
 
     fn timer(&mut self, timer: Timer, tx: &mut [u8]) -> Step {
         match (timer, self.state) {
+            (Timer::SlacOverall, State::AwaitPilot) => self.finish(Failure::NoFivePercent),
             (Timer::SlacOverall, _) => {
                 self.out_of_time = true;
                 match self.state {
