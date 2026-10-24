@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<w:WPT_ChargeLoopReq xmlns:w="urn:iso:std:iso:15118:-20:WPT" xmlns:ct="urn:iso:std:iso:15118:-20:CommonTypes"><ct:Header><ct:SessionID>A1B2C3D4E5F60718</ct:SessionID><ct:TimeStamp>1700000000</ct:TimeStamp></ct:Header><ct:MeterInfoRequested>true</ct:MeterInfoRequested><w:EVPCPowerRequest><ct:Exponent>0</ct:Exponent><ct:Value>0</ct:Value></w:EVPCPowerRequest><w:EVPCPowerOutput><ct:Exponent>0</ct:Exponent><ct:Value>0</ct:Value></w:EVPCPowerOutput><w:EVPCChargeDiagnostics>EVPCAnomalyDetected</w:EVPCChargeDiagnostics></w:WPT_ChargeLoopReq>

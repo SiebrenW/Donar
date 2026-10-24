@@ -7,7 +7,7 @@ How it was made: by the test purposes and referenced requirements in the PAS, ag
 Caveats:
 
 - The PAS takes its test system, default parameter sets (ISO 15118-21:2025, Annex C) and timer handling (ISO 15118-21:2025, 6.5) from ISO 15118-21, which we do not have. Running the cases as written needs it.
-- ACDP (ISO 15118-20 ACDP) is not implemented; the `ett_value := ACDP` branches do not apply.
+- ACDP (ISO 15118-20 ACDP): only the EXI codec exists, no session logic; the `ett_value := ACDP` branches do not apply.
 - The PAS cases cover DC; our AC and ISO 15118-2/DIN work has no counterpart in it.
 
 Status: **covered**, **partly** (behaviour exists, the stimulus or one verdict criterion is missing), **open** (no test), **n/a**.

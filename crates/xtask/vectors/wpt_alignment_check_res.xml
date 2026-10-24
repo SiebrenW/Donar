@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<w:WPT_AlignmentCheckRes xmlns:w="urn:iso:std:iso:15118:-20:WPT" xmlns:ct="urn:iso:std:iso:15118:-20:CommonTypes"><ct:Header><ct:SessionID>A1B2C3D4E5F60718</ct:SessionID><ct:TimeStamp>1700000000</ct:TimeStamp></ct:Header><ct:ResponseCode>OK</ct:ResponseCode><w:EVSEProcessing>Finished</w:EVSEProcessing><w:PowerTransmitted><ct:Exponent>3</ct:Exponent><ct:Value>3</ct:Value></w:PowerTransmitted><w:SupplyDeviceCurrent><ct:Exponent>0</ct:Exponent><ct:Value>8</ct:Value></w:SupplyDeviceCurrent></w:WPT_AlignmentCheckRes>
