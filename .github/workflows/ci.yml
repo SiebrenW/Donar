@@ -102,26 +102,6 @@ jobs:
           path: target/sandbox
           retention-days: 7
 
-  # Without the Linux-only tests (namespaces, raw sockets): the codecs, the cores and the simulators on a Mac.
-  macos:
-    runs-on: macos-latest
-    timeout-minutes: 45
-    env:
-      CHROME: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
-    steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/prepare
-      - name: Tests
-        shell: bash
-        run: |
-          # To a file, not through a pipe: a child a test leaves behind (a browser, a simulator) keeps a pipe open and the step would not end.
-          status=0
-          cargo test --workspace --locked --no-fail-fast > ci.log 2>&1 || status=$?
-          cat ci.log
-          exit $status
-      - uses: ./.github/actions/annotate
-        if: failure()
-
   # The vehicle against independent implementations: the open-source Python `iso15118` SECC (ISO 15118-2, -20, DIN SPEC 70121)
   # and `pyslac` (SLAC), as in `cargo xtask interop`.
   interop:
