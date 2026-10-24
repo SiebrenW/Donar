@@ -68,6 +68,9 @@ pub enum State {
     /// DIN SPEC 70121: the host changes the control pilot to state B (after the energy transfer
     /// has stopped) and reports [`Event::ControlPilotChanged`].
     AwaitControlPilotB,
+    /// AC: the first `ChargeParameterDiscoveryReq` waits until the host has measured 5 % (or the static 100 %) on the pilot
+    /// (V2G20-930); the host reports it with [`Event::Pilot`].
+    AwaitDutyCycle,
     Ended,
 }
 

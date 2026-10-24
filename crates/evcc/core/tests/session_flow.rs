@@ -1499,3 +1499,61 @@ fn a_frame_with_a_wrong_v2gtp_header_is_ignored() {
         assert_eq!(s.state(), state, "case {i}");
     }
 }
+
+#[test]
+fn an_ac_vehicle_measures_5_percent_before_the_first_charge_parameter_request() {
+    // V2G20-930 (NOTE 1: the static 100 % does too).
+    use control_pilot::{Pwm, Reading, State as Cp};
+    const AC_DYNAMIC: &[(&str, i32)] = &[("Connector", 2), ("ControlMode", 2), ("MobilityNeedsMode", 1), ("Pricing", 0)];
+    let reading = |pwm| Reading { state: Cp::B, pwm };
+    // (the reading before the selection, whether the request is held, the reading that releases it)
+    for (first, held) in [(None, false), (Some(Pwm::Duty(5)), false), (Some(Pwm::Duty(7)), false), (Some(Pwm::Off), false), (Some(Pwm::Duty(53)), true), (Some(Pwm::Duty(2)), true)] {
+        let mut rig = Rig::new();
+        let Rig { rx, tx, arena } = &mut rig;
+        let config = Config { poll_interval_ms: 0, allow_unsecured: true, ..Config::AC_20 };
+        let mut s = Session::new(config, TestEv::new(), Capture::default(), Buffers { rx, tx, arena });
+        if let Some(pwm) = first {
+            s.handle(Event::Pilot(reading(pwm)));
+        }
+        s.handle(Event::Start { secured: false });
+        deliver(&mut s, &sap_res(SapCode::OkSuccessfulNegotiation, Some(2)));
+        deliver(&mut s, &setup_res(ResponseCode::OkNewSessionEstablished, SID));
+        deliver(&mut s, &auth_setup_res(ResponseCode::Ok, &[Authorization::Eim]));
+        deliver(&mut s, &auth_res(ResponseCode::Ok, Processing::Finished));
+        deliver(&mut s, &discovery_res(ResponseCode::Ok, &[1]));
+        deliver(&mut s, &detail_res(ResponseCode::Ok, 1, &[(1, AC_DYNAMIC)]));
+        assert_eq!(s.state(), State::AwaitServiceSelectionRes, "{first:?}");
+        let step = deliver(&mut s, &selection_res(ResponseCode::Ok));
+        assert_eq!(step.notice, Some(Notice::ServiceSelected { service_id: 1, parameter_set_id: 1 }), "{first:?}");
+        if !held {
+            assert!(step.send.is_some(), "{first:?}");
+            assert_eq!(s.state(), State::AwaitChargeParameterDiscoveryRes, "{first:?}");
+            continue;
+        }
+        assert_eq!((step.send, s.state()), (None, State::AwaitDutyCycle), "{first:?}");
+        assert!(step.timers.iter().any(|c| matches!(c, TimerCmd::Arm { timer: Timer::Sequence, .. })));
+        // Another reading that is not right changes nothing; the right one releases the request.
+        let still = s.handle(Event::Pilot(reading(Pwm::Duty(100))));
+        assert_eq!((still.send, s.state()), (None, State::AwaitDutyCycle), "{first:?}");
+        let step = s.handle(Event::Pilot(reading(Pwm::Duty(5))));
+        let (payload_type, _) = sent(&s, &step);
+        assert_eq!(payload_type, PayloadType::AC_MAINSTREAM);
+        assert_eq!(s.state(), State::AwaitChargeParameterDiscoveryRes, "{first:?}");
+        assert!(step.timers.iter().any(|c| matches!(c, TimerCmd::Cancel(Timer::Sequence))));
+        // Without the right reading the sequence timer ends the session.
+    }
+    let mut rig = Rig::new();
+    let Rig { rx, tx, arena } = &mut rig;
+    let mut s = Session::new(Config { poll_interval_ms: 0, allow_unsecured: true, ..Config::AC_20 }, TestEv::new(), Capture::default(), Buffers { rx, tx, arena });
+    s.handle(Event::Pilot(Reading { state: Cp::B, pwm: Pwm::Duty(53) }));
+    s.handle(Event::Start { secured: false });
+    deliver(&mut s, &sap_res(SapCode::OkSuccessfulNegotiation, Some(2)));
+    deliver(&mut s, &setup_res(ResponseCode::OkNewSessionEstablished, SID));
+    deliver(&mut s, &auth_setup_res(ResponseCode::Ok, &[Authorization::Eim]));
+    deliver(&mut s, &auth_res(ResponseCode::Ok, Processing::Finished));
+    deliver(&mut s, &discovery_res(ResponseCode::Ok, &[1]));
+    deliver(&mut s, &detail_res(ResponseCode::Ok, 1, &[(1, AC_DYNAMIC)]));
+    deliver(&mut s, &selection_res(ResponseCode::Ok));
+    assert_eq!(s.state(), State::AwaitDutyCycle);
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Sequence)).end, Some(EndReason::Timeout));
+}

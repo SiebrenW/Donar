@@ -388,6 +388,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                         | State::AwaitCurrentStopped
                         | State::AwaitContactorsOpened
                         | State::AwaitControlPilotB
+                        | State::AwaitDutyCycle
                 ) =>
             {
                 self.end(EndReason::Timeout)
@@ -530,6 +531,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         match self.state {
             State::AwaitControlPilotC => last.is_some_and(control_pilot::Reading::is_ready),
             State::AwaitControlPilotB => last.is_some_and(|r| r.state == control_pilot::State::B),
+            State::AwaitDutyCycle => last.is_some_and(|r| r.pwm.is_five_percent() || r.pwm.is_nominal()),
             _ => false,
         }
     }
@@ -543,6 +545,10 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             State::AwaitControlPilotC => {
                 self.pilot.set_ready(true);
                 let step = self.send_cable_check_req(tx);
+                self.sequence_done(step)
+            }
+            State::AwaitDutyCycle => {
+                let step = self.send_charge_parameter_discovery_req(tx);
                 self.sequence_done(step)
             }
             _ => {

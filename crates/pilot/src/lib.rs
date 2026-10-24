@@ -59,6 +59,14 @@ impl Pwm {
     }
 }
 
+impl Pwm {
+    /// A nominal duty cycle (10 to 95 %), as a charger offers it to a vehicle that may charge by IEC 61851-1 alone and
+    /// speaks ISO 15118 as well (ISO 15118-2 V2G2-930).
+    pub fn is_nominal(self) -> bool {
+        matches!(self, Pwm::Duty(10..=95))
+    }
+}
+
 /// What the host measured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reading {
@@ -308,6 +316,14 @@ mod tests {
         assert_eq!(g.judge(Reading { state: State::B, pwm: Pwm::Duty(7) }), Verdict::Fine);
         assert_eq!(g.judge(Reading { state: State::B, pwm: Pwm::Duty(2) }), Verdict::Emergency);
         assert_eq!(g.judge(Reading { state: State::B, pwm: Pwm::Duty(8) }), Verdict::Emergency);
+    }
+
+    #[test]
+    fn nominal_is_10_to_95_percent() {
+        for d in 0..=100u8 {
+            assert_eq!(Pwm::Duty(d).is_nominal(), (10..=95).contains(&d), "{d} %");
+        }
+        assert!(!Pwm::Off.is_nominal());
     }
 
     #[test]

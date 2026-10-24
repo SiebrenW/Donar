@@ -128,6 +128,12 @@ struct Machine<E, L> {
     last_inlet: iso15118_20::common_types::RationalNumber,
 }
 
+/// What the vehicle takes as the pilot of an ISO 15118-20 AC session before it sends the first `ChargeParameterDiscoveryReq`
+/// (V2G20-930): 5 % as measured (3 to 7 %), or the static 100 % that NOTE 1 allows.
+fn duty_cycle_for_hlc(pwm: control_pilot::Pwm) -> bool {
+    pwm.is_five_percent() || pwm == control_pilot::Pwm::Off
+}
+
 impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
     pub fn new(config: Config, ev: E, log: L, buffers: Buffers<'a>) -> Self {
         let ac = config.ac();
@@ -259,7 +265,8 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                     | State::AwaitCurrentStopped
                     | State::AwaitContactorsOpened
                     | State::AwaitControlPilotC
-                    | State::AwaitControlPilotB,
+                    | State::AwaitControlPilotB
+                    | State::AwaitDutyCycle,
                 ) => m.end(EndReason::Timeout),
                 (Timer::Side, _) => m.on_side_timer(tx),
                 (Timer::Poll, _) if m.poll_pending => {
@@ -495,6 +502,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         match self.state {
             State::AwaitControlPilotC => last.is_some_and(control_pilot::Reading::is_ready),
             State::AwaitControlPilotB => last.is_some_and(|r| r.state == control_pilot::State::B),
+            State::AwaitDutyCycle => last.is_some_and(|r| duty_cycle_for_hlc(r.pwm)),
             _ => false,
         }
     }
@@ -511,6 +519,10 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 if step.end.is_none() {
                     step.notice = Some(Notice::ScheduleExchanged);
                 }
+                self.sequence_done(step)
+            }
+            State::AwaitDutyCycle => {
+                let step = self.send_charge_parameter_discovery_req(tx);
                 self.sequence_done(step)
             }
             _ => {
