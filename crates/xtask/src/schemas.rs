@@ -19,6 +19,10 @@ const ISO20_FILES: &[&str] = &[
     "xmldsig-core-schema.xsd",
 ];
 
+/// Amendment 1 adds the AC DER schemas; they import the ones above and live next to them.
+const ISO20_AMD1_URL: &str = "https://standards.iso.org/iso/15118/-20/ed-1/en/Amd/1/";
+const ISO20_AMD1_FILES: &[&str] = &["V2G_CI_AC_DER_IEC.xsd", "V2G_CI_AC_DER_SAE.xsd"];
+
 /// DIN SPEC 70121's schemas (the specification's normative annex) as published in the
 /// `iso15118` repository of ecog-io. Copyrighted like the others: gitignored, fetched on demand.
 const DIN_URL: &str = "https://raw.githubusercontent.com/ecog-io/iso15118/main/iso15118/shared/schemas/";
@@ -40,7 +44,8 @@ const ISO2_FILES: &[(&str, &str)] = &[
 
 /// Downloads the XSDs (skipping files already present unless `force`).
 pub fn setup(force: bool) -> Result<(), String> {
-    let iso20: Vec<(String, &str)> = ISO20_FILES.iter().map(|n| (format!("{ISO20_URL}{n}"), *n)).collect();
+    let mut iso20: Vec<(String, &str)> = ISO20_FILES.iter().map(|n| (format!("{ISO20_URL}{n}"), *n)).collect();
+    iso20.extend(ISO20_AMD1_FILES.iter().map(|n| (format!("{ISO20_AMD1_URL}{n}"), *n)));
     fetch(&workspace_root().join("data/schemas/iso15118-20"), &iso20, force)?;
     let din: Vec<(String, &str)> = DIN_FILES.iter().map(|(from, to)| (format!("{DIN_URL}{from}"), *to)).collect();
     fetch(&workspace_root().join("data/schemas/din-spec"), &din, force)?;

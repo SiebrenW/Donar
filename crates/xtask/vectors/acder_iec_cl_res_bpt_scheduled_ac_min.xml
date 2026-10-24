@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ac:AC_ChargeLoopRes xmlns:ct="urn:iso:std:iso:15118:-20:CommonTypes" xmlns:ac="urn:iso:std:iso:15118:-20:AC" xmlns:der="urn:iso:std:iso:15118:-20:AC-DER-IEC"><ct:Header><ct:SessionID>0102030405060708</ct:SessionID><ct:TimeStamp>1700000002</ct:TimeStamp></ct:Header><ct:ResponseCode>OK</ct:ResponseCode><ac:BPT_Scheduled_AC_CLResControlMode></ac:BPT_Scheduled_AC_CLResControlMode></ac:AC_ChargeLoopRes>

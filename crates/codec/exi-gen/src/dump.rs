@@ -82,10 +82,13 @@ impl Dump<'_, '_> {
     }
 }
 
-/// `root` is the global element's name; `roots` the sorted document-grammar element list.
-pub fn dump(model: &Model, root: &QName, roots: &[QName]) -> Result<String, String> {
+/// `root` is the global element's name; `roots` the sorted document-grammar element list; `entry` the namespace of the
+/// schema the grammar is built from (the type of a message of an extended namespace is the one resolved for it).
+pub fn dump(model: &Model, root: &QName, roots: &[QName], entry: &str) -> Result<String, String> {
     let decl = model.world.element(root).ok_or("unknown root element")?;
     let ty = decl.ty.clone().ok_or("root element without a type")?;
+    let own = QName::new(entry, &ty.local);
+    let ty = if ty.ns != entry && model.reentered(entry).contains(&own) { own } else { ty };
     let index = roots.iter().position(|r| r == root).ok_or("root not in the document grammar")?;
     let mut d = Dump { model, interned: HashMap::new(), lines: Vec::new(), memo: HashMap::new() };
     let start = d.state(&ty, Pos::START);

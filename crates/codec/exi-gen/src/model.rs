@@ -100,6 +100,9 @@ pub struct Model<'w> {
     supported: HashMap<QName, bool>,
     /// String-table qname ids.
     qids: BTreeMap<QName, u8>,
+    /// Per module namespace: the message types of the namespaces it extends, resolved again with the module as the entry
+    /// (named in the module's namespace).
+    reentered: BTreeMap<String, Vec<QName>>,
     /// The namespace of the type being resolved: a substitution group has the members that the
     /// schema of that namespace and its imports declare, as for a processor that has only that
     /// schema (the `AC` and `DC` schemas both extend the control modes of `CommonTypes`).
@@ -137,13 +140,17 @@ fn builtin(local: &str) -> Option<Scalar> {
 }
 
 impl<'w> Model<'w> {
-    pub fn new(world: &'w World, modules: &[(&str, &str)]) -> Result<Self, String> {
+    /// `reenter`: `(module namespace, extended namespace)`: a schema that only adds members to the substitution groups of
+    /// another namespace's messages (the AC DER schemas extend the AC ones) has the messages of that namespace with the
+    /// members in their choices, in the module's namespace.
+    pub fn new(world: &'w World, modules: &[(&str, &str)], reenter: &[(&str, &str)]) -> Result<Self, String> {
         let mut m = Model {
             world,
             complex: BTreeMap::new(),
             modules: modules.iter().map(|(ns, name)| (ns.to_string(), name.to_string())).collect(),
             supported: HashMap::new(),
             qids: BTreeMap::new(),
+            reentered: BTreeMap::new(),
             entry: String::new(),
         };
         for (ns, _) in modules {
@@ -153,11 +160,27 @@ impl<'w> Model<'w> {
                 m.resolve_complex(&q)?;
             }
         }
+        for (module, base) in reenter {
+            for e in &world.schema(base)?.elements {
+                let Some(ty) = e.ty.as_ref().filter(|t| t.ns == *base && (t.local.ends_with("ReqType") || t.local.ends_with("ResType"))) else { continue };
+                let target = QName::new(module, &ty.local);
+                if m.complex.contains_key(&target) {
+                    continue;
+                }
+                m.resolve_complex_from(&target, ty)?;
+                m.reentered.entry(module.to_string()).or_default().push(target);
+            }
+        }
         let keys: Vec<QName> = m.complex.keys().cloned().collect();
         for q in keys {
             m.is_supported(&q);
         }
         Ok(m)
+    }
+
+    /// The types of `ns` that are the messages of an extended namespace (see [`Model::new`]).
+    pub fn reentered(&self, ns: &str) -> Vec<QName> {
+        self.reentered.get(ns).cloned().unwrap_or_default()
     }
 
     /// Resolves a simple type reference to its EXI value representation.
@@ -301,12 +324,17 @@ impl<'w> Model<'w> {
     }
 
     fn resolve_complex(&mut self, q: &QName) -> Result<(), String> {
-        let def = self.world.complex(q).ok_or_else(|| format!("unknown complex type {}", q.local))?.clone();
+        self.resolve_complex_from(q, q)
+    }
+
+    /// The type `source` as `q`: the substitution groups in it are those of the namespace of `q`.
+    fn resolve_complex_from(&mut self, q: &QName, source: &QName) -> Result<(), String> {
+        let def = self.world.complex(source).ok_or_else(|| format!("unknown complex type {}", source.local))?.clone();
         self.entry = q.ns.clone();
         let ctx = |e: String| format!("{}: {e}", q.local);
         // Attributes of the whole derivation chain, sorted by name, come first.
         let mut attrs: Vec<(QName, xsd::AttrDecl)> = Vec::new();
-        let mut cur = Some((def.clone(), q.ns.clone()));
+        let mut cur = Some((def.clone(), source.ns.clone()));
         while let Some((d, ns)) = cur {
             let schema = self.world.schema(&ns).map_err(ctx)?;
             for a in &d.attributes {
@@ -330,7 +358,7 @@ impl<'w> Model<'w> {
             let alt = self.alt_for(QName::new(&q.ns, "Value"), base, false).map_err(ctx)?;
             slots.push(Slot { min: 1, max: 1, kind: SlotKind::Attr, alts: vec![alt], head: None });
         }
-        self.collect_slots(&def, &q.ns, &mut slots).map_err(ctx)?;
+        self.collect_slots(&def, &source.ns, &mut slots).map_err(ctx)?;
         // `collect_slots` walked the base chain too; attributes are handled above only.
         self.complex.insert(q.clone(), Complex { qname: q.clone(), slots, is_abstract: def.is_abstract });
         Ok(())

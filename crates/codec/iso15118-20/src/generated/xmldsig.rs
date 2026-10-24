@@ -32,7 +32,7 @@ impl<'a> X509IssuerSerial<'a> {
         {
             let v = self.x509_issuer_name;
             pos = e.start(&L_X509_ISSUER_SERIAL, pos, 0, 0)?;
-            e.string_element(20, v, usize::MAX)?;
+            e.string_element(25, v, usize::MAX)?;
         }
         {
             let v = self.x509_serial_number;
@@ -54,7 +54,7 @@ impl<'a> X509IssuerSerial<'a> {
                 ::exi::layout::Event::End => break,
                 ::exi::layout::Event::Start { slot, alt, next } => match (slot, alt) {
                     (0, 0) => {
-                        f0 = Some(d.string_element(20, usize::MAX)?);
+                        f0 = Some(d.string_element(25, usize::MAX)?);
                         pos = next;
                     }
                     (1, 0) => {
