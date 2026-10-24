@@ -1557,3 +1557,23 @@ fn an_ac_vehicle_measures_5_percent_before_the_first_charge_parameter_request() 
     assert_eq!(s.state(), State::AwaitDutyCycle);
     assert_eq!(s.handle(Event::TimerExpired(Timer::Sequence)).end, Some(EndReason::Timeout));
 }
+
+/// Two frames that arrive in one read (a side stream beside the main stream does this): each has a step of its own, the
+/// second is handled by the next `Received(0)` and its step is not lost.
+#[test]
+fn frames_that_arrive_together_are_handled_one_per_call() {
+    use evcc_core::machine::Machine;
+    let mut rig = Rig::new();
+    let mut s = session(&mut rig, Capture::default());
+    s.handle(Event::Start { secured: false });
+    let mut both = sap_res(SapCode::OkSuccessfulNegotiation, Some(1));
+    both.extend(setup_res(ResponseCode::OkNewSessionEstablished, SID));
+    let step = deliver(&mut s, &both);
+    assert!(step.send.is_some(), "the SessionSetupReq answers the first frame");
+    assert_eq!(s.state(), State::AwaitSessionSetupRes);
+    assert!(s.frame_pending(), "the second frame is still buffered");
+    let step = s.handle(Event::Received(0));
+    assert!(step.send.is_some(), "the AuthorizationSetupReq answers the second");
+    assert_eq!(s.state(), State::AwaitAuthorizationSetupRes);
+    assert!(!s.frame_pending());
+}

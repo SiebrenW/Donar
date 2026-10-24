@@ -11,7 +11,9 @@
 //! Host contract:
 //! 1. Open the TCP/TLS connection found by SDP, then send [`Event::Start`].
 //! 2. Read from the socket straight into [`Session::rx_space`], then send
-//!    [`Event::Received`] with the byte count.
+//!    [`Event::Received`] with the byte count. One call handles one frame; while
+//!    [`Machine::frame_pending`](crate::machine::Machine::frame_pending) is true, send
+//!    `Event::Received(0)` for the next one before waiting for the stream again.
 //! 3. After every call, carry out the returned [`Step`]: write `tx[..send]` to the stream,
 //!    apply the timer commands, handle `notice`, and close the connection once `end` is set.
 //! 4. When an armed timer fires, send [`Event::TimerExpired`] naming it.
@@ -353,30 +355,25 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
             Event::Received(n) => {
                 *rx_len = (*rx_len + n).min(rx.len());
                 let mut step = Step::default();
-                loop {
-                    let consumed = match parse(&rx[..*rx_len], rx.len() - HEADER_LEN) {
-                        Ok(Parse::Incomplete { .. }) => break,
-                        Ok(Parse::Frame(frame)) => {
-                            arena.reset();
-                            m.log.record(&Record::RxPayload { payload_type: frame.payload_type.0, payload: frame.payload });
-                            step = m.on_frame(frame.payload_type, frame.payload, arena, tx);
-                            frame.consumed
-                        }
-                        // V2G20-800: a header with wrong data is ignored. Its length cannot be trusted, so what is buffered goes.
-                        Err(FrameError::BadVersion | FrameError::BadInverseVersion) => {
-                            *rx_len = 0;
-                            break;
-                        }
-                        Err(_) => return m.end(EndReason::Framing),
-                    };
-                    rx.copy_within(consumed..*rx_len, 0);
-                    *rx_len -= consumed;
-                    if step.end.is_some() {
-                        break;
+                // One frame per call: the step of this frame is the step of the call (see `Machine::frame_pending`).
+                match parse(&rx[..*rx_len], rx.len() - HEADER_LEN) {
+                    Ok(Parse::Incomplete { .. }) => {}
+                    Ok(Parse::Frame(frame)) => {
+                        arena.reset();
+                        m.log.record(&Record::RxPayload { payload_type: frame.payload_type.0, payload: frame.payload });
+                        step = m.on_frame(frame.payload_type, frame.payload, arena, tx);
+                        let consumed = frame.consumed;
+                        rx.copy_within(consumed..*rx_len, 0);
+                        *rx_len -= consumed;
                     }
+                    // V2G20-800: a header with wrong data is ignored. Its length cannot be trusted, so what is buffered goes.
+                    Err(FrameError::BadVersion | FrameError::BadInverseVersion) => {
+                        *rx_len = 0;
+                    }
+                    Err(_) => return m.end(EndReason::Framing),
                 }
                 // A full buffer that still holds no complete frame can never make progress.
-                if step.end.is_none() && *rx_len == rx.len() {
+                if step.end.is_none() && *rx_len == rx.len() && !crate::machine::frame_buffered(rx, *rx_len) {
                     return m.end(EndReason::Framing);
                 }
                 step
@@ -394,6 +391,9 @@ impl<E: Ev, L: LogSink> crate::machine::Machine for Session<'_, E, L> {
     }
     fn tx(&self) -> &[u8] {
         Session::tx(self)
+    }
+    fn frame_pending(&self) -> bool {
+        crate::machine::frame_buffered(self.rx, self.rx_len)
     }
     fn state(&self) -> State {
         Session::state(self)
