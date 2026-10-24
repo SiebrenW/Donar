@@ -216,8 +216,8 @@ pub enum AcConnector {
 
 /// The most sub-CA certificates a contract certificate chain carries (`SubCertificates`).
 pub const MAX_SUB_CERTIFICATES: usize = 4;
-/// Room for the largest digest (SHAKE256 as ISO 15118-20 uses it: 64 octets).
-pub const MAX_DIGEST_LEN: usize = 64;
+/// Room for the largest digest (SHAKE256 as ISO 15118-20 Amd 1 uses it: 114 octets, V2G20-3012).
+pub const MAX_DIGEST_LEN: usize = 114;
 /// Room for the largest signature value (ECDSA secp521r1: r and s in 66 octets each).
 pub const MAX_SIGNATURE_LEN: usize = 144;
 

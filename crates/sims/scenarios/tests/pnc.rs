@@ -128,7 +128,7 @@ fn a_contract_the_charger_cannot_accept_falls_back_to_eim() {
     // V2G20-2212 and 2215 by the charger, V2G20-1583 by the vehicle.
     let cases = [
         (Flaw::Expired, ResponseCode::WarningCertificateExpired, true),
-        (Flaw::KeyIdMethod1, ResponseCode::WarningCertificateValidationError, true),
+        (Flaw::KeyIdWrong, ResponseCode::WarningCertificateValidationError, true),
     ];
     for (flaw, code, check_profile) in cases {
         let s = setup(Curve::P521, flaw);
@@ -157,8 +157,8 @@ fn a_chain_from_an_unknown_root_is_not_valid_and_the_profile_check_is_optional()
     assert_eq!(outcome, Outcome::Ended(EndReason::Rejected(ResponseCode::WarningCertificateValidationError)));
     drop(server);
 
-    // Method 1 key identifiers break the profile but not the path: accepted without the profile check.
-    let s = setup(Curve::P521, Flaw::KeyIdMethod1);
+    // Key identifiers of no method break the profile but not the path: accepted without the profile check.
+    let s = setup(Curve::P521, Flaw::KeyIdWrong);
     let (addr, server) = start(charger(Some(&s.root_pem), false, &[Authorization::Eim, Authorization::PnC]));
     let (outcome, log) = drive(addr, Config { pnc_fallback_to_eim: false, ..fast() }, Some(Arc::new(s.contract)));
     assert_eq!(outcome, Outcome::Ended(EndReason::Completed));

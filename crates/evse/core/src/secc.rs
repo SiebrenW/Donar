@@ -190,7 +190,7 @@ pub trait Secc {
         MobilityNeeds::default()
     }
     /// The charger has no power (V2G20-2121): `GoToPause` is set in the answer to the schedule exchange, and the vehicle
-    /// may go straight to the power delivery (V2G20-2122). Asked when the answer is `Finished`.
+    /// may go straight to the power delivery (V2G20-3304, 3305; with Power 0 in the first schedule entry, V2G20-3299). Asked when the answer is `Finished`.
     fn no_power(&self) -> bool {
         false
     }

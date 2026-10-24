@@ -1205,7 +1205,7 @@ fn the_communication_setup_timer_bounds_the_start_of_the_session() {
 
 #[test]
 fn iso_15118_20_is_not_offered_without_tls() {
-    // V2G20-1235, V2G20-1237
+    // V2G20-1237
     let mut rig = Rig::new();
     let Rig { rx, tx, arena } = &mut rig;
     let mut s = Session::new(Config::DC_20, TestEv::new(), Capture::default(), Buffers { rx, tx, arena });

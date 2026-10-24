@@ -19,7 +19,7 @@ pub(crate) fn code(c: Code20) -> ResponseCode {
     ResponseCode::ALL.into_iter().find(|d| d.xml_name() == c.xml_name()).unwrap_or(ResponseCode::Failed)
 }
 
-/// `49*89*6360` as hexBinary: a nibble per character, `*` as `A` (V2G-DC-621); an odd count is padded with `F`.
+/// `49*890*6360` as hexBinary: a nibble per character, `*` as `A` (V2G-DC-621); an odd count is padded with `F`.
 pub(crate) fn evse_id(text: &str) -> Vec<u8> {
     let nibble = |c: char| if c == '*' { 0xA } else { c.to_digit(10).map_or(0xF, |d| d as u8) };
     let nibbles: Vec<u8> = text.chars().take(64).map(nibble).collect();

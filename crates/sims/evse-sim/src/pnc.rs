@@ -32,7 +32,7 @@ pub fn check_contract_chain(policy: &Pnc, ders: &[Vec<u8>]) -> Result<(X509, boo
         ders.push(root.to_der().expect("DER"));
         let found = check_chain(&ders, Peer::Contract, now);
         // Path validation always; the profiles when asked for.
-        let relevant = found.iter().filter(|v| policy.check_profile || matches!(v.requirement, "V2G20-1001" | "V2G20-1004" | "RFC 5280" | "X.509"));
+        let relevant = found.iter().filter(|v| policy.check_profile || matches!(v.requirement, "V2G20-1001" | "V2G20-3000" | "RFC 5280" | "X.509"));
         // The first finding decides.
         if let Some(v) = relevant.into_iter().next() {
             return Err(match v.message.as_str() {

@@ -5,8 +5,8 @@
 //! structure goes into the message header ([`iso15118_20::common_types::MessageHeader`]).
 //!
 //! Two suites, chosen by the key: ECDSA over secp521r1 with SHA-512 (V2G20-2473, 2475; the value
-//! is the 132 octets r || s) and Ed448 with SHAKE256 digests of 64 octets (V2G20-2474, 2476;
-//! the standard names the digest algorithm but not its output length).
+//! is the 132 octets r || s) and Ed448 with SHAKE256 digests of 114 octets (V2G20-2474, 2476;
+//! Amd 1 V2G20-3012 fixes the output length, the 2022 text names the algorithm only).
 //!
 //! The octets that are hashed and signed are the complete EXI stream of the fragment as
 //! EXIficient writes it, header octet included; the standard does not say whether the header
@@ -29,8 +29,8 @@ use openssl::sign::{Signer, Verifier};
 
 /// Size of a P-521 coordinate in octets.
 const P521_OCTETS: usize = 66;
-/// Output length of the SHAKE256 digest.
-const SHAKE256_OCTETS: usize = 64;
+/// Output length of the SHAKE256 digest (Amd 1 V2G20-3012, the length RFC 8032 uses).
+const SHAKE256_OCTETS: usize = 114;
 /// Size of a P-256 coordinate in octets.
 const P256_OCTETS: usize = 32;
 

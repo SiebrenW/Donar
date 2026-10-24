@@ -31,6 +31,9 @@ fn chains_made_to_the_profiles_are_accepted() {
         for peer in [Peer::Secc, Peer::Vehicle, Peer::Contract] {
             let found = check(curve, peer, Flaw::None);
             assert!(found.is_empty(), "{curve:?} {peer:?}: {found:#?}");
+            // Amd 1, V2G20-3431: key identifiers by method 1 are as good as method 2.
+            let found = check(curve, peer, Flaw::KeyIdMethod1);
+            assert!(found.is_empty(), "{curve:?} {peer:?} method 1: {found:#?}");
         }
     }
 }
@@ -39,8 +42,9 @@ fn chains_made_to_the_profiles_are_accepted() {
 fn each_broken_rule_is_found_where_it_is() {
     // (flaw, the requirement that has to be named, the position in the chain: 0 is the leaf)
     let cases = [
-        (Flaw::KeyIdMethod1, "V2G20-1852", None),
+        (Flaw::KeyIdWrong, "V2G20-3431", None),
         (Flaw::LeafWithoutKeyUsage, "Annex B", Some(0)),
+        (Flaw::WrongDomainComponent, "V2G20-3406", Some(1)),
         (Flaw::LeafIsCa, "Annex B", Some(0)),
         (Flaw::ExtraExtension, "V2G20-2686", Some(0)),
         (Flaw::WrongPathLength, "Annex B", Some(1)),
@@ -152,7 +156,7 @@ mod ocsp {
 #[test]
 fn contract_chains_follow_their_own_profile() {
     // The contract certificate carries an EMAID, no key purpose and revocation information.
-    let broken = [(Flaw::BadIdentifier, "V2G20-2588"), (Flaw::Expired, "V2G20-1001"), (Flaw::ExtraExtension, "V2G20-2686"), (Flaw::KeyIdMethod1, "V2G20-1852")];
+    let broken = [(Flaw::BadIdentifier, "V2G20-2588"), (Flaw::Expired, "V2G20-1001"), (Flaw::ExtraExtension, "V2G20-2686"), (Flaw::KeyIdWrong, "V2G20-3431")];
     for (flaw, requirement) in broken {
         let found = check(Curve::P521, Peer::Contract, flaw);
         assert!(found.iter().any(|v| v.requirement == requirement && v.depth == 0), "{flaw:?}: {found:#?}");

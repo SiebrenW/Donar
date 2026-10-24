@@ -68,6 +68,8 @@ fn an_ed448_signature_survives_the_header_and_verifies() {
         assert_eq!(s.signature_value.value.len(), 114);
         assert_eq!(s.signed_info.signature_algorithm, signature::ED448);
         assert_eq!(s.signed_info.reference[0].digest_algorithm, signature::DIGEST_SHAKE256);
+        // Amd 1 V2G20-3012: the SHAKE256 digest is 114 octets.
+        assert_eq!(s.signed_info.reference[0].digest_value.len(), 114);
     });
     through_the_codec(&owned, |s| xmlsig::verify(&public(&key), s, &[("#id1", &fragment)])).unwrap();
 }

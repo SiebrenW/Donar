@@ -36,7 +36,7 @@ Independent checks exist against the Python `iso15118` library (-20 DC, AC, BPT,
 - The 60 s `V2G_SECC_Sequence_Timeout` ends a session with `Ended::SequenceTimeout`; for DIN the host then carries out the EVSE-initiated emergency shutdown (V2G-DC-366: oscillator off, current down). The simulators do not run the timer.
 - The charger answers the cable check and the stop checks of the pilot at once with what it last measured, and `FAILED` when C/D or B is missing: ISO/PAS 15118-23 (`TC23_SECC_CableCheck_005`, `TC23_SECC_WeldingDetectionOrSessionStop_001`) has the charger fail a request that comes without the signalled state, in time, and expects the pilot to be right when the V2G message arrives. So the vehicle is what waits: it sends the cable check and the welding detection only after it measured C/D or B itself (`Event::Pilot`). The simulators read the cable before each request.
 - The charger's own emergencies (oscillator off, current down, contactors open) are the host's; the core only learns of the vehicle's. The simulators are hosts that poll every 2 ms instead of arming a monitor; no example of an interrupt driven monitor yet.
-- Charger simulator: acting on an `EVEnergyOffer` (it only logs it), an offer with several rules per stack, live mobility-needs changes in the loop, a cable voltage drop (V2G20-2185 note 2), the early-stop and pause paths of -2, certificate revocation for the contract.
+- Charger simulator: acting on an `EVEnergyOffer` (it only logs it), an offer with several rules per stack, live mobility-needs changes in the loop, a cable voltage drop (note 2 of V2G20-2185, deleted by Amd 1), the early-stop and pause paths of -2, certificate revocation for the contract.
 
 ### Vehicle simulator
 
@@ -58,7 +58,8 @@ Independent checks exist against the Python `iso15118` library (-20 DC, AC, BPT,
 - The static-ECDH suite of ISO 15118-2 Table 7 (not in OpenSSL 3.6/4.0): an SECC claiming -2 conformance needs another library; the EVCC does not (V2G2-603).
 - Key erasure at the end of a session (V2G20-2046 ff.), cross certificates (V2G20-1002, 1005, 1853), the profiles of the other services (provisioning, e-mobility, OEM provisioning, private environment, OCSP signer), GeneralizedTime encoding, CRLs.
 - OCSP: OpenSSL delivers one stapled response, the leaf's, so `require_all` fails for a chain with a sub-CA unless the host brings more responses.
-- The EVSEID format (IEC 63119-2) and the EMAID format (read from the example of C.6) are not checked against the standard.
+- Identifiers: EMAID and EVSEID follow ISO 15118-2 Annex H and the global identifier of IEC 63119-2; the IDACS format that IEC 63119-2 names for Europe is not at hand and not checked. The EVSEID checks run on the simulators' defaults only, not on what a peer sends.
+- ISO 15118-20 Amd 1: what is done and what is not (AC DER, MCS, the `certificate_authorities` extension, the OCSP signer chain, cross certificates, private environment, phase element pairing, Table 94 ranges) is in `docs/conformance-15118-20-amd1.md`.
 
 ### Codec and generator
 

@@ -211,9 +211,9 @@ fn sessions_run_over_chains_made_to_the_profiles() {
 fn a_chain_against_the_profile_is_refused_only_when_enforced() {
     use scenarios::profile_pki::Flaw;
     // The handshake and the session work (OpenSSL has no quarrel with it); the profile check decides.
-    let warned = profile_session(Curve::P521, Flaw::KeyIdMethod1, tls::CertificateChecks::Warn).unwrap();
+    let warned = profile_session(Curve::P521, Flaw::KeyIdWrong, tls::CertificateChecks::Warn).unwrap();
     assert_eq!(warned, Outcome::Ended(EndReason::Completed));
-    let err = profile_session(Curve::P521, Flaw::KeyIdMethod1, tls::CertificateChecks::Enforce).unwrap_err();
+    let err = profile_session(Curve::P521, Flaw::KeyIdWrong, tls::CertificateChecks::Enforce).unwrap_err();
     assert!(err.to_string().contains("do not meet the profile"), "{err}");
 }
 

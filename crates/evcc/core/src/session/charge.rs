@@ -139,10 +139,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 self.stop_kind = StopKind::ServiceRenegotiation;
                 return self.begin_stop(Some(within_s));
             }
-            // V2G20-1850: the EVSE wants a pause. A pause of the whole session (SessionStopReq
-            // with Pause) is not implemented; a standby period is the other answer the standard
-            // allows, and it keeps the session, the TLS connection and the contactors. The
-            // current goes to zero first (V2G20-1194).
+            // V2G20-3308, 3317: the EVSE wants a pause. The answer is a pause of the whole session
+            // (SessionStopReq with Pause) or a standby period, which keeps the session, the TLS
+            // connection and the contactors. The current goes to zero first (V2G20-1194).
             Some((EvseNotification::Pause, within_s)) if self.config.pause_on_notification => {
                 self.stop_kind = StopKind::Pause;
                 return self.begin_stop(Some(within_s));
@@ -214,7 +213,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         let msg = dc::DcPreChargeReq {
             header: self.header(),
             ev_processing: if finished { Processing::Finished } else { Processing::Ongoing },
-            // V2G20-2180: the voltage at the inlet, which follows the charger's output until
+            // The voltage at the inlet (the 2022 text V2G20-2180, deleted by Amd 1), which follows the charger's output until
             // the contactors are closed; the target is the battery's.
             ev_present_voltage: self.last_inlet,
             ev_target_voltage: battery,

@@ -23,9 +23,9 @@ Three kinds of entry: the **text contradicts itself** (or a standard it refers t
 
 | Where | What | Decision |
 |---|---|---|
-| Certificate tables (Ed448 SECC certificates) | `keyAgreement` is required in the key usage, which an Ed448 key cannot do. | Implemented as written. |
-| Vehicle certificate tables: `AuthorityKeyIdentifier`, `SubjectKeyIdentifier` | Marked critical; RFC 5280 says they are not. | Either is accepted. |
-| `AuthorityInfoAccess`, `CRLDistributionPoints` | The profiles make them critical; OpenSSL reports an unhandled critical extension. | The TLS contexts let exactly those two through. |
+| Certificate tables of 2022 (Ed448 SECC certificates) | `keyAgreement` is required in the key usage, which an Ed448 key cannot do. Amd 1 (Table B.6) makes it 0/1. | 0/1 for Ed448, as the amendment has it. |
+| Vehicle certificate tables of 2022: `AuthorityKeyIdentifier`, `SubjectKeyIdentifier` | Marked critical; RFC 5280 says they are not. Amd 1 makes them non-critical. | Either is accepted. |
+| `AuthorityInfoAccess`, `CRLDistributionPoints` in the 2022 profiles | Critical; OpenSSL reports an unhandled critical extension. Amd 1 makes them non-critical for that reason (B.2.2). | Either is accepted; the TLS contexts let exactly those two through when critical. |
 | OCSP in TLS 1.3 (V2G20-2411 to 2416) | Responses for every certificate of the chain, in the handshake. OpenSSL hands a client one stapled response (the leaf's) and has no API for the others. | `require_all` fails for a chain with a sub-CA unless the host brings more responses. The simulators check the leaf only. |
 
 Not covered at all: cross certificates (V2G20-1002, 1005, 1853), the profiles of the provisioning, e-mobility, OEM provisioning, private environment and OCSP signer certificates, and CRLs.
@@ -35,7 +35,10 @@ Not covered at all: cross certificates (V2G20-1002, 1005, 1853), the profiles of
 | Where | What is not said | Decision |
 |---|---|---|
 | Schedule renegotiation side stream (payload type 0x8101, 8.6.5.1, Annex F) | Which schema the side stream uses: charge parameter discovery is in the DC schema, schedule exchange and power delivery in the common messages. | Messages are coded as on the main stream; the receiver decodes what the exchange expects next. No independent check exists (the Python library defines the payload type and does not implement it). |
-| Message signatures (V2G20-1449) | Whether the digest and signature cover the EXI fragment *with* its header octet; the SHAKE256 digest length; the ECDSA value format. | With the header octet (as EXIficient-based stacks do), r‖s (xmldsig-more); the SHAKE256 length is a guess. |
+| Message signatures (V2G20-1449) | Whether the digest and signature cover the EXI fragment *with* its header octet; the ECDSA value format. | With the header octet (as EXIficient-based stacks do), r‖s (xmldsig-more). |
+| SHAKE256 output length (Amd 1 V2G20-3012) | The 2022 text names the digest algorithm only. Amd 1 fixes 114 octets, but words it for "signatures as defined by V2G20-2476", and 2476 is the `DigestMethod`; the Ed448 signature itself is RFC 8032, which uses 114 octets inside. | 114 octets for the digest. |
+| EMAID and EVSEID (V2G20-2076, 2087; IEC 63119-2) | IEC 63119-2 refers to the IDACS format document for Europe (not at hand) and defines a "global identifier" (format issuer `EMI3` or `*GBT`, format id, original id) whose content it leaves to the issuer. Amd 1 only sets the length (64). | EMAID: the ISO 15118-2 Annex H.1 form with its check digit, or a global identifier of at most 64 characters. EVSEID: the ISO 15118-2 Annex H.2 form or a global identifier. The IDACS rules are not checked. |
+| GoToPause with a non-zero first schedule entry (Amd 1 V2G20-3299, 3301) | What the vehicle does in Scheduled mode when `GoToPause` is TRUE and the first entry of a schedule has power. 3301 defines the stop only with Power 0 in the first entry of every schedule. | The vehicle follows `GoToPause` whatever the schedule says. |
 | BPT service parameters (Table 207) | Whether `BPTChannel` and `GeneratorMode` are mandatory in a DC_BPT parameter set. The Python SECC offers none. | The vehicle accepts a set without them (`Config::optional_parameters`). Unchecked. |
 | `EVMaximumV2XEnergyRequest`, `EVMinimumV2XEnergyRequest` (V2G20-2681, 2682, 2124, 2125) | Sign conventions are given in prose only ("a negative value indicates that PresentSOC is above the V2X range"). | Both values or none, clamped into minimum energy ≤ minimum V2X ≤ maximum V2X ≤ maximum energy. |
 | Discharge in Dynamic mode | The convention for the target energy and power when discharging (a negative `EVTargetEnergyRequest`, a negative target active power). | Negative means discharge. Open item in PLAN. |
