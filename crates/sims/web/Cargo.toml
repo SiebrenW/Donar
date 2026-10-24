@@ -8,6 +8,7 @@ description = "A small web UI to start scenarios, change their parameters and fo
 
 [dependencies]
 scenarios = { path = "../scenarios" }
+sandbox = { path = "../sandbox" }
 evcc-sim = { path = "../evcc-sim" }
 evse-sim = { path = "../evse-sim" }
 iso15118-20 = { path = "../../codec/iso15118-20" }
