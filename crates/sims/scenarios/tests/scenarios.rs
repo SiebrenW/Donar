@@ -31,9 +31,8 @@ fn every_scenario_file_loads() {
 }
 
 /// The bring-up of a charging session starts with SLAC (ISO 15118-3): every simulator scenario runs it, unless it is listed
-/// here with the reason. (A charger that offers a nominal duty cycle, 10 to 96 %, is basic charging with no SLAC and no
-/// high level communication; evse-sim has no such policy yet, so nothing is exempt.)
-const WITHOUT_SLAC: &[(&str, &str)] = &[];
+/// here with the reason.
+const WITHOUT_SLAC: &[(&str, &str)] = &[("basic-charging", "the charger offers a nominal duty cycle: basic charging, no SLAC, no high level communication")];
 
 #[test]
 fn every_simulator_scenario_runs_slac_unless_it_is_exempt() {
@@ -129,6 +128,7 @@ mod run {
         ac_scheduled_energy_offer => "ac-scheduled-energy-offer",
         dc_mobility_needs_evse => "dc-mobility-needs-evse",
         dc_slac => "dc-slac",
+        basic_charging => "basic-charging",
         slac_too_far => "slac-too-far",
         slac_ac_restarts => "slac-ac-restarts",
         dc_tls_slac => "dc-tls-slac",

@@ -155,8 +155,13 @@ fn run(interface: &str, settings: &Settings, control: Option<&str>) -> io::Resul
         evcc_linux::pilot::Wire::new(dir)?.set_ev(control_pilot::State::B)?;
     }
     let ifindex = sdp::interface_index(interface)?;
-    if settings.slac && !run_slac(interface, settings)? {
-        return Ok(false);
+    if settings.slac {
+        match run_slac(interface, settings)? {
+            evcc_core::slac::Outcome::Matched { .. } => {}
+            // A nominal duty cycle: the charger offers basic charging only, and there is nothing to match.
+            evcc_core::slac::Outcome::BasicCharging => return basic_charging(settings),
+            _ => return Ok(false),
+        }
     }
     if settings.slac && settings.slac_only {
         return Ok(true);
@@ -255,8 +260,7 @@ fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session:
 }
 
 #[cfg(target_os = "linux")]
-fn run_slac(interface: &str, settings: &Settings) -> io::Result<bool> {
-    use evcc_core::slac::Outcome as SlacOutcome;
+fn run_slac(interface: &str, settings: &Settings) -> io::Result<evcc_core::slac::Outcome> {
     let socket = evcc_linux::slac::PacketSocket::open(interface)?;
     let outcome = if settings.qca_modem {
         let mut modem = evcc_linux::slac::QcaModem::open(interface)?;
@@ -266,7 +270,34 @@ fn run_slac(interface: &str, settings: &Settings) -> io::Result<bool> {
         slac_with(&socket, settings, &mut evcc_linux::slac::NoModem)?
     };
     eprintln!("slac: {outcome:?}");
-    Ok(matches!(outcome, SlacOutcome::Matched { .. }))
+    Ok(outcome)
+}
+
+/// Charging by IEC 61851-1 alone, as the charger's nominal duty cycle offers: the vehicle asks for energy with state C,
+/// takes it for `basic_charge_ms` and stops with state B. It ends early when the charger takes the oscillator away or
+/// signals an error.
+#[cfg(target_os = "linux")]
+fn basic_charging(settings: &Settings) -> io::Result<bool> {
+    use control_pilot::{Pwm, State};
+    use std::time::{Duration, Instant};
+    let dir = settings.control_pilot_wire.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "basic charging needs the control pilot wire"))?;
+    let wire = evcc_linux::pilot::Wire::new(dir)?;
+    let offered = wire.reading().and_then(|r| r.pwm.offered_current_tenths()).ok_or_else(|| io::Error::other("no nominal duty cycle on the pilot"))?;
+    eprintln!("basic charging: {}.{} A offered, no high level communication", offered / 10, offered % 10);
+    wire.set_ev(State::C)?;
+    eprintln!("basic charging: asking for energy (C) for {} ms", settings.basic_charge_ms);
+    let end = Instant::now() + Duration::from_millis(settings.basic_charge_ms.into());
+    while Instant::now() < end {
+        if let Some(r) = wire.reading().filter(|r| r.pwm == Pwm::Off || matches!(r.state, State::A | State::E | State::F)) {
+            eprintln!("basic charging: the charger ended it ({r:?})");
+            wire.set_ev(State::B)?;
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    wire.set_ev(State::B)?;
+    eprintln!("basic charging: done (B)");
+    Ok(true)
 }
 
 #[cfg(target_os = "linux")]
@@ -291,7 +322,7 @@ fn slac_with(socket: &evcc_linux::slac::PacketSocket, settings: &Settings, modem
 }
 
 #[cfg(not(target_os = "linux"))]
-fn run_slac(_interface: &str, _settings: &Settings) -> io::Result<bool> {
+fn run_slac(_interface: &str, _settings: &Settings) -> io::Result<evcc_core::slac::Outcome> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "SLAC needs Linux",

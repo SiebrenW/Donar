@@ -67,6 +67,19 @@ impl Pwm {
     }
 }
 
+impl Pwm {
+    /// The current a duty cycle offers in basic charging (IEC 61851-1 Table A.7), in tenths of an ampere: 10 to 85 % is
+    /// 0.6 A per percent, 86 to 96 % is 2.5 A per percent above 64. None for 5 % (digital communication), below 10 %
+    /// and above 96 % (no charging) and without an oscillator.
+    pub fn offered_current_tenths(self) -> Option<u16> {
+        match self {
+            Pwm::Duty(d @ 10..=85) => Some(u16::from(d) * 6),
+            Pwm::Duty(d @ 86..=96) => Some((u16::from(d) - 64) * 25),
+            _ => None,
+        }
+    }
+}
+
 /// What the host measured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reading {
@@ -296,6 +309,18 @@ impl EvseWatch {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_nominal_duty_cycle_offers_a_current_by_iec_61851_1() {
+        assert_eq!(Pwm::Duty(10).offered_current_tenths(), Some(60));
+        assert_eq!(Pwm::Duty(53).offered_current_tenths(), Some(318)); // 32 A is 53 %, the measurement rounds
+        assert_eq!(Pwm::Duty(85).offered_current_tenths(), Some(510));
+        assert_eq!(Pwm::Duty(90).offered_current_tenths(), Some(650));
+        assert_eq!(Pwm::Duty(96).offered_current_tenths(), Some(800));
+        for none in [Pwm::Off, Pwm::Duty(5), Pwm::Duty(9), Pwm::Duty(97), Pwm::Duty(100)] {
+            assert_eq!(none.offered_current_tenths(), None, "{none:?}");
+        }
+    }
+
     use super::*;
 
     const B5: Reading = Reading::CONNECTED;
