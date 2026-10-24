@@ -2,6 +2,7 @@
 name = "din70121"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 description = "DIN SPEC 70121 message types and their schema-informed EXI codec"
 

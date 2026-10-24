@@ -2,6 +2,7 @@
 name = "sandbox"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 description = "Isolated network environments (Linux namespaces joined by virtual cables) in which scenarios run their participants as processes"
 

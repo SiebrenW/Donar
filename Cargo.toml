@@ -5,3 +5,4 @@ members = ["crates/codec/*", "crates/codec/exi-gen/benchmarks/rust", "crates/evc
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "0BSD OR Apache-2.0"

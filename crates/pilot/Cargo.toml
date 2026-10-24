@@ -2,5 +2,6 @@
 name = "control-pilot"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 description = "The control pilot (IEC 61851-1/-23) as the V2G cores see it: a reading, and the rules for what a change means to the vehicle and to the charger."
