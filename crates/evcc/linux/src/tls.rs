@@ -21,7 +21,8 @@ use openssl::pkey::PKey;
 use openssl::ssl::{
     HandshakeError, Ssl, SslContext, SslContextBuilder, SslMethod, SslStream, SslVerifyMode, SslVersion,
 };
-use openssl::x509::X509;
+use openssl::stack::Stack;
+use openssl::x509::{X509, X509Name};
 use openssl::x509::store::X509StoreBuilder;
 
 /// Table 6.
@@ -103,11 +104,15 @@ pub struct Credentials<'a> {
     pub ocsp_response: Option<&'a [u8]>,
     /// Gives the session secrets away (test platforms only).
     pub disclosure: Option<Disclosure>,
+    /// Name the trust anchors in the `certificate_authorities` extension (V2G20-1006, 2401, 2402, Amd 1
+    /// 3373, 3381): the client in its ClientHello, the server in its CertificateRequest. Off for a vehicle in
+    /// CPM4PE (V2G20-3374) and for a private SECC in it (V2G20-3382).
+    pub announce_authorities: bool,
 }
 
 impl<'a> Credentials<'a> {
     pub fn new(chain_pem: &'a [u8], key_pem: &'a [u8], trust_pem: &'a [u8]) -> Self {
-        Self { chain_pem, key_pem, trust_pem, key_password: None, backwards_compatible: false, versions: Versions::Tls13, ocsp_response: None, disclosure: None }
+        Self { chain_pem, key_pem, trust_pem, key_password: None, backwards_compatible: false, versions: Versions::Tls13, ocsp_response: None, disclosure: None, announce_authorities: true }
     }
 
     /// Staples this OCSP response (DER, for the leaf certificate) to a server's certificate when the
@@ -131,6 +136,12 @@ impl<'a> Credentials<'a> {
         self
     }
 
+    /// Leaves the `certificate_authorities` extension out (CPM4PE).
+    pub fn without_authorities(mut self) -> Self {
+        self.announce_authorities = false;
+        self
+    }
+
     pub fn key_password(mut self, password: &'a [u8]) -> Self {
         self.key_password = Some(password);
         self
@@ -142,7 +153,7 @@ impl<'a> Credentials<'a> {
     }
 }
 
-fn context(role: SslMethod, c: &Credentials<'_>) -> Result<SslContextBuilder, ErrorStack> {
+fn context(role: SslMethod, server: bool, c: &Credentials<'_>) -> Result<SslContextBuilder, ErrorStack> {
     let mut b = SslContextBuilder::new(role)?;
     let (min, max) = match c.versions {
         Versions::Tls13 => (SslVersion::TLS1_3, SslVersion::TLS1_3),
@@ -176,13 +187,65 @@ fn context(role: SslMethod, c: &Credentials<'_>) -> Result<SslContextBuilder, Er
     b.set_private_key(&key)?;
     b.check_private_key()?;
     let mut store = X509StoreBuilder::new()?;
+    let mut names = Stack::<X509Name>::new()?;
     for cert in X509::stack_from_pem(c.trust_pem)? {
+        names.push(cert.subject_name().to_owned()?)?;
         store.add_cert(cert)?;
     }
     b.set_cert_store(store.build());
+    // No roots, no extension (V2G20-3373, 3381): an empty list would be sent as an empty extension.
+    if c.announce_authorities && !names.is_empty() {
+        if server {
+            b.set_client_ca_list(names);
+        } else {
+            ca_list::set_for_client_hello(&mut b, names);
+        }
+    }
     // The server requests our certificate (V2G20-1264) and each side insists on the other's.
     b.set_verify_callback(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT, tolerate_profile_extensions);
     Ok(b)
+}
+
+/// The `certificate_authorities` extension: OpenSSL sends the CA list of a client context in the ClientHello
+/// (`SSL_CTX_set0_CA_list`) and reads the peer's with `SSL_get0_peer_CA_list`; the `openssl` crate wraps neither.
+mod ca_list {
+    use foreign_types::{ForeignType, ForeignTypeRef};
+    use openssl::ssl::{SslContextBuilder, SslRef};
+    use openssl::stack::Stack;
+    use openssl::x509::X509Name;
+    use std::os::raw::c_void;
+
+    unsafe extern "C" {
+        fn SSL_CTX_set0_CA_list(ctx: *mut openssl_sys::SSL_CTX, list: *mut c_void);
+        fn SSL_get0_peer_CA_list(ssl: *const openssl_sys::SSL) -> *mut c_void;
+    }
+
+    pub fn set_for_client_hello(b: &mut SslContextBuilder, names: Stack<X509Name>) {
+        // The context takes over the stack.
+        let ptr = names.as_ptr();
+        std::mem::forget(names);
+        unsafe { SSL_CTX_set0_CA_list(b.as_ptr(), ptr.cast()) }
+    }
+
+    /// The distinguished names (DER) the peer announced, if it sent the extension or a CertificateRequest list.
+    pub fn peer(ssl: &SslRef) -> Option<Vec<Vec<u8>>> {
+        let ptr = unsafe { SSL_get0_peer_CA_list(ssl.as_ptr()) };
+        if ptr.is_null() {
+            return None;
+        }
+        // Owned by the SSL; borrowed here and not freed.
+        let stack = unsafe { Stack::<X509Name>::from_ptr(ptr.cast()) };
+        let names = stack.iter().filter_map(|n| n.to_der().ok()).collect();
+        std::mem::forget(stack);
+        Some(names)
+    }
+}
+
+/// The distinguished names (DER) of the trust anchors the peer announced in `certificate_authorities`: the client's
+/// ClientHello as the server sees it, the server's CertificateRequest as the client sees it. `None` when the peer
+/// sent none (V2G20-3373, 3381, 3374, 3382).
+pub fn peer_authorities(ssl: &openssl::ssl::SslRef) -> Option<Vec<Vec<u8>>> {
+    ca_list::peer(ssl).filter(|n| !n.is_empty())
 }
 
 /// The profiles of Annex B make AuthorityInfoAccess and CRLDistributionPoints critical, which
@@ -210,12 +273,12 @@ fn tolerate_profile_extensions(ok: bool, ctx: &mut openssl::x509::X509StoreConte
 
 /// A client (EVCC) context.
 pub fn client_context(c: &Credentials<'_>) -> Result<SslContext, ErrorStack> {
-    Ok(context(SslMethod::tls_client(), c)?.build())
+    Ok(context(SslMethod::tls_client(), false, c)?.build())
 }
 
 /// A server (SECC) context, for the EVSE side of tests.
 pub fn server_context(c: &Credentials<'_>) -> Result<SslContext, ErrorStack> {
-    let mut b = context(SslMethod::tls_server(), c)?;
+    let mut b = context(SslMethod::tls_server(), true, c)?;
     if let Some(response) = c.ocsp_response {
         let response = response.to_vec();
         b.set_status_callback(move |ssl| {
