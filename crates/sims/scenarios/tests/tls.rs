@@ -294,3 +294,59 @@ fn the_trust_anchors_are_announced_as_certificate_authorities() {
     let (by_server, by_client) = announced(credentials(&secc, &vca).without_authorities(), credentials(&evcc, &ca).without_authorities());
     assert_eq!((by_server, by_client), (None, None));
 }
+
+/// The issuer (DER) of the certificate each side received from the other.
+fn issuers_seen(server: Credentials<'_>, client: Credentials<'_>) -> (Vec<u8>, Vec<u8>) {
+    let (server, client) = (tls::server_context(&server).unwrap(), tls::client_context(&client).unwrap());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let thread = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut stream = tls::accept(&server, stream).unwrap();
+        std::io::Read::read(&mut stream, &mut [0u8; 1]).unwrap();
+        stream.ssl().peer_certificate().unwrap().issuer_name().to_der().unwrap()
+    });
+    let mut stream = tls::connect(&client, TcpStream::connect(addr).unwrap()).unwrap();
+    std::io::Write::write_all(&mut stream, b"x").unwrap();
+    let from_server = stream.ssl().peer_certificate().unwrap().issuer_name().to_der().unwrap();
+    (thread.join().unwrap(), from_server)
+}
+
+#[test]
+fn a_chain_is_chosen_by_the_roots_the_peer_announced() {
+    // V2G20-3376 (the charger chooses by the vehicle's ClientHello), 3383 (the vehicle by the CertificateRequest).
+    let subject = |p: &Pki| openssl::x509::X509::from_pem(&p.pem).unwrap().subject_name().to_der().unwrap();
+    // Two charger chains under two roots; two vehicle chains likewise.
+    let ((ca1, secc1), (ca2, secc2)) = (pki(Curve::P521, "SECC one"), pki(Curve::P521, "SECC two"));
+    let ((vca1, evcc1), (vca2, evcc2)) = (pki(Curve::P521, "EVCC one"), pki(Curve::P521, "EVCC two"));
+    let both = |a: &Pki, b: &Pki| [a.pem.clone(), b.pem.clone()].concat();
+    let (ca_both, vca_both) = (both(&ca1, &ca2), both(&vca1, &vca2));
+    fn two<'a>(one: &'a Identity, two: &'a Identity, trust: &'a [u8]) -> Credentials<'a> {
+        Credentials::new(&one.chain, &one.key, trust).alternative(&two.chain, &two.key)
+    }
+    let server = |trust| two(&secc1, &secc2, trust);
+    let client = |trust| two(&evcc1, &evcc2, trust);
+
+    // The vehicle trusts only the second root: the charger presents its second chain. The charger trusts only the
+    // second vehicle root: the vehicle presents its second chain.
+    let (at_server, at_client) = issuers_seen(server(&vca2.pem), client(&ca2.pem));
+    assert_eq!(at_client, subject(&ca2));
+    assert_eq!(at_server, subject(&vca2));
+    // The first.
+    let (at_server, at_client) = issuers_seen(server(&vca1.pem), client(&ca1.pem));
+    assert_eq!((at_client, at_server), (subject(&ca1), subject(&vca1)));
+    // Both trusted: the first chain (the announced names come in the order of the trust anchors).
+    let (at_server, at_client) = issuers_seen(server(&vca_both), client(&ca_both));
+    assert_eq!((at_client, at_server), (subject(&ca1), subject(&vca1)));
+}
+
+#[test]
+fn without_a_match_or_a_list_the_first_chain_is_presented() {
+    let subject = |p: &Pki| openssl::x509::X509::from_pem(&p.pem).unwrap().subject_name().to_der().unwrap();
+    let ((ca1, secc1), (_ca2, secc2)) = (pki(Curve::P521, "SECC one"), pki(Curve::P521, "SECC two"));
+    let (vca, evcc) = pki(Curve::P521, "EVCC");
+    // The vehicle announces no authorities: the charger's first chain, which the vehicle trusts.
+    let server = Credentials::new(&secc1.chain, &secc1.key, &vca.pem).alternative(&secc2.chain, &secc2.key);
+    let (_, at_client) = issuers_seen(server, Credentials::new(&evcc.chain, &evcc.key, &ca1.pem).without_authorities());
+    assert_eq!(at_client, subject(&ca1));
+}

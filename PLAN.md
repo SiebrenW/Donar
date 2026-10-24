@@ -59,7 +59,7 @@ Independent checks exist against the Python `iso15118` library (-20 DC, AC, BPT,
 - Key erasure at the end of a session (V2G20-2046 ff.), cross certificates (V2G20-1002, 1005, 1853), the profiles of the other services (provisioning, e-mobility, OEM provisioning, private environment, OCSP signer), GeneralizedTime encoding, CRLs.
 - OCSP: OpenSSL delivers one stapled response, the leaf's, so `require_all` fails for a chain with a sub-CA unless the host brings more responses.
 - Identifiers: EMAID and EVSEID follow ISO 15118-2 Annex H and the global identifier of IEC 63119-2; the IDACS format that IEC 63119-2 names for Europe is not at hand and not checked. The EVSEID checks run on the simulators' defaults only, not on what a peer sends.
-- ISO 15118-20 Amd 1: what is done and what is not (AC DER, MCS, chain selection by the announced `certificate_authorities`, the OCSP signer chain, cross certificates, private environment, phase element pairing, Table 94 ranges) is in `docs/conformance-15118-20-amd1.md`.
+- ISO 15118-20 Amd 1: what is done and what is not (AC DER, MCS, the OCSP signer chain, cross certificates, private environment, phase element pairing, Table 94 ranges) is in `docs/conformance-15118-20-amd1.md`.
 
 ### Codec and generator
 

@@ -33,7 +33,7 @@ Status: **done** (checked or changed in code, with a test), **met** (the behavio
 | Requirement | Change | Status |
 |---|---|---|
 | V2G20-1006, 2401, 2402, 3373, 3374, 3381, 3382 | `certificate_authorities` extension in the ClientHello and CertificateRequest: the trust anchors' names, absent without roots, absent in CPM4PE | done: `Credentials::announce_authorities` (default on, `without_authorities()` for CPM4PE), `tls::peer_authorities` reads what the other side sent. Test: `the_trust_anchors_are_announced_as_certificate_authorities`; the interop scenarios with the Python partner pass with it on. OpenSSL's Rust crate has no wrapper for the client's CA list, so `tls.rs` declares two OpenSSL functions itself. |
-| V2G20-3375 to 3378, 3383 to 3385 | Chain selection from the other side's list of roots; chain "up to a root, excluding it" | open: the host can read the list (`peer_authorities`) but a context holds one chain, so nothing chooses between chains yet; a chain is already sent without its root |
+| V2G20-3375 to 3378, 3383 to 3385 | Chain selection from the other side's list of roots; chain "up to a root, excluding it" | done: `Credentials::alternative(chain, key)` adds chains; a certificate callback (`SSL_CTX_set_cert_cb`, on the server after the ClientHello and on the client at the CertificateRequest) presents the first chain whose root the peer announced, the first of all when none or no list. Tests: `a_chain_is_chosen_by_the_roots_the_peer_announced` (both directions), `without_a_match_or_a_list_the_first_chain_is_presented`. Not wired into the simulators' settings. The chains handed in are sent as they are: the root is only left out if the PEM leaves it out (V2G20-3375, 3378, 3384, 3385). |
 | V2G20-3379, 3380 | An OCSP response for each certificate in the chain | open as before: OpenSSL staples one response (see PLAN, TLS) |
 | V2G20-3002 to 3005 | The OCSP signer's chain ends in the same root as the checked certificate, or in a root the other side listed | open; the signer is checked against the trust store only |
 | V2G20-3388 to 3400 | Contract key transport for 456-bit (X448) keys, TPM key profiles | out of scope (certificate installation) |
@@ -51,6 +51,5 @@ Status: **done** (checked or changed in code, with a test), **met** (the behavio
 
 ## Order of work, if wanted
 
-1. Chain selection by the announced names (needs several chains per context and a certificate callback; `peer_authorities` is the input).
-2. Generate the AC DER codecs and add the services to the lists; the vehicle and charger machines reuse the AC machines (V2G20-3030, 3176: "all requirements of AC apply as well"), so the parameters and the charge loop messages are the work.
-3. MCS, when a CE-signalling test setup exists.
+1. Generate the AC DER codecs and add the services to the lists; the vehicle and charger machines reuse the AC machines (V2G20-3030, 3176: "all requirements of AC apply as well"), so the parameters and the charge loop messages are the work.
+2. MCS, when a CE-signalling test setup exists.

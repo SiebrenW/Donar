@@ -108,11 +108,15 @@ pub struct Credentials<'a> {
     /// 3373, 3381): the client in its ClientHello, the server in its CertificateRequest. Off for a vehicle in
     /// CPM4PE (V2G20-3374) and for a private SECC in it (V2G20-3382).
     pub announce_authorities: bool,
+    /// More chains with their keys (PEM), for peers that name the roots they trust: the first of all chains
+    /// whose root the peer announced is presented (V2G20-3375 to 3378, 3383 to 3385), the first of them all
+    /// (`chain_pem`) when it announced none or none matches.
+    pub alternatives: Vec<(&'a [u8], &'a [u8])>,
 }
 
 impl<'a> Credentials<'a> {
     pub fn new(chain_pem: &'a [u8], key_pem: &'a [u8], trust_pem: &'a [u8]) -> Self {
-        Self { chain_pem, key_pem, trust_pem, key_password: None, backwards_compatible: false, versions: Versions::Tls13, ocsp_response: None, disclosure: None, announce_authorities: true }
+        Self { chain_pem, key_pem, trust_pem, key_password: None, backwards_compatible: false, versions: Versions::Tls13, ocsp_response: None, disclosure: None, announce_authorities: true, alternatives: Vec::new() }
     }
 
     /// Staples this OCSP response (DER, for the leaf certificate) to a server's certificate when the
@@ -133,6 +137,12 @@ impl<'a> Credentials<'a> {
     /// Sends the secrets of every session to the capture (see [`Disclosure`]).
     pub fn disclose_secrets(mut self, disclosure: Disclosure) -> Self {
         self.disclosure = Some(disclosure);
+        self
+    }
+
+    /// Another chain and key to present to a peer that trusts a different root.
+    pub fn alternative(mut self, chain_pem: &'a [u8], key_pem: &'a [u8]) -> Self {
+        self.alternatives.push((chain_pem, key_pem));
         self
     }
 
@@ -186,6 +196,14 @@ fn context(role: SslMethod, server: bool, c: &Credentials<'_>) -> Result<SslCont
     };
     b.set_private_key(&key)?;
     b.check_private_key()?;
+    if !c.alternatives.is_empty() {
+        let mut identities = vec![Identity::from_pem(c.chain_pem, c.key_pem, c.key_password)?];
+        for (chain, key) in &c.alternatives {
+            identities.push(Identity::from_pem(chain, key, c.key_password)?);
+        }
+        b.set_ex_data(identities_index(), identities);
+        unsafe { SSL_CTX_set_cert_cb(b.as_ptr(), Some(present_identity), std::ptr::null_mut()) };
+    }
     let mut store = X509StoreBuilder::new()?;
     let mut names = Stack::<X509Name>::new()?;
     for cert in X509::stack_from_pem(c.trust_pem)? {
@@ -204,6 +222,65 @@ fn context(role: SslMethod, server: bool, c: &Credentials<'_>) -> Result<SslCont
     // The server requests our certificate (V2G20-1264) and each side insists on the other's.
     b.set_verify_callback(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT, tolerate_profile_extensions);
     Ok(b)
+}
+
+/// A chain with its key, for a context that holds several (see [`Credentials::alternative`]).
+struct Identity {
+    chain: Vec<X509>,
+    key: PKey<openssl::pkey::Private>,
+    /// The name (DER) of the root the chain leads to: the issuer of its last certificate.
+    root: Vec<u8>,
+}
+
+impl Identity {
+    fn from_pem(chain_pem: &[u8], key_pem: &[u8], password: Option<&[u8]>) -> Result<Self, ErrorStack> {
+        let chain = X509::stack_from_pem(chain_pem)?;
+        let key = match password {
+            Some(p) => PKey::private_key_from_pem_passphrase(key_pem, p)?,
+            None => PKey::private_key_from_pem(key_pem)?,
+        };
+        let root = chain.last().ok_or_else(ErrorStack::get)?.issuer_name().to_der()?;
+        Ok(Self { chain, key, root })
+    }
+}
+
+/// The chain to present to a peer that announced `authorities`: the first whose root is among them; the first
+/// one when the peer announced nothing or nothing matches (it will decide whether to accept).
+fn select<'a>(identities: &'a [Identity], authorities: Option<&[Vec<u8>]>) -> &'a Identity {
+    authorities
+        .and_then(|names| identities.iter().find(|i| names.contains(&i.root)))
+        .unwrap_or(&identities[0])
+}
+
+fn identities_index() -> openssl::ex_data::Index<SslContext, Vec<Identity>> {
+    static INDEX: std::sync::OnceLock<openssl::ex_data::Index<SslContext, Vec<Identity>>> = std::sync::OnceLock::new();
+    *INDEX.get_or_init(|| SslContext::new_ex_index().expect("an ex_data index"))
+}
+
+unsafe extern "C" {
+    fn SSL_CTX_set_cert_cb(ctx: *mut openssl_sys::SSL_CTX, cb: Option<unsafe extern "C" fn(*mut openssl_sys::SSL, *mut std::os::raw::c_void) -> std::os::raw::c_int>, arg: *mut std::os::raw::c_void);
+}
+
+/// OpenSSL calls this on a server after the ClientHello and on a client when the server asks for a certificate, so
+/// that the peer's `certificate_authorities` are known.
+unsafe extern "C" fn present_identity(ssl: *mut openssl_sys::SSL, _arg: *mut std::os::raw::c_void) -> std::os::raw::c_int {
+    use foreign_types::ForeignTypeRef;
+    let ssl = unsafe { openssl::ssl::SslRef::from_ptr_mut(ssl) };
+    let Some(identities) = ssl.ssl_context().ex_data(identities_index()) else { return 0 };
+    let announced = ca_list::peer(ssl);
+    let chosen = select(identities, announced.as_deref());
+    let Some((leaf, rest)) = chosen.chain.split_first() else { return 0 };
+    // Replaces the certificate, the key and the chain of this connection only.
+    let ok = unsafe {
+        use foreign_types::ForeignType;
+        openssl_sys::SSL_use_certificate(ssl.as_ptr(), leaf.as_ptr()) == 1
+            && openssl_sys::SSL_use_PrivateKey(ssl.as_ptr(), chosen.key.as_ptr()) == 1
+            // SSL_set0_chain(ssl, NULL): drop the chain of the context's first identity.
+            && openssl_sys::SSL_ctrl(ssl.as_ptr(), 88, 0, std::ptr::null_mut()) == 1
+            // SSL_add1_chain_cert: SSL_CTRL_CHAIN_CERT with larg 1.
+            && rest.iter().all(|c| openssl_sys::SSL_ctrl(ssl.as_ptr(), openssl_sys::SSL_CTRL_CHAIN_CERT, 1, c.as_ptr().cast()) == 1)
+    };
+    i32::from(ok)
 }
 
 /// The `certificate_authorities` extension: OpenSSL sends the CA list of a client context in the ClientHello
