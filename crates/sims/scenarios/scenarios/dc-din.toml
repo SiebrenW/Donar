@@ -5,9 +5,13 @@ timeout_s = 30
 [secc]
 kind = "evse-sim"
 
+[secc.settings]
+slac_responder = true
+
 [evcc]
 kind = "evcc-sim"
 [evcc.settings]
+slac = true
 protocol = "din70121"
 connector = "extended"
 poll_interval_ms = 10

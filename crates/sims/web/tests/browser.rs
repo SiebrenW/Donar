@@ -242,3 +242,20 @@ fn the_scenarios_page_lists_the_scenarios() {
     b.eval("location.hash = '#scenarios'");
     b.assert_no_errors("after switching the tabs");
 }
+
+#[test]
+fn a_run_ends_with_its_verdict_and_the_run_button_works_again() {
+    let server = start();
+    let Some(mut b) = open(&server, "") else { return };
+    b.wait_for("the scenario list", "(document.body && document.body.innerText.includes('ac-plain'))");
+    b.eval("[...document.querySelectorAll('a')].find(a => a.textContent.includes('ac-plain')).click()");
+    b.wait_for("the scenario page", "!!document.getElementById('run')");
+    b.eval("document.getElementById('run').click()");
+    b.wait_for("the verdict", "/^PASS/m.test(document.getElementById('verdict').textContent)");
+    b.wait_for("the run button to work again", "!document.getElementById('run').disabled");
+    // Nothing is delivered twice: every log pane holds each line of its file once, however long we look.
+    std::thread::sleep(Duration::from_secs(8));
+    let listening = b.eval("[...document.querySelectorAll('#logs .log')].map(d => [d.querySelector('h3').textContent, d.querySelector('pre').textContent.split('listening on veth0').length - 1])");
+    assert_eq!(listening.as_array().unwrap().iter().filter(|p| p[0] == "evcc-tcpdump.log").map(|p| p[1].as_u64().unwrap()).collect::<Vec<_>>(), [1], "{listening}");
+    b.assert_no_errors("after a run");
+}

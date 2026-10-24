@@ -4,12 +4,16 @@ timeout_s = 30
 
 [secc]
 kind = "evse-sim"
+[secc.settings]
+slac_responder = true
+
 [secc.settings.session.din]
 shutdown_after_loops = 4
 
 [evcc]
 kind = "evcc-sim"
 [evcc.settings]
+slac = true
 protocol = "din70121"
 connector = "extended"
 stop_after = 0

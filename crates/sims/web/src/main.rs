@@ -222,7 +222,8 @@ async fn events(State(app): Shared, Path(id): Path<u32>) -> Response {
             }
             if let Some(verdict) = verdict {
                 let _ = tx.send(Ok(Event::default().event("result").data(verdict))).await;
-                let _ = tx.send(Ok(Event::default().event("end").data(""))).await;
+                // Not empty: a browser drops an event without data, and its EventSource then reconnects and replays the logs.
+                let _ = tx.send(Ok(Event::default().event("end").data("done"))).await;
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;

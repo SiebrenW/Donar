@@ -4,6 +4,9 @@ timeout_s = 30
 
 [secc]
 kind = "evse-sim"
+[secc.settings]
+slac_responder = true
+
 [secc.settings.session.iso2]
 offer_contract_payment = true
 
@@ -11,6 +14,7 @@ offer_contract_payment = true
 kind = "evcc-sim"
 pnc = true
 [evcc.settings]
+slac = true
 protocol = "iso15118-2"
 connector = "dual2"
 poll_interval_ms = 10

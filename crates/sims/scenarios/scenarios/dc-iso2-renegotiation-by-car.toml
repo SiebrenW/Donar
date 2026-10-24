@@ -5,9 +5,13 @@ timeout_s = 40
 [secc]
 kind = "evse-sim"
 
+[secc.settings]
+slac_responder = true
+
 [evcc]
 kind = "evcc-sim"
 [evcc.settings]
+slac = true
 protocol = "iso15118-2"
 poll_interval_ms = 10
 charge_loop_interval_ms = 10

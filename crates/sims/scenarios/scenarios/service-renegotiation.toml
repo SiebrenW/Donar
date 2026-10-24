@@ -4,6 +4,9 @@ timeout_s = 30
 
 [secc]
 kind = "evse-sim"
+[secc.settings]
+slac_responder = true
+
 [secc.settings.session]
 service_renegotiation_supported = true
 service_renegotiation_after_loops = 2
@@ -12,6 +15,7 @@ terminate_after_loops = 3
 [evcc]
 kind = "evcc-sim"
 [evcc.settings]
+slac = true
 stop_after = 0
 poll_interval_ms = 10
 charge_loop_interval_ms = 10
