@@ -3,6 +3,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 
 pub struct Server {
@@ -26,23 +27,21 @@ pub fn start() -> Server {
     // One work directory per server: the tests run side by side, and a server clears its own.
     static SERVERS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let work = target_dir().join("web-test").join(format!("{}-{}", std::process::id(), SERVERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
-    let (program, mut args) = (env!("CARGO_BIN_EXE_evcc-web").to_string(), Vec::<String>::new());
-    // The test may run as root (the Linux runner); the server, like a person, does not, and
-    // everything it makes must not need root to remove.
-    let mut cmd = match std::env::var("SUDO_USER") {
-        Ok(user) if unsafe { libc::geteuid() } == 0 => {
-            let mut c = Command::new("sudo");
-            args.splice(0..0, ["-u".to_string(), user, "-E".to_string(), program]);
-            c.args(&args);
-            c
-        }
-        _ => Command::new(program),
-    };
+    // The test may run as root (the Linux runner); the server, like a person, does not, and everything it makes must not
+    // need root to remove. It drops the privileges itself, without `sudo` in between: killing a `sudo` would leave the
+    // server running.
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_evcc-web"));
+    let sudo_id = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u32>().ok());
+    if let (true, Some(uid), Some(gid)) = (unsafe { libc::geteuid() } == 0, sudo_id("SUDO_UID"), sudo_id("SUDO_GID")) {
+        cmd.uid(uid).gid(gid);
+    }
+    // Not the test's stdout: a server left behind would keep the pipe of whoever reads the test's output open.
     let mut child = cmd
         .args(["--listen", "127.0.0.1:0", "--scenarios"])
         .arg(scenarios)
         .arg("--work")
         .arg(work)
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .expect("start evcc-web");
