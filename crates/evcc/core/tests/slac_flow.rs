@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 
+use control_pilot::{Guard, Pwm, Reading, Side, State};
 use evcc_core::slac::{Config, Event, Failure, Machine, Outcome, Toggle, Validation};
 use evcc_core::{Timer, TimerCmd};
 use evse_sim::slac::{Config as EvseConfig, Evse};
@@ -47,7 +48,8 @@ fn drive(config: Config, evses: &mut [Evse], link_up_after_ms: Option<u64>, nois
 }
 
 fn drive_with(config: Config, evses: &mut [Evse], link_up_after_ms: Option<u64>, noise: &[Vec<u8>], pilot: Pilot) -> Result {
-    let mut m = Machine::new(config);
+    // These tests are about the matching; the control pilot gate has its own tests below.
+    let mut m = Machine::new(Config { pilot_gate: false, ..config });
     let mut tx = [0u8; 128];
     let mut now = 0u64;
     let mut timers: [Option<u64>; 3] = [None; 3];
@@ -436,4 +438,107 @@ fn without_validation_an_ambiguous_charger_is_still_refused_or_accepted_by_polic
     let r = drive(Config { rate_ms: 100, repetition_ms: 1500, ..Config::DEFAULT }, &mut evses, Some(10), &[]);
     assert_eq!(r.outcome, Outcome::Failed(Failure::NoDirectEvse));
     assert!(validate_reqs(&r).is_empty());
+}
+
+// The control pilot gate (ISO 15118-3 6.2, IEC 61851-1 Annex A, V2G3-M06-15).
+
+fn reading(state: State, pwm: Pwm) -> Event<'static> {
+    Event::Pilot(Reading { state, pwm })
+}
+
+fn start() -> Event<'static> {
+    Event::Start { mac: EV, run_id: RUN }
+}
+
+#[test]
+fn matching_waits_for_five_percent() {
+    let mut m = Machine::new(Config::DEFAULT);
+    let mut tx = [0u8; 128];
+    // Start without a reading, then with the oscillator off, in A, with 8 and 97 %: nothing is sent.
+    assert_eq!(m.handle(start(), &mut tx).send, None);
+    for r in [reading(State::B, Pwm::Off), reading(State::A, Pwm::Duty(5)), reading(State::B, Pwm::Duty(8)), reading(State::B, Pwm::Duty(97))] {
+        let step = m.handle(r, &mut tx);
+        assert_eq!((step.send, step.outcome), (None, None), "{r:?}");
+    }
+    // 5 % as the vehicle measures it (3 to 7 %) in B, C or D begins the matching and arms the pilot monitor.
+    let step = m.handle(reading(State::B, Pwm::Duty(3)), &mut tx);
+    assert!(step.send.is_some(), "CM_SLAC_PARM.REQ");
+    assert_eq!(step.pilot, Some(Guard { close_on_fault: true, ..Guard::disarmed(Side::Vehicle) }));
+}
+
+#[test]
+fn a_reading_before_start_is_remembered() {
+    let mut m = Machine::new(Config::DEFAULT);
+    let mut tx = [0u8; 128];
+    assert_eq!(m.handle(reading(State::B, Pwm::Duty(5)), &mut tx).send, None);
+    assert!(m.handle(start(), &mut tx).send.is_some());
+}
+
+#[test]
+fn a_nominal_duty_cycle_never_starts_slac() {
+    for duty in [10, 53, 96] {
+        let mut m = Machine::new(Config::DEFAULT);
+        let mut tx = [0u8; 128];
+        m.handle(start(), &mut tx);
+        let step = m.handle(reading(State::B, Pwm::Duty(duty)), &mut tx);
+        assert_eq!((step.send, step.outcome), (None, Some(Outcome::BasicCharging)), "{duty} %");
+        assert_eq!(step.pilot, Some(Guard::disarmed(Side::Vehicle)));
+        // Done: a later 5 % does not start anything.
+        assert_eq!(m.handle(reading(State::B, Pwm::Duty(5)), &mut tx).send, None);
+    }
+    // The nominal duty cycle was there before Start.
+    let mut m = Machine::new(Config::DEFAULT);
+    let mut tx = [0u8; 128];
+    m.handle(reading(State::C, Pwm::Duty(50)), &mut tx);
+    assert_eq!(m.handle(start(), &mut tx).outcome, Some(Outcome::BasicCharging));
+}
+
+#[test]
+fn a_change_of_the_duty_cycle_does_not_interrupt_the_matching_but_a_fault_state_does() {
+    let mut m = Machine::new(Config::DEFAULT);
+    let mut tx = [0u8; 128];
+    m.handle(reading(State::B, Pwm::Duty(5)), &mut tx);
+    assert!(m.handle(start(), &mut tx).send.is_some());
+    // V2G3-M06-15.
+    for r in [reading(State::B, Pwm::Duty(50)), reading(State::B, Pwm::Off), reading(State::C, Pwm::Duty(5)), reading(State::B, Pwm::Duty(5))] {
+        let step = m.handle(r, &mut tx);
+        assert_eq!((step.send, step.outcome), (None, None), "{r:?}");
+    }
+    // The charger signals an error (E, F), the plug is pulled (A), the voltage is nothing: the matching stops.
+    for state in [State::E, State::F, State::A, State::Invalid] {
+        let mut m = Machine::new(Config::DEFAULT);
+        m.handle(reading(State::B, Pwm::Duty(5)), &mut tx);
+        m.handle(start(), &mut tx);
+        let step = m.handle(reading(state, Pwm::Off), &mut tx);
+        assert_eq!(step.outcome, Some(Outcome::Aborted(state)));
+        assert_eq!(step.pilot, Some(Guard::disarmed(Side::Vehicle)));
+        // The timers are cancelled and nothing more happens.
+        assert_eq!(step.timers.iter().count(), 3);
+        assert_eq!(m.handle(Event::TimerExpired(Timer::Slac), &mut tx).send, None);
+        // The vehicle starts over when it is connected again.
+        m.handle(reading(State::B, Pwm::Duty(5)), &mut tx);
+        assert!(m.handle(start(), &mut tx).send.is_some());
+    }
+}
+
+#[test]
+fn a_host_without_a_pilot_starts_at_once() {
+    let mut m = Machine::new(Config { pilot_gate: false, ..Config::DEFAULT });
+    let mut tx = [0u8; 128];
+    assert!(m.handle(start(), &mut tx).send.is_some());
+}
+
+#[test]
+fn the_wait_for_five_percent_can_run_out() {
+    let mut m = Machine::new(Config { pilot_wait_ms: 3000, ..Config::DEFAULT });
+    let mut tx = [0u8; 128];
+    let step = m.handle(start(), &mut tx);
+    assert!(step.timers.iter().any(|c| c == TimerCmd::Arm { timer: Timer::SlacOverall, ms: 3000 }));
+    m.handle(reading(State::B, Pwm::Off), &mut tx);
+    assert_eq!(m.handle(Event::TimerExpired(Timer::SlacOverall), &mut tx).outcome, Some(Outcome::Failed(Failure::NoFivePercent)));
+    // 5 % in time replaces the wait by the overall time of the matching.
+    let mut m = Machine::new(Config { pilot_wait_ms: 3000, ..Config::DEFAULT });
+    m.handle(start(), &mut tx);
+    let step = m.handle(reading(State::B, Pwm::Duty(5)), &mut tx);
+    assert!(step.timers.iter().any(|c| c == TimerCmd::Arm { timer: Timer::SlacOverall, ms: Config::DEFAULT.repetition_ms }));
 }

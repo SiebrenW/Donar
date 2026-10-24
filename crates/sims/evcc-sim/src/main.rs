@@ -272,9 +272,21 @@ fn run_slac(interface: &str, settings: &Settings) -> io::Result<bool> {
 #[cfg(target_os = "linux")]
 fn slac_with(socket: &evcc_linux::slac::PacketSocket, settings: &Settings, modem: &mut impl evcc_linux::slac::Modem) -> io::Result<evcc_core::slac::Outcome> {
     let run_id = std::array::from_fn(|i| (std::process::id() as u8).wrapping_add((i as u8).wrapping_mul(37)));
-    match &settings.control_pilot_file {
-        Some(path) => evcc_linux::slac::run_with_pilot(socket, settings.slac_config(), run_id, modem, &mut evcc_sim::FilePilot(path.into())),
-        None => evcc_linux::slac::run(socket, settings.slac_config(), run_id, modem),
+    // With the wire the simulated car watches the cable like a real one and SLAC waits for the charger's 5 %; without it
+    // (a bench with a veth cable) there is no pilot and it begins at once.
+    let wire = match &settings.control_pilot_wire {
+        Some(dir) => Some(evcc_linux::pilot::Wire::new(dir)?.source()),
+        None => None,
+    };
+    let config = evcc_core::slac::Config { pilot_gate: wire.is_some(), ..settings.slac_config() };
+    let mut pilot = evcc_sim::SimPilot { toggles: settings.control_pilot_file.as_ref().map(Into::into), wire };
+    // The charger restarts the connection through state E or F (V2G3-M06-05, 07): the matching is aborted and the
+    // car starts over when it sees 5 % again.
+    loop {
+        match evcc_linux::slac::run_with_pilot(socket, config, run_id, modem, &mut pilot)? {
+            evcc_core::slac::Outcome::Aborted(state) => eprintln!("slac: aborted by pilot state {state:?}, starting over"),
+            outcome => return Ok(outcome),
+        }
     }
 }
 

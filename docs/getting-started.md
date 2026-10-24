@@ -96,7 +96,7 @@ These scenarios run `evcc-sim` against an independent ISO 15118-20 charger in an
 | `crates/codec/exi`, `.../app-protocol`, `.../iso15118-20` | The generated EXI codec byte for byte against EXIficient vectors, in both directions; truncated and bit-flipped input; message sizes | no |
 | `codec/v2gtp`, `codec/homeplug` | V2GTP and SDP framing; SLAC message wire formats | no |
 | `crates/evcc/core/tests/session_flow.rs` | The session machine message by message: setup, authorization, services, charge parameters, schedule exchange, cable check, pre-charge, power delivery, charge loop, welding detection, session stop, timeouts and the ignore policy | no |
-| `crates/evcc/core/tests/slac_flow.rs` | The SLAC state machine against the simulated charger in virtual time: retries, thresholds, several chargers, lost messages | no |
+| `crates/evcc/core/tests/slac_flow.rs` | The SLAC state machine against the simulated charger in virtual time: retries, thresholds, several chargers, lost messages, the control pilot gate (5 % starts it, a nominal duty cycle never does, a fault state aborts) | no |
 | `crates/sims/scenarios/tests/loopback.rs` | The session over real TCP on localhost against the simulator | no |
 | `crates/sims/scenarios/tests/tls.rs` | TLS 1.3 with mutual authentication, P-521 and Ed448 certificates, refusal of unknown CAs and wrong curves | no |
 | `crates/sims/scenarios/tests/sdp.rs` | SDP discovery over UDP on the IPv6 loopback | no |

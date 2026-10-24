@@ -11,11 +11,13 @@ use std::io::{self, ErrorKind};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::time::{Duration, Instant};
 
+use control_pilot::Reading;
 use evcc_core::slac::{Config, Event, Machine, Outcome, Toggle};
 use evcc_core::Timer;
 use homeplug::{ETHERTYPE, Mac, RunId};
 
 use crate::Deadlines;
+use crate::pilot::{POLL_INTERVAL, PilotSource};
 
 /// A raw socket bound to one interface that receives HomePlug frames only.
 pub struct PacketSocket {
@@ -159,16 +161,29 @@ impl Modem for NoModem {
     }
 }
 
-/// The EV's control pilot, for the validation by BCB-Toggle (ISO 15118-3 9.4).
-pub trait ControlPilot {
+/// The vehicle's control pilot driver, which the host implements for its hardware: the readings that gate and watch the
+/// matching (this trait is a [`PilotSource`]), and the toggling for the validation by BCB-Toggle (ISO 15118-3 9.4).
+///
+/// [`PilotSource::poll`] returns a reading when the state or the duty cycle changed (and the first one at the start); the
+/// loop calls it every [`crate::pilot::POLL_INTERVAL`] while it waits for the socket, so a driver with an interrupt or a
+/// capture unit keeps the latest measurement and hands it over here. [`PilotSource::arm`] gets the guard the machine publishes
+/// (the pilot monitor of the hardware is to end the matching on state A, E or F by itself if the host's loop is not fast enough).
+pub trait ControlPilot: PilotSource {
     /// Makes the sequence of [`Toggle`]: from state B, `count` times state C and back to B,
     /// every state `state_ms` long. Returns when the pilot is in state B again. Blocks, which is
     /// fine: nothing else happens in SLAC while the charger counts.
     fn toggle(&mut self, toggle: Toggle) -> io::Result<()>;
 }
 
-/// No access to the control pilot (a bench with a veth cable): validation cannot succeed.
+/// No access to the control pilot (a bench with a veth cable): no readings, so [`Config::pilot_gate`] has to be off
+/// ([`run`] does that), and validation cannot succeed.
 pub struct NoPilot;
+
+impl PilotSource for NoPilot {
+    fn poll(&mut self) -> Option<Reading> {
+        None
+    }
+}
 
 impl ControlPilot for NoPilot {
     fn toggle(&mut self, _toggle: Toggle) -> io::Result<()> {
@@ -179,12 +194,15 @@ impl ControlPilot for NoPilot {
 /// How often the modem is asked whether the link is up.
 const LINK_POLL: Duration = Duration::from_millis(50);
 
-/// Runs SLAC on `socket` until the machine has an outcome.
+/// Runs SLAC on `socket` until the machine has an outcome, without a control pilot: it begins at once
+/// ([`Config::pilot_gate`] is switched off).
 pub fn run(socket: &PacketSocket, config: Config, run_id: RunId, modem: &mut impl Modem) -> io::Result<Outcome> {
-    run_with_pilot(socket, config, run_id, modem, &mut NoPilot)
+    run_with_pilot(socket, Config { pilot_gate: false, ..config }, run_id, modem, &mut NoPilot)
 }
 
-/// [`run`] for a vehicle that can toggle its control pilot, so that [`Config::validation`] works.
+/// [`run`] for a vehicle with a control pilot driver: the matching begins when the driver reports 5 %, a nominal duty
+/// cycle ends it with [`Outcome::BasicCharging`], a fault state aborts it ([`Outcome::Aborted`]), and
+/// [`Config::validation`] works. With `config.pilot_gate` off the readings are only passed on.
 pub fn run_with_pilot(
     socket: &PacketSocket,
     config: Config,
@@ -196,6 +214,7 @@ pub fn run_with_pilot(
         Frame(usize),
         Timer(Timer),
         Link,
+        Pilot(Reading),
     }
     let mut machine = Machine::new(config);
     let mut deadlines = Deadlines::default();
@@ -212,6 +231,7 @@ pub fn run_with_pilot(
             (_, Some(Next::Frame(n))) => machine.handle(Event::Frame(&rx[..*n]), &mut tx),
             (_, Some(Next::Timer(t))) => machine.handle(Event::TimerExpired(*t), &mut tx),
             (_, Some(Next::Link)) => machine.handle(Event::LinkUp, &mut tx),
+            (_, Some(Next::Pilot(r))) => machine.handle(Event::Pilot(*r), &mut tx),
             (_, None) => unreachable!("every iteration after the first has an event"),
         };
         if let Some(n) = step.send {
@@ -219,6 +239,9 @@ pub fn run_with_pilot(
         }
         for cmd in step.timers.iter() {
             deadlines.apply(cmd);
+        }
+        if let Some(guard) = step.pilot {
+            pilot.arm(guard);
         }
         if let Some(toggle) = step.toggle {
             pilot.toggle(toggle)?;
@@ -232,6 +255,9 @@ pub fn run_with_pilot(
         }
         // Wait for the next frame, timer expiry or link change.
         next = loop {
+            if let Some(r) = pilot.poll() {
+                break Some(Next::Pilot(r));
+            }
             if joining && modem.link_up()? {
                 joining = false;
                 break Some(Next::Link);
@@ -240,6 +266,9 @@ pub fn run_with_pilot(
             let mut wait = pending.map(|(_, d)| d.saturating_duration_since(Instant::now()));
             if joining {
                 wait = Some(wait.map_or(LINK_POLL, |w| w.min(LINK_POLL)));
+            }
+            if config.pilot_gate {
+                wait = Some(wait.map_or(POLL_INTERVAL, |w| w.min(POLL_INTERVAL)));
             }
             if let (Some((timer, _)), Some(Duration::ZERO)) = (pending, wait) {
                 deadlines.clear(timer);

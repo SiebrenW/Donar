@@ -1,5 +1,5 @@
 name = "slac-ac-restarts"
-description = "An AC charger that no vehicle gets an answer from in its SLAC window restarts the connection through state E twice and then turns the oscillator off (ISO 15118-3 V2G3-M06-07)."
+description = "An AC charger that no vehicle gets an answer from in its SLAC window restarts the connection through state E twice and then turns the oscillator off (ISO 15118-3 V2G3-M06-07); the car aborts its matching at E each time and starts over when it sees 5 % again."
 timeout_s = 30
 
 [secc]
@@ -21,5 +21,5 @@ slac_repetition_ms = 6000
 
 [expect]
 evcc_exit = 1
-evcc_log = ["slac: Failed(NoResponse)"]
+evcc_log = ["slac: aborted by pilot state E", "slac: Failed(NoResponse)"]
 secc_log = ["slac: NoSlac", "slac: pilot ErrorCycle", "slac: pilot X1"]

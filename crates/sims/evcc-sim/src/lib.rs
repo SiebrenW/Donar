@@ -487,17 +487,36 @@ impl LogSink for StderrLog {
     }
 }
 
-/// A simulated control pilot for scenarios: the toggles are timed as the standard asks, and
-/// every completed toggle appends one octet to a file, where the simulated charger counts them.
+/// A simulated control pilot driver for scenarios (what a host implements for its hardware, see
+/// `evcc_linux::slac::ControlPilot`): the readings come from the cable shared with the simulated charger (the wire),
+/// if there is one; the toggles are timed as the standard asks, and every completed toggle appends one octet to a
+/// file, where the simulated charger counts them.
 #[cfg(target_os = "linux")]
-pub struct FilePilot(pub std::path::PathBuf);
+pub struct SimPilot {
+    pub toggles: Option<std::path::PathBuf>,
+    pub wire: Option<evcc_linux::pilot::WireSource>,
+}
 
 #[cfg(target_os = "linux")]
-impl evcc_linux::slac::ControlPilot for FilePilot {
+impl evcc_linux::pilot::PilotSource for SimPilot {
+    fn poll(&mut self) -> Option<control_pilot::Reading> {
+        self.wire.as_mut()?.poll()
+    }
+
+    fn arm(&mut self, guard: control_pilot::Guard) {
+        if let Some(w) = &mut self.wire {
+            w.arm(guard);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl evcc_linux::slac::ControlPilot for SimPilot {
     fn toggle(&mut self, toggle: evcc_core::slac::Toggle) -> io::Result<()> {
         use std::io::Write;
+        let Some(path) = &self.toggles else { return Ok(()) };
         let pause = std::time::Duration::from_millis(toggle.state_ms.into());
-        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&self.0)?;
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
         std::thread::sleep(pause); // the initial state B
         for _ in 0..toggle.count {
             std::thread::sleep(pause); // C
