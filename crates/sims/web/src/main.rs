@@ -46,7 +46,8 @@ fn fail(status: StatusCode, message: impl ToString) -> Response {
 async fn main() -> std::process::ExitCode {
     let mut listen: SocketAddr = ([127, 0, 0, 1], 8080).into();
     let mut scenarios = PathBuf::from("crates/sims/scenarios/scenarios");
-    let mut work = PathBuf::from("target/web");
+    // Below the artifacts root, next to the runs of the tests: one place to look in, on the host too.
+    let mut work = sandbox::artifacts_root().join("web");
     let mut sudo = unsafe { libc::geteuid() } != 0;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {

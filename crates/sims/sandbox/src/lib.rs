@@ -61,7 +61,7 @@ pub struct Options {
     /// Who the participants run as and who owns the artifacts. Default: the `sudo` user.
     pub user: Option<User>,
     /// Where the artifacts directory of this run is created: `<root>/<run id>`. Default:
-    /// `$SANDBOX_ARTIFACTS`, else `$CARGO_TARGET_DIR/sandbox`, else `target/sandbox`.
+    /// [`artifacts_root`].
     pub artifacts_root: Option<PathBuf>,
     /// Allow participants to run as root when there is no user to drop to. Off by default:
     /// a root process would leave root-owned files behind.
@@ -140,7 +140,7 @@ impl Sandbox {
             ));
         }
         let id = format!("{}-{}", std::process::id(), NEXT_SANDBOX.fetch_add(1, Ordering::Relaxed));
-        let root = options.artifacts_root.unwrap_or_else(default_artifacts_root);
+        let root = options.artifacts_root.unwrap_or_else(artifacts_root);
         // Time first: process ids repeat (every container run starts at a low one), and a run must
         // not find the files of an earlier one; the directories sort by age.
         let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
@@ -239,10 +239,42 @@ impl Drop for Sandbox {
     }
 }
 
-fn default_artifacts_root() -> PathBuf {
-    if let Some(p) = std::env::var_os("SANDBOX_ARTIFACTS") {
+/// Where the artifacts of runs (and the web UI's work directory, below `web`) go, in this order:
+/// 1. `$SANDBOX_ARTIFACTS`;
+/// 2. `/workspaces/evcc-rs/target/sandbox`, when the repository is mounted there (the dev container and `cargo xtask`'s
+///    container): the host's `target`, not the build volume at `/target`, so that logs and captures can be opened from
+///    the host whichever shell started the run;
+/// 3. `$CARGO_TARGET_DIR/sandbox`, else `target/sandbox`.
+pub fn artifacts_root() -> PathBuf {
+    resolve_artifacts_root(
+        std::env::var_os("SANDBOX_ARTIFACTS"),
+        Path::new(WORKSPACE_MOUNT).join("Cargo.toml").is_file(),
+        std::env::var_os("CARGO_TARGET_DIR"),
+    )
+}
+
+const WORKSPACE_MOUNT: &str = "/workspaces/evcc-rs";
+
+fn resolve_artifacts_root(sandbox_artifacts: Option<std::ffi::OsString>, workspace_mounted: bool, cargo_target_dir: Option<std::ffi::OsString>) -> PathBuf {
+    if let Some(p) = sandbox_artifacts {
         return PathBuf::from(p);
     }
-    let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| PathBuf::from("target"), PathBuf::from);
-    target.join("sandbox")
+    if workspace_mounted {
+        return Path::new(WORKSPACE_MOUNT).join("target/sandbox");
+    }
+    cargo_target_dir.map_or_else(|| PathBuf::from("target"), PathBuf::from).join("sandbox")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_artifacts_root_follows_the_variable_then_the_mounted_workspace_then_cargo() {
+        let s = |v: &str| Some(std::ffi::OsString::from(v));
+        assert_eq!(resolve_artifacts_root(s("/a"), true, s("/t")), PathBuf::from("/a"));
+        assert_eq!(resolve_artifacts_root(None, true, s("/t")), PathBuf::from("/workspaces/evcc-rs/target/sandbox"));
+        assert_eq!(resolve_artifacts_root(None, false, s("/t")), PathBuf::from("/t/sandbox"));
+        assert_eq!(resolve_artifacts_root(None, false, None), PathBuf::from("target/sandbox"));
+    }
 }

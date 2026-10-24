@@ -37,7 +37,7 @@ fn linux_container(publish: &[String]) -> Result<Command, String> {
     cmd.arg("--volume")
         .arg(format!("{}:/workspaces/evcc-rs", root.display()))
         .args(["--volume", "evcc-rs-target-v2:/target", "--volume", "evcc-rs-cargo-v2:/usr/local/cargo/registry"])
-        // The artifacts of the runs (logs, settings, captures) go to the host's `target/sandbox`,
+        // The artifacts of the runs (logs, settings, captures; the web UI's below `web`) go to the host's `target/sandbox`,
         // not into the build volume, so they can be looked at (Wireshark) from the host.
         .args(["--env", "SANDBOX_ARTIFACTS=/workspaces/evcc-rs/target/sandbox"])
         .args(["--workdir", "/workspaces/evcc-rs", IMAGE]);
@@ -89,10 +89,11 @@ pub fn web(args: Vec<String>) -> Result<(), String> {
         run(Command::new("cargo").args(["build", "--quiet", "--workspace", "--bins"]))?;
         let target = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".into());
         let mut cmd = Command::new(std::path::Path::new(&target).join("debug/evcc-web"));
-        cmd.args(["--listen", &format!("0.0.0.0:{port}"), "--work"]).arg(std::path::Path::new(&target).join("web"));
+        // The work directory is the server's default: below the artifacts root (the host's `target/sandbox`).
+        cmd.args(["--listen", &format!("0.0.0.0:{port}")]);
         return run(&mut cmd);
     }
     let mut cmd = linux_container(&[format!("127.0.0.1:{port}:8080")])?;
-    cmd.args(["bash", "-c", r#"own-volumes && cargo build --quiet --workspace --bins && exec /target/debug/evcc-web --listen 0.0.0.0:8080 --work /workspaces/evcc-rs/target/web"#]);
+    cmd.args(["bash", "-c", r#"own-volumes && cargo build --quiet --workspace --bins && exec /target/debug/evcc-web --listen 0.0.0.0:8080"#]);
     run(&mut cmd)
 }

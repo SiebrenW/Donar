@@ -324,6 +324,7 @@ dependencies = [
  "evse-sim",
  "iso15118-20",
  "libc",
+ "sandbox",
  "scenarios",
  "schemars",
  "serde",
