@@ -11,7 +11,7 @@ use super::{Machine, frame, is_ok};
 use super::types::*;
 use crate::ev::{AcDischargePowerLimits, AcPowerLimits, Ev};
 use crate::log::{LogSink, MsgKind, Record};
-use crate::{Timer, TimerCmd};
+use crate::{Timer, TimerCmd, Timers};
 
 impl<E: Ev, L: LogSink> Machine<E, L> {
     pub(super) fn on_session_setup_res(&mut self, res: SessionSetupRes<'_>, tx: &mut [u8]) -> Step {
@@ -191,12 +191,24 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
         let SelectedService { service_id, parameter_set_id } = self.selected;
         self.log.record(&Record::ServiceSelected { service_id, parameter_set_id });
-        let framed = self.frame_charge_parameter_discovery_req(self.energy_payload_type(), tx);
-        let mut step = self.send_then(State::AwaitChargeParameterDiscoveryRes, self.cpd_req_kind(), framed);
+        // V2G20-930: in AC the pilot is measured at 5 % before the request goes out. A host that reports no pilot, or a pilot
+        // that is right already, does not hold it up.
+        let mut step = if self.config.ac() && self.pilot.last().is_some_and(|r| !super::duty_cycle_for_hlc(r.pwm)) {
+            self.goto(State::AwaitDutyCycle);
+            Step { timers: Timers::one(TimerCmd::Cancel(Timer::Response)).with(self.arm_sequence()), ..Step::default() }
+        } else {
+            self.send_charge_parameter_discovery_req(tx)
+        };
         if step.end.is_none() {
             step.notice = Some(Notice::ServiceSelected { service_id, parameter_set_id });
         }
         step
+    }
+
+    /// The first request for the EVSE's limits (after the service selection, or once the pilot is right).
+    pub(super) fn send_charge_parameter_discovery_req(&mut self, tx: &mut [u8]) -> Step {
+        let framed = self.frame_charge_parameter_discovery_req(self.energy_payload_type(), tx);
+        self.send_then(State::AwaitChargeParameterDiscoveryRes, self.cpd_req_kind(), framed)
     }
 
     /// The payload type of the energy service's own messages (charge parameter discovery, charge
