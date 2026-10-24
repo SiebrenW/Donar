@@ -622,19 +622,34 @@ impl<'a, 'w> Emitter<'a, 'w> {
             emitted.push(q.clone());
         }
 
+        // The messages of an extended namespace, with the members this schema adds to their choices.
+        let reentered = self.model.reentered(&ns);
+        for q in &reentered {
+            if self.model.complex[q].is_abstract || !self.model.complex_supported(q) {
+                continue;
+            }
+            self.emit_complex(q)?;
+            emitted.push(q.clone());
+        }
+
         // Messages: global elements typed ...Req / ...Res.
         let roots = self.roots();
         let mut messages = Vec::new();
         for (index, el) in roots.iter().enumerate() {
-            if el.ns != ns {
-                continue;
-            }
             let Some(decl) = self.model.world.element(el) else { continue };
             let Some(ty) = &decl.ty else { continue };
-            if !(ty.local.ends_with("ReqType") || ty.local.ends_with("ResType")) || !emitted.contains(ty) {
+            // An element of an extended namespace has its type in this module.
+            let ty = if el.ns == ns {
+                ty.clone()
+            } else if reentered.contains(&QName::new(&ns, &ty.local)) && ty.ns == el.ns {
+                QName::new(&ns, &ty.local)
+            } else {
+                continue;
+            };
+            if !(ty.local.ends_with("ReqType") || ty.local.ends_with("ResType")) || !emitted.contains(&ty) {
                 continue;
             }
-            messages.push((el.clone(), ty.clone(), index));
+            messages.push((el.clone(), ty, index));
         }
         let root_bits = exi::layout::ceil_log2(roots.len() as u64 + 1);
         let has_messages = !messages.is_empty() && self.document.is_none();

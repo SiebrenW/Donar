@@ -30,6 +30,10 @@ impl PayloadType {
     pub const DC_MAINSTREAM: Self = Self(0x8004);
     pub const ACDP_MAINSTREAM: Self = Self(0x8005);
     pub const WPT_MAINSTREAM: Self = Self(0x8006);
+    /// AC DER IEC (Amendment 1): the AC messages with the DER alternatives.
+    pub const AC_DER_IEC_MAINSTREAM: Self = Self(0x8010);
+    /// AC DER SAE (Amendment 1).
+    pub const AC_DER_SAE_MAINSTREAM: Self = Self(0x8011);
     /// Side stream of a schedule renegotiation, multiplexed with the charge loop (Table 14).
     pub const SCHEDULE_RENEGOTIATION: Self = Self(0x8101);
     /// Side stream of the metering confirmation, multiplexed with the charge loop (Table 14).

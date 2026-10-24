@@ -45,11 +45,11 @@ Status: **done** (checked or changed in code, with a test), **met** (the behavio
 
 | Part | Status |
 |---|---|
-| AC DER IEC and SAE (payload types 0x8010, 0x8011, Annexes L, M, services 10 and 11) | open. The schemas are in `standards/AMD1_xsdSchema/` (`V2G_CI_AC_DER_IEC.xsd`, `V2G_CI_AC_DER_SAE.xsd`); the generator has no third and fourth namespace yet. |
+| AC DER IEC and SAE (payload types 0x8010, 0x8011, Annexes L, M, services 10 and 11) | codecs done (`iso15118_20::ac_der_iec`, `ac_der_sae`), nothing else. The schemas (`V2G_CI_AC_DER_IEC.xsd`, `V2G_CI_AC_DER_SAE.xsd`, fetched by `cargo xtask setup` from `.../ed-1/en/Amd/1/`) do not declare messages: they add members (`DER_AC_CPDReqEnergyTransferMode`, `DER_*_AC_CL*ControlMode`) to the substitution groups of the AC messages, so the messages of payload types 0x8010 and 0x8011 are the AC ones with those alternatives. The generator resolves the AC message types again with the DER namespace as entry (`Group::reenter`). Checked against EXIficient: 72 vectors (every alternative of the four messages, with the mandatory elements only and with all), `tests/ac_der_vectors.rs`, and `cargo xtask grammars`. Open: the services and their parameters in the session machines, Annexes L and M (not read), the simulators. |
 | MCS and MCS_BPT (services 8 and 9, Annex K, IEC 61851-23-3 signalling, ISO 15118-10 10BASE-T1S, SDP over single-pair Ethernet) | open. Needs the CE state machine of IEC 61851-23-3 and a data link that is not PLC; the DC messages are reused (V2G20-3022), so the message side is the smaller part. V2G20-3006, 3007 (data link pause after `SessionStopReq` Pause) belong here. |
 | ISO 15118-10 SDP (V2G20-3015 to 3019) | open |
 
 ## Order of work, if wanted
 
-1. Generate the AC DER codecs and add the services to the lists; the vehicle and charger machines reuse the AC machines (V2G20-3030, 3176: "all requirements of AC apply as well"), so the parameters and the charge loop messages are the work.
+1. Add the AC DER services to the lists (the codecs exist); the vehicle and charger machines reuse the AC machines (V2G20-3030, 3176: "all requirements of AC apply as well"), so the parameters and the charge loop messages are the work.
 2. MCS, when a CE-signalling test setup exists.
