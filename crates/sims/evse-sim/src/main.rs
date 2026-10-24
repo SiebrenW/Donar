@@ -184,10 +184,16 @@ fn run(args: &Args) -> io::Result<bool> {
     };
     let mut served = 0;
     let mut all_stopped = true;
+    // After an emergency of its own the oscillator stays off until the next vehicle asks: the one that was connected needs
+    // time to see it (a charger that turned it on again at once would look like one that only dropped the connection).
+    let mut emergency = false;
     let sessions = args.sessions.unwrap_or(settings.sessions);
     while sessions == 0 || served < sessions {
         let seen = evse_sim::answer_discovery(&udp, response, 0)?;
         eprintln!("sdp: answered after {seen} request(s)");
+        if let (true, Some(wire)) = (std::mem::take(&mut emergency), &wire) {
+            wire.set_evse(control_pilot::Pwm::Duty(5))?;
+        }
         let state = match &context {
             Some(context) => {
                 let (stream, _) = tcp.accept()?;
@@ -215,7 +221,10 @@ fn run(args: &Args) -> io::Result<bool> {
             },
         };
         if let Some(wire) = &wire {
-            wire.set_evse(control_pilot::Pwm::Duty(5))?;
+            emergency = wire.evse() == Some(evcc_linux::pilot::Oscillator::Off);
+            if !emergency {
+                wire.set_evse(control_pilot::Pwm::Duty(5))?;
+            }
         }
         if let Some(live) = &live {
             live.set_state("Waiting");
