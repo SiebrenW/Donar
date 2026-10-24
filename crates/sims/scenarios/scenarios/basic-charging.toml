@@ -1,0 +1,20 @@
+name = "basic-charging"
+description = "A charger that offers a nominal duty cycle (53 %, 31.8 A by IEC 61851-1) offers basic charging only: the vehicle's SLAC machine ends with BasicCharging without matching, and there is no SDP and no session. The vehicle asks for energy with state C, takes it for half a second and stops with state B; the charger closes its contactor on the C and opens it when the vehicle leaves it."
+timeout_s = 30
+
+[secc]
+kind = "evse-sim"
+[secc.settings]
+nominal_duty_percent = 53
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+# The vehicle looks at the pilot first, as it always does: a nominal duty cycle never starts SLAC.
+slac = true
+basic_charge_ms = 500
+
+[expect]
+secc_exit = 0
+evcc_log = ["slac: BasicCharging", "basic charging: 31.8 A offered", "basic charging: done (B)"]
+secc_log = ["basic charging: 31.8 A offered by a duty cycle of 53 %", "contactor closed", "contactor open"]

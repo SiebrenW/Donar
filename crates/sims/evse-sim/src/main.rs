@@ -174,7 +174,7 @@ fn run(args: &Args) -> io::Result<bool> {
     let wire = match &settings.control_pilot_wire {
         Some(dir) => {
             let wire = evcc_linux::pilot::Wire::new(dir)?;
-            wire.set_evse(control_pilot::Pwm::Duty(5))?;
+            wire.set_evse(control_pilot::Pwm::Duty(settings.nominal_duty_percent.unwrap_or(5)))?;
             if let Some(live) = &live {
                 live.set_wire(wire.clone());
             }
@@ -182,6 +182,10 @@ fn run(args: &Args) -> io::Result<bool> {
         }
         None => None,
     };
+    if let Some(duty) = settings.nominal_duty_percent {
+        let wire = wire.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "nominal_duty_percent needs the control pilot wire"))?;
+        return basic_charging(wire, duty);
+    }
     let mut served = 0;
     let mut all_stopped = true;
     // After an emergency of its own the oscillator stays off until the next vehicle asks: the one that was connected needs
@@ -234,6 +238,41 @@ fn run(args: &Args) -> io::Result<bool> {
         served += 1;
     }
     Ok(all_stopped)
+}
+
+/// A charger that offers a nominal duty cycle: basic charging by IEC 61851-1 alone. The contactor closes when the vehicle
+/// holds C (or D) and opens when it leaves it; there is no SDP and no session.
+#[cfg(target_os = "linux")]
+fn basic_charging(wire: &evcc_linux::pilot::Wire, duty: u8) -> io::Result<bool> {
+    use std::time::{Duration, Instant};
+    let offered = control_pilot::Pwm::Duty(duty).offered_current_tenths().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "nominal_duty_percent is 10 to 96"))?;
+    eprintln!("basic charging: {}.{} A offered by a duty cycle of {duty} %, no high level communication", offered / 10, offered % 10);
+    let wait = |until: &dyn Fn(control_pilot::Reading) -> bool, limit: Duration| {
+        let end = Instant::now() + limit;
+        loop {
+            if let Some(reading) = wire.reading().filter(|r| until(*r)) {
+                return Some(reading);
+            }
+            if Instant::now() > end {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    if wait(&|r| r.is_ready(), Duration::from_secs(30)).is_none() {
+        eprintln!("basic charging: the vehicle never asked for energy");
+        return Ok(false);
+    }
+    eprintln!("basic charging: the vehicle asks for energy (C): contactor closed");
+    let left = wait(&|r| !r.is_ready(), Duration::from_secs(120));
+    match left {
+        Some(r) => eprintln!("basic charging: the vehicle is done ({:?}): contactor open", r.state),
+        None => {
+            eprintln!("basic charging: the vehicle never stopped");
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(target_os = "linux")]

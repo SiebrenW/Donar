@@ -56,7 +56,7 @@ cargo xtask linux-test -p scenarios --test scenarios   # only the scenarios
 
 ### Scenarios
 
-Every scenario in `scenarios/` starts with SLAC (`slac = true` for the vehicle, `slac_responder = true` for the charger; `[secc.settings.slac] ac = true` for AC chargers), as a real bring-up does; a test checks it, and a scenario that must go without lists itself, with the reason, in `WITHOUT_SLAC` in `tests/scenarios.rs` (none does yet: evse-sim has no charger that offers a nominal 10 to 96 % duty cycle, which is basic charging with no SLAC). The external-partner scenarios in `scenarios/interop/` are not changed.
+Every scenario in `scenarios/` starts with SLAC (`slac = true` for the vehicle, `slac_responder = true` for the charger; `[secc.settings.slac] ac = true` for AC chargers), as a real bring-up does; a test checks it, and a scenario that must go without lists itself, with the reason, in `WITHOUT_SLAC` in `tests/scenarios.rs` (`basic-charging` does: its charger offers a nominal duty cycle, `nominal_duty_percent` in the settings of `evse-sim`, which is basic charging with no SLAC and no high level communication). The external-partner scenarios in `scenarios/interop/` are not changed.
 
 A scenario is a TOML file that says who runs against whom, with which settings, and what must hold afterwards (`crates/sims/scenarios/scenarios/*.toml`, the format is documented in `crates/sims/scenarios/src/scenario.rs`). The runner puts a charger and a vehicle in two network namespaces joined by a cable, starts them as processes and checks exit statuses and log lines. `tests/scenarios.rs` runs every file as a test (`cargo xtask linux-test`); a single one by hand:
 

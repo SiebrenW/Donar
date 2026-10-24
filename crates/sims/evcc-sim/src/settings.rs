@@ -320,6 +320,8 @@ pub struct Settings {
     pub iso2: Iso2,
     /// Run SLAC on the interface before looking for a charger.
     pub slac: bool,
+    /// How long the vehicle takes energy when the charger offers basic charging only (a nominal duty cycle).
+    pub basic_charge_ms: u32,
     /// Stop once SLAC has matched (a test of the matching alone against a partner that has no charging session behind it).
     pub slac_only: bool,
     /// Configure a Qualcomm QCA7000 family modem on the interface with the charger's key once SLAC
@@ -403,6 +405,7 @@ impl Default for Settings {
             iso2: Iso2::default(),
             slac: false,
             slac_only: false,
+            basic_charge_ms: 1000,
             slac_repetition_ms: None,
             slac_pilot_wait_ms: None,
             slac_validation: SlacValidation::Never,
