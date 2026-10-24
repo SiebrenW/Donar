@@ -312,12 +312,7 @@ fn next_step_plain(
         }
         None => None,
     };
-    // macOS refuses to set an option on a socket the peer has already closed (EINVAL); that is
-    // a hang-up like any other.
-    match stream.set_read_timeout(timeout) {
-        Err(e) if e.kind() == ErrorKind::InvalidInput => return Err(ErrorKind::ConnectionAborted.into()),
-        other => other?,
-    }
+    stream.set_read_timeout(timeout)?;
     let space = session.rx_space();
     if space.is_empty() {
         return Err(io::Error::new(ErrorKind::OutOfMemory, "RX buffer full"));
