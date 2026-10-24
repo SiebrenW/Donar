@@ -29,8 +29,10 @@ pub enum OcspFlaw {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flaw {
     None,
-    /// Key identifiers by method 1 (the SHA-1 of the whole key), what OpenSSL makes.
+    /// Key identifiers by method 1 (the SHA-1 of the whole key), what OpenSSL makes: allowed since Amd 1.
     KeyIdMethod1,
+    /// Key identifiers that are neither method 1 nor method 2 (a truncated SHA-256).
+    KeyIdWrong,
     /// The leaf has no key usage extension.
     LeafWithoutKeyUsage,
     /// The leaf is a CA.
@@ -53,6 +55,8 @@ pub enum Flaw {
     LeafWithoutDigitalSignature,
     /// The extended key usage of the leaf is clientAuth for a SECC.
     WrongKeyPurpose,
+    /// The domain component of sub-CA2 is not the one of its usage (Amd 1, V2G20-3406).
+    WrongDomainComponent,
 }
 
 const SECC_ID: &str = "DE-8AA-S-00003C4D557878675645330967543476-4";
@@ -95,6 +99,10 @@ fn key_usage(bits: [bool; 9]) -> Vec<u8> {
 }
 
 fn name(country: Option<&str>, org: &str, cn: &str, flaw: bool) -> openssl::x509::X509Name {
+    name_with_dc(country, org, cn, flaw, None)
+}
+
+fn name_with_dc(country: Option<&str>, org: &str, cn: &str, flaw: bool, dc: Option<&str>) -> openssl::x509::X509Name {
     use openssl::nid::Nid;
     let mut b = X509NameBuilder::new().unwrap();
     if let Some(c) = country {
@@ -105,6 +113,9 @@ fn name(country: Option<&str>, org: &str, cn: &str, flaw: bool) -> openssl::x509
         b.append_entry_by_nid(Nid::LOCALITYNAME, "Somewhere").unwrap();
     }
     b.append_entry_by_nid(Nid::COMMONNAME, cn).unwrap();
+    if let Some(dc) = dc {
+        b.append_entry_by_nid(Nid::DOMAINCOMPONENT, dc).unwrap();
+    }
     b.build()
 }
 
@@ -136,10 +147,13 @@ fn build(s: Spec<'_>) -> X509 {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
     b.set_not_before(&Asn1Time::from_unix(now + s.not_before_days * 86_400).unwrap()).unwrap();
     b.set_not_after(&Asn1Time::from_unix(now + s.not_after_days * 86_400).unwrap()).unwrap();
-    let method1 = s.flaw == Flaw::KeyIdMethod1;
     let id_of = |k: &PKey<Private>| {
         let bits = spki_bits(&k.public_key_to_der().unwrap());
-        if method1 { openssl::hash::hash(MessageDigest::sha1(), &bits).unwrap().to_vec() } else { key_identifier(&bits).to_vec() }
+        match s.flaw {
+            Flaw::KeyIdMethod1 => openssl::hash::hash(MessageDigest::sha1(), &bits).unwrap().to_vec(),
+            Flaw::KeyIdWrong => openssl::hash::hash(MessageDigest::sha256(), &bits).unwrap()[..20].to_vec(),
+            _ => key_identifier(&bits).to_vec(),
+        }
     };
     b.append_extension(extension("2.5.29.14", false, &tlv(0x04, &id_of(s.key)))).unwrap();
     if !s.root {
@@ -268,7 +282,15 @@ pub fn profile_pki_with_ocsp(curve: Curve, peer: Peer, flaw: Flaw, ocsp: OcspFla
         Peer::Vehicle => ("Test OEM", EVCC_ID),
         Peer::Contract => ("Test eMSP", EMAID),
     };
+    // The domain component a sub-CA's subject carries (Amd 1, V2G20-3406).
+    let dc = match peer {
+        Peer::Secc => "CSO",
+        Peer::Vehicle => "EV",
+        Peer::Contract => "MSP",
+    };
+    let sub_dc = if flaw == Flaw::WrongDomainComponent { "XYZ" } else { dc };
     let id = if flaw == Flaw::BadIdentifier { "not an identifier" } else { id };
+    // cRLSign is 0 in every CA profile since Amd 1 and was 1 in the sub-CAs of 2022: sub-CA1 follows the amendment, sub-CA2 the old text.
     let ca_usage = |sign: bool| [false, false, false, false, false, true, sign, false, false];
     // Vehicle and contract certificates need revocation information (V2G20-2599), a SECC's chain OCSP.
     let ocsp_ca = true;
@@ -292,15 +314,17 @@ pub fn profile_pki_with_ocsp(curve: Curve, peer: Peer, flaw: Flaw, ocsp: OcspFla
         }), key(curve));
     }
     issue(&mut certs, &mut keys, &|c, k, own| build(Spec {
-        subject: name(Some("DE"), cso, "Sub-CA1", false), key: own, issuer: Some((c, k)), serial: 2, ca: true, path_len: Some(1),
-        usage: ca_usage(true), eku: None, ocsp: ocsp_ca, no_basic_ca_flag: false, not_before_days: -3000, not_after_days: 3000, flaw, root: false, leaf: false,
+        subject: name_with_dc(Some("DE"), cso, "Sub-CA1", false, Some(dc)), key: own, issuer: Some((c, k)), serial: 2, ca: true, path_len: Some(1),
+        usage: ca_usage(false), eku: None, ocsp: ocsp_ca, no_basic_ca_flag: false, not_before_days: -3000, not_after_days: 3000, flaw, root: false, leaf: false,
     }), sub1_key);
     issue(&mut certs, &mut keys, &|c, k, own| build(Spec {
-        subject: name(Some("DE"), cso, "Sub-CA2", false), key: own, issuer: Some((c, k)), serial: 3, ca: true,
+        subject: name_with_dc(Some("DE"), cso, "Sub-CA2", false, Some(sub_dc)), key: own, issuer: Some((c, k)), serial: 3, ca: true,
         path_len: Some(if flaw == Flaw::WrongPathLength { 1 } else { 0 }),
         usage: ca_usage(true), eku: None, ocsp: ocsp_ca, no_basic_ca_flag: false, not_before_days: -2000, not_after_days: 2000, flaw, root: false, leaf: false,
     }), sub2_key);
-    let leaf_usage = [flaw != Flaw::LeafWithoutDigitalSignature, false, false, false, peer == Peer::Secc, false, false, false, false];
+    // An Ed448 key cannot agree on a key; keyAgreement is 0/1 for that SECC certificate since Amd 1.
+    // (nonRepudiation keeps the bit string of the flawed leaf from being empty.)
+    let leaf_usage = [flaw != Flaw::LeafWithoutDigitalSignature, flaw == Flaw::LeafWithoutDigitalSignature, false, false, peer == Peer::Secc && curve != Curve::Ed448, false, false, false, false];
     let eku = match (peer, flaw) {
         (Peer::Secc, Flaw::WrongKeyPurpose) => Some(CLIENT_AUTH),
         (Peer::Secc, _) => Some(SERVER_AUTH),

@@ -102,6 +102,8 @@ struct Profile {
     /// Extended key purposes allowed, and the one that has to be there.
     eku_allowed: &'static [&'static str],
     eku_required: Option<&'static str>,
+    /// The domain component the subject carries when it has one (Amd 1, V2G20-3406 and the tables).
+    domain_component: Option<&'static str>,
 }
 
 const SERVER_AUTH: &str = "1.3.6.1.5.5.7.3.1";
@@ -113,14 +115,14 @@ fn profile(peer: Peer, kind: Kind) -> Profile {
     // revocation information.
     let (name, ku, eku, eku_allowed, eku_required, crl, aia): (&'static str, [Bit; 9], Presence, &[&str], Option<&str>, Presence, Presence) = match (peer, kind) {
         (_, Kind::Root) => ("V2G root CA", [Any, Any, Any, Zero, Any, One, Any, Zero, Zero], Absent, &[], None, Absent, Absent),
-        (Peer::Secc, Kind::SubCa1) => ("CSO sub-CA1", [Any, Any, Any, Zero, Any, One, One, Zero, Zero], Absent, &[], None, Absent, Required),
-        (Peer::Secc, Kind::SubCa2) => ("CSO sub-CA2", [Any, Any, Any, Zero, Any, One, One, Zero, Zero], Absent, &[], None, Absent, Required),
+        (Peer::Secc, Kind::SubCa1) => ("CSO sub-CA1", [Any, Any, Any, Zero, Any, One, Any, Zero, Zero], Absent, &[], None, Absent, Required),
+        (Peer::Secc, Kind::SubCa2) => ("CSO sub-CA2", [Any, Any, Any, Zero, Any, One, Any, Zero, Zero], Absent, &[], None, Absent, Required),
         (Peer::Secc, Kind::Leaf) => ("SECC certificate", [One, Any, Any, Zero, One, Zero, Zero, Zero, Zero], Optional, &[SERVER_AUTH], Some(SERVER_AUTH), Absent, Required),
-        (Peer::Vehicle, Kind::SubCa1) => ("vehicle sub-CA1", [Any, Any, Any, Zero, Any, One, One, Zero, Zero], Absent, &[], None, Optional, Optional),
-        (Peer::Vehicle, Kind::SubCa2) => ("vehicle sub-CA2", [Any, Any, Any, Zero, Any, One, One, Zero, Zero], Absent, &[], None, Optional, Optional),
+        (Peer::Vehicle, Kind::SubCa1) => ("vehicle sub-CA1", [Any, Any, Any, Zero, Any, One, Any, Zero, Zero], Absent, &[], None, Optional, Optional),
+        (Peer::Vehicle, Kind::SubCa2) => ("vehicle sub-CA2", [Any, Any, Any, Zero, Any, One, Any, Zero, Zero], Absent, &[], None, Optional, Optional),
         (Peer::Vehicle, Kind::Leaf) => ("vehicle certificate", [One, Any, Any, Zero, Any, Zero, Zero, Zero, Zero], Optional, &[CLIENT_AUTH, SERVER_AUTH], Some(CLIENT_AUTH), Optional, Optional),
-        (Peer::Contract, Kind::SubCa1) => ("eMSP sub-CA1", [Any, Any, Any, Zero, Any, One, One, Zero, Zero], Absent, &[], None, Optional, Optional),
-        (Peer::Contract, Kind::SubCa2) => ("eMSP sub-CA2", [Any, Any, Any, Zero, Any, One, One, Zero, Zero], Absent, &[], None, Optional, Optional),
+        (Peer::Contract, Kind::SubCa1) => ("eMSP sub-CA1", [Any, Any, Any, Zero, Any, One, Any, Zero, Zero], Absent, &[], None, Optional, Optional),
+        (Peer::Contract, Kind::SubCa2) => ("eMSP sub-CA2", [Any, Any, Any, Zero, Any, One, Any, Zero, Zero], Absent, &[], None, Optional, Optional),
         (Peer::Contract, Kind::Leaf) => ("contract certificate", [One, Any, Any, Zero, Any, Zero, Zero, Zero, Zero], Absent, &[], None, Optional, Optional),
     };
     // The root of an eMSP is not the V2G root.
@@ -133,7 +135,8 @@ fn profile(peer: Peer, kind: Kind) -> Profile {
         policies: if kind == Kind::Root { Absent } else { Optional },
         crl,
         aia,
-        sia: if peer == Peer::Contract && kind == Kind::Leaf { Optional } else { Absent },
+        // The contract certificate's operator and tariff names; a sub-CA's CrossCertIndication (Amd 1, V2G20-3046 ff.).
+        sia: if (peer == Peer::Contract && kind == Kind::Leaf) || matches!(kind, Kind::SubCa1 | Kind::SubCa2) { Optional } else { Absent },
         eku,
         key_usage: ku,
         path_len: match kind {
@@ -143,6 +146,12 @@ fn profile(peer: Peer, kind: Kind) -> Profile {
         },
         eku_allowed,
         eku_required,
+        domain_component: match (peer, kind) {
+            (_, Kind::Root) | (Peer::Contract, Kind::Leaf) => None,
+            (Peer::Secc, _) => Some("CSO"),
+            (Peer::Vehicle, _) => Some("EV"),
+            (Peer::Contract, _) => Some("MSP"),
+        },
     }
 }
 
@@ -167,13 +176,19 @@ const OID_ATTR_CN: &str = "2.5.4.3";
 const OID_ATTR_DC: &str = "0.9.2342.19200300.100.1.25";
 
 /// The key identifier of RFC 5280 4.2.1.2 method 2: `0100` followed by the least significant 60
-/// bits of the SHA-1 of the public key bits (V2G20-1851, 1852).
+/// bits of the SHA-1 of the public key bits.
 pub fn key_identifier(public_key_bits: &[u8]) -> [u8; 8] {
     let digest = hash(MessageDigest::sha1(), public_key_bits).expect("sha1");
     let mut id = [0u8; 8];
     id.copy_from_slice(&digest[12..20]);
     id[0] = 0x40 | (id[0] & 0x0F);
     id
+}
+
+/// Whether `id` is the key identifier of RFC 5280 4.2.1.2 method 1 (the SHA-1 of the public key bits) or method 2
+/// (Amd 1, V2G20-3431; the 2022 text allowed method 2 only).
+fn is_key_identifier(id: &[u8], public_key_bits: &[u8]) -> bool {
+    id == key_identifier(public_key_bits) || hash(MessageDigest::sha1(), public_key_bits).is_ok_and(|d| id == &*d)
 }
 
 struct Report {
@@ -287,7 +302,7 @@ fn check_certificate(r: &mut Report, cert: &X509Certificate<'_>, p: &Profile, fa
     }
     check_name(r, cert.issuer(), "issuer", None, false);
     let leaf_country = p.kind == Kind::Leaf && p.name == "SECC certificate";
-    check_name(r, cert.subject(), "subject", (p.kind == Kind::Leaf).then_some(if leaf_country { "CSO" } else { "EV" }), leaf_country);
+    check_name(r, cert.subject(), "subject", p.domain_component, leaf_country);
     // V2G20-1001 c): valid now.
     let v = cert.validity();
     if now < v.not_before.timestamp() {
@@ -296,7 +311,12 @@ fn check_certificate(r: &mut Report, cert: &X509Certificate<'_>, p: &Profile, fa
     if now > v.not_after.timestamp() {
         r.add("V2G20-1001", "expired");
     }
-    check_extensions(r, cert, p);
+    // An Ed448 key cannot agree on a key: since Amd 1 the SECC certificate of that curve set has keyAgreement 0/1 (Table B.6).
+    let mut profile = Profile { ..*p };
+    if family == Family::Ed448 && p.name == "SECC certificate" {
+        profile.key_usage[4] = Any;
+    }
+    check_extensions(r, cert, &profile);
 }
 
 /// Distinguished names: only the attributes of the profile, once each (domain components
@@ -313,7 +333,7 @@ fn check_name(r: &mut Report, name: &X509Name<'_>, which: &'static str, domain_c
         if oid == OID_ATTR_DC
             && let (Some(expected), Ok(value)) = (domain_component, attr.as_str())
                 && which == "subject" && value != expected {
-                    r.add("Annex B", format!("the domain component is {value:?}, expected {expected:?}"));
+                    r.add("V2G20-3406", format!("the domain component is {value:?}, expected {expected:?}"));
                 }
         seen.push(oid);
     }
@@ -350,11 +370,12 @@ fn check_extensions(r: &mut Report, cert: &X509Certificate<'_>, p: &Profile) {
             r.add("V2G20-2686", format!("{} has an extension the profile does not define ({oid}{})", p.name, if ext.critical { ", critical" } else { "" }));
             continue;
         }
-        // Criticality as the tables have it where they fix it: key usage, basic constraints,
-        // extended key usage and authority information access are critical, the key identifiers
-        // and policies not (the vehicle tables say critical for the identifiers, against RFC 5280:
-        // either is accepted there).
-        let must_be_critical = matches!(oid.as_str(), OID_KEY_USAGE | OID_BASIC | OID_EKU | OID_AIA | OID_CRL);
+        // Criticality as the tables have it where they fix it: key usage, basic constraints and
+        // extended key usage are critical, the key identifiers and policies not (the vehicle tables
+        // of 2022 say critical for the identifiers, against RFC 5280: either is accepted there).
+        // Authority information access and CRL distribution points were critical in 2022 and are
+        // not since Amd 1 (so that common TLS libraries can process the certificate): either is accepted.
+        let must_be_critical = matches!(oid.as_str(), OID_KEY_USAGE | OID_BASIC | OID_EKU);
         let must_not_be_critical = matches!(oid.as_str(), OID_POLICIES);
         if must_be_critical && !ext.critical {
             r.add("Annex B", format!("extension {oid} has to be critical"));
@@ -442,7 +463,7 @@ fn check_extensions(r: &mut Report, cert: &X509Certificate<'_>, p: &Profile) {
             }
             ParsedExtension::AuthorityKeyIdentifier(aki) => {
                 if aki.key_identifier.is_none() {
-                    r.add("V2G20-1851", "AuthorityKeyIdentifier has no keyIdentifier");
+                    r.add("Annex B", "AuthorityKeyIdentifier has no keyIdentifier");
                 }
                 if aki.authority_cert_issuer.is_some() != aki.authority_cert_serial.is_some() {
                     r.add("Annex B", "authorityCertIssuer and authorityCertSerialNumber come together or not at all");
@@ -455,13 +476,13 @@ fn check_extensions(r: &mut Report, cert: &X509Certificate<'_>, p: &Profile) {
 }
 
 /// What a certificate has to share with its issuer: the name, the key identifiers, the
-/// signature, the validity (V2G20-1004).
+/// signature, the validity (V2G20-3000).
 fn check_against_issuer(r: &mut Report, cert: &X509Certificate<'_>, issuer: Option<&X509Certificate<'_>>, der: &[u8], issuer_der: Option<&Vec<u8>>) {
     let own_key = cert.public_key().subject_public_key.data.as_ref();
     for ext in cert.extensions() {
         if let ParsedExtension::SubjectKeyIdentifier(ski) = ext.parsed_extension()
-            && ski.0 != key_identifier(own_key) {
-                r.add("V2G20-1852", "SubjectKeyIdentifier is not the method 2 identifier of the certificate's key");
+            && !is_key_identifier(ski.0, own_key) {
+                r.add("V2G20-3431", "SubjectKeyIdentifier is neither the method 1 nor the method 2 identifier of the certificate's key");
             }
     }
     let (self_signed, issuer) = match issuer {
@@ -475,18 +496,18 @@ fn check_against_issuer(r: &mut Report, cert: &X509Certificate<'_>, issuer: Opti
     for ext in cert.extensions() {
         if let ParsedExtension::AuthorityKeyIdentifier(aki) = ext.parsed_extension()
             && let Some(id) = &aki.key_identifier
-                && id.0 != key_identifier(issuer.public_key().subject_public_key.data.as_ref()) {
-                    r.add("V2G20-1851", "AuthorityKeyIdentifier is not the method 2 identifier of the issuer's key");
+                && !is_key_identifier(id.0, issuer.public_key().subject_public_key.data.as_ref()) {
+                    r.add("V2G20-3431", "AuthorityKeyIdentifier is neither the method 1 nor the method 2 identifier of the issuer's key");
                 }
     }
     let verified = X509::from_der(issuer_der).and_then(|i| i.public_key()).and_then(|k| X509::from_der(der)?.verify(&k));
     if !matches!(verified, Ok(true)) {
         r.add("V2G20-1001", if self_signed { "the root's signature does not verify with its own key" } else { "the signature does not verify with the issuer's key" });
     }
-    // V2G20-1004: issued within the validity of the issuer.
+    // V2G20-3000, 3001 (Amd 1, replacing V2G20-1004): valid exclusively within the validity of the issuer.
     let (v, iv) = (cert.validity(), issuer.validity());
-    if v.not_before.timestamp() < iv.not_before.timestamp() || v.not_before.timestamp() > iv.not_after.timestamp() {
-        r.add("V2G20-1004", "issued outside the validity of the issuer");
+    if v.not_before.timestamp() < iv.not_before.timestamp() || v.not_after.timestamp() > iv.not_after.timestamp() {
+        r.add("V2G20-3000", "valid outside the validity of the issuer");
     }
 }
 
@@ -589,21 +610,97 @@ fn check_digit(elements: &[String]) -> char {
     }
 }
 
-/// `<Country Code> <S> <EVSE Operator ID> <S> "S" <S> <ControllerID> <S> <Check Digit>` (V2G20-2083).
+/// `<Country Code> <S> <EVSE Operator ID> <S> "S" <S> <ControllerID> <S> <Check Digit>` (V2G20-2083), 39 to 64
+/// characters without separators (Amd 1, V2G20-3085).
 pub fn check_secc_id(id: &str) -> Result<(), String> {
-    check_id(id, &[(2, None), (3, None), (1, Some('S'))], (32, 248), 39, true)
+    check_id(id, &[(2, None), (3, None), (1, Some('S'))], (32, 57), 39, true)
 }
 
-/// `<WMI> <S> "V" <S> <OEM's own unique ID> <S> <Check Digit>` (V2G20-2093).
+/// `<WMI> <S> "V" <S> <OEM's own unique ID> <S> <Check Digit>` (V2G20-2093), 20 to 64 characters without
+/// separators (Amd 1, V2G20-3087).
 pub fn check_evcc_id(id: &str) -> Result<(), String> {
-    check_id(id, &[(3, None), (1, Some('V'))], (15, 250), 20, true)
+    check_id(id, &[(3, None), (1, Some('V'))], (15, 59), 20, true)
 }
 
-/// `<Country Code> <S> <Provider ID> <S> <Instance> <S> <Check Digit>` (C.1, IEC 63119-2): two
-/// letters, three letters or digits, nine letters or digits and the check digit of C.6. The
-/// format is read from the example of C.6, since IEC 63119-2 is not at hand.
+/// `<WMI> <S> "P" <S> <OEM's own unique ID> <S> <Check Digit>` (V2G20-2080), 18 to 64 characters without
+/// separators (Amd 1, V2G20-3084).
+pub fn check_pcid(id: &str) -> Result<(), String> {
+    check_id(id, &[(3, None), (1, Some('P'))], (13, 59), 18, true)
+}
+
+/// The EMAID (C.1: IEC 63119-2, which points to ISO 15118-2 Annex H.1 and the IDACS document for Europe, the
+/// latter not at hand): `<Country Code> <S> <Provider ID> <S> <Instance> <S> <Check Digit>`, two letters, three
+/// letters or digits, nine letters or digits and the check digit of C.6; or the global identifier of IEC 63119-2
+/// 5.5.3, whose content the standard leaves to the issuer. At most 64 characters (Amd 1, V2G20-3083).
 pub fn check_emaid(id: &str) -> Result<(), String> {
-    check_id(id, &[(2, None), (3, None)], (9, 9), 15, false)
+    check_id(id, &[(2, None), (3, None)], (9, 9), 15, false).or_else(|e| global_id(id).map_err(|_| e))
+}
+
+/// The EVSEID of ISO 15118-2 (Annex H.2): `<Country Code> <S> <EVSE Operator ID> <S> "E" <Power Outlet ID>`, 7 to 37
+/// characters; "ZZ00000" for a charger that has no identifier. Case is not interpreted (the annex says it may
+/// be in the future), the separator is `*`.
+pub fn check_evseid_iso2(id: &str) -> Result<(), String> {
+    if id == "ZZ00000" {
+        return Ok(());
+    }
+    if !id.is_ascii() || !(7..=37).contains(&id.len()) {
+        return Err("not ASCII or not 7 to 37 characters".into());
+    }
+    let b = id.as_bytes();
+    let star = |at: usize| at + usize::from(b.get(at) == Some(&b'*'));
+    if !b[..2].iter().all(u8::is_ascii_alphabetic) {
+        return Err("the country code is two letters".into());
+    }
+    let at = star(2);
+    if !b.get(at..at + 3).is_some_and(|s| s.iter().all(u8::is_ascii_alphanumeric)) {
+        return Err("the operator ID is three letters or digits".into());
+    }
+    let at = star(at + 3);
+    if b.get(at) != Some(&b'E') {
+        return Err("the identifier type letter E is missing".into());
+    }
+    let outlet = &id[at + 1..];
+    let well_formed = outlet.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && outlet.chars().all(|c| c.is_ascii_alphanumeric() || c == '*')
+        && !outlet.contains("**");
+    if !well_formed || outlet.len() > 31 {
+        return Err("the power outlet ID is 1 to 31 letters, digits and single stars, starting with a letter or digit".into());
+    }
+    Ok(())
+}
+
+/// The EVSEID of DIN SPEC 91286 (withdrawn), the form DIN SPEC 70121 carries: up to three digits (a leading "+" is
+/// allowed), the spot operator in three to six digits, the power outlet in up to 32 digits with single stars
+/// between, `*` between the three.
+pub fn check_evseid_din(id: &str) -> Result<(), String> {
+    let mut parts = id.strip_prefix('+').unwrap_or(id).splitn(3, '*');
+    let (country, operator, outlet) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+    let digits = |s: &str, n: std::ops::RangeInclusive<usize>| n.contains(&s.len()) && s.bytes().all(|c| c.is_ascii_digit());
+    let outlet_digits = outlet.bytes().filter(u8::is_ascii_digit).count();
+    let outlet_ok = outlet.bytes().all(|c| c.is_ascii_digit() || c == b'*') && !outlet.contains("**") && !outlet.starts_with('*') && (1..=32).contains(&outlet_digits);
+    if digits(country, 1..=3) && digits(operator, 3..=6) && outlet_ok {
+        Ok(())
+    } else {
+        Err("expected 1 to 3 digits, 3 to 6 digits and 1 to 32 digits, joined by stars".into())
+    }
+}
+
+/// The EVSEID of ISO 15118-20 (C.4: IEC 63119-2): the form of ISO 15118-2 or a global identifier, at most 64
+/// characters (Amd 1, V2G20-3086).
+pub fn check_evseid(id: &str) -> Result<(), String> {
+    check_evseid_iso2(id).or_else(|e| global_id(id).map_err(|_| e))
+}
+
+/// The global identifier of IEC 63119-2 5.5.3: a four character format issuer ("EMI3" or "*GBT"), a four character
+/// format ID (both letters, digits and the padding star) and the original ID in letters and digits, in all 9 to 64.
+fn global_id(id: &str) -> Result<(), String> {
+    let issuer = id.get(..4).unwrap_or("");
+    let valid = id.is_ascii()
+        && (9..=64).contains(&id.len())
+        && (issuer.eq_ignore_ascii_case("EMI3") || issuer == "*GBT")
+        && id[4..8].bytes().all(|c| c.is_ascii_alphanumeric() || c == b'*')
+        && id[8..].bytes().all(|c| c.is_ascii_alphanumeric());
+    if valid { Ok(()) } else { Err("not a global identifier".into()) }
 }
 
 /// The chain the TLS library verified for the peer (leaf first, root last), checked now.
@@ -639,6 +736,51 @@ mod tests {
         // The letters I, O and Q are out (V2G20-2090), the simulated car's identifier is in order.
         assert!(check_evcc_id("WMIV1234567890ABCDEX").is_err());
         assert_eq!(check_evcc_id("DE8VAA0000453C4D58Y2"), Ok(()));
+    }
+
+    #[test]
+    fn identifiers_are_at_most_64_characters_since_amd_1() {
+        // V2G20-3085, 3087: 39 / 20 to 64 characters, a check digit at the end.
+        let long = |head: &[&str], n: usize| {
+            let body: String = "3C4D5678".chars().cycle().take(n).collect();
+            let mut elements: Vec<String> = head.iter().map(|s| s.to_string()).collect();
+            elements.push(body.clone());
+            format!("{}-{body}-{}", head.join("-"), check_digit(&elements))
+        };
+        assert_eq!(check_secc_id(&long(&["DE", "8AA", "S"], 57)), Ok(()));
+        assert!(check_secc_id(&long(&["DE", "8AA", "S"], 58)).unwrap_err().contains("unique part"));
+        assert!(check_secc_id(&long(&["DE", "8AA", "S"], 31)).is_err());
+        assert_eq!(check_evcc_id(&long(&["DE8", "V"], 59)), Ok(()));
+        assert!(check_evcc_id(&long(&["DE8", "V"], 60)).is_err());
+        // V2G20-3084 (the example of C.2.2).
+        assert_eq!(check_pcid("DE8-P-AA00003C4D58Y-2"), Ok(()));
+        assert!(check_pcid("DE8-V-AA00003C4D58Y-2").is_err());
+    }
+
+    #[test]
+    fn evse_and_contract_identifiers() {
+        // ISO 15118-2 H.1 (C.6 of -20 has the same example) and the global identifier of IEC 63119-2.
+        assert_eq!(check_emaid("DE-8AA-1A2B3C4D5-3"), Ok(()));
+        assert!(check_emaid("DE-8AA-1A2B3C4D5-4").unwrap_err().contains("check digit"));
+        assert_eq!(check_emaid("EMI30001DE8AA1A2B3C4D53"), Ok(()));
+        assert_eq!(check_emaid(&format!("*GBT0001{}", "7".repeat(56))), Ok(()));
+        assert!(check_emaid(&format!("*GBT0001{}", "7".repeat(57))).is_err());
+        assert!(check_emaid("XYZ30001DE8AA1A2B3C4D53").is_err());
+        // ISO 15118-2 H.2.
+        for ok in ["DE*ABC*E1234", "FR*A23*E45B*78C", "DEABCE1234", "ZZ00000", "DE*SIM*E0001"] {
+            assert_eq!(check_evseid_iso2(ok), Ok(()), "{ok}");
+        }
+        for bad in ["DE*ABC*1234", "DE*ABC*E", "D1*ABC*E1", "DE*AB*E1234", "DE*ABC*E12**3", "DE*ABC*E*12", &format!("DE*ABC*E{}", "1".repeat(32))] {
+            assert!(check_evseid_iso2(bad).is_err(), "{bad}");
+        }
+        assert_eq!(check_evseid(&format!("EMI30001{}", "A".repeat(56))), Ok(()));
+        assert!(check_evseid(&format!("EMI30001{}", "A".repeat(57))).is_err());
+        // DIN SPEC 91286.
+        assert_eq!(check_evseid_din("+49*123*456*789"), Ok(()));
+        assert_eq!(check_evseid_din("49*890*6360"), Ok(()));
+        assert!(check_evseid_din("49*89*6360").is_err());
+        assert!(check_evseid_din("49*890*").is_err());
+        assert!(check_evseid_din("DE*ABC*E1234").is_err());
     }
 
     #[test]

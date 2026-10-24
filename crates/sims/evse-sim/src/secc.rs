@@ -105,6 +105,8 @@ pub(crate) struct SimSecc {
     /// A standby period is on, and how many charge loop answers it has had.
     standby: Option<u32>,
     pause_answered: bool,
+    /// When the first Pause notification went out.
+    pause_asked: Option<Instant>,
     renegotiation_requested: bool,
     renegotiated: bool,
     side_renegotiated: bool,
@@ -157,6 +159,7 @@ impl SimSecc {
             loops_seen: 0,
             standby: None,
             pause_answered: false,
+            pause_asked: None,
             renegotiation_requested: false,
             renegotiated: false,
             side_renegotiated: false,
@@ -234,7 +237,9 @@ impl SimSecc {
             return (*rounds > c.standby_loops).then_some((EvseNotification::ExitStandby, 60));
         }
         if !self.pause_answered && c.pause_after_loops.is_some_and(|n| self.loops_seen >= n) {
-            return Some((EvseNotification::Pause, 60));
+            // V2G20-3318: while the vehicle has not reacted the delay is what is left of the 60 s.
+            let left = 60u64.saturating_sub(self.pause_asked.get_or_insert_with(Instant::now).elapsed().as_secs());
+            return Some((EvseNotification::Pause, left.max(1) as u16));
         }
         if confirmation {
             // V2G20-1083, V2G20-2105: one at a time, with the seconds the vehicle has.
@@ -361,11 +366,17 @@ impl SimSecc {
     fn schedule_entries(&self, tuple: u32, discharging: bool) -> Vec<(u32, f64)> {
         let l = self.limits();
         let entry = self.config.schedule_entry_s.max(1);
-        if discharging {
-            return vec![(entry, f64::from(l.ac_max_discharge_power_w))];
+        let mut entries = if discharging {
+            vec![(entry, f64::from(l.ac_max_discharge_power_w))]
+        } else {
+            let full = f64::from(l.ac_max_charge_power_w);
+            if tuple == 1 { vec![(entry, full), (entry, full / 2.0)] } else { vec![(entry, full / 2.0)] }
+        };
+        // V2G20-2121, 3299 (Amd 1): with no power, GoToPause comes with 0 W in the first entry of every schedule.
+        if self.config.no_power {
+            entries[0].1 = 0.0;
         }
-        let full = f64::from(l.ac_max_charge_power_w);
-        if tuple == 1 { vec![(entry, full), (entry, full / 2.0)] } else { vec![(entry, full / 2.0)] }
+        entries
     }
 
     /// The power per line the selected tuple asks for now, counted from the start of the power delivery; the last
@@ -1042,6 +1053,7 @@ impl Secc for SimSecc {
             (self.cable_reqs_seen, self.precharge_reqs_seen, self.loops_seen) = (0, 0, 0);
             self.standby = None;
             self.pause_answered = false;
+            self.pause_asked = None;
             self.renegotiated = true;
             self.renegotiation_requested = false;
         }

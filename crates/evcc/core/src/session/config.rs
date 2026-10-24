@@ -44,7 +44,7 @@ pub struct Config {
     /// `V2G_EVCC_Sequence_Performance_Time`: 40 s (Table 215); the time the EVCC may spend on
     /// the vehicle (closing contactors, ramping down, opening contactors) before its next request.
     pub sequence_performance_ms: u32,
-    /// ISO 15118-20 runs over TLS 1.3 only (V2G20-1235, V2G20-1237): the EVCC must not offer it
+    /// ISO 15118-20 runs over TLS 1.3 only (V2G20-1237): the EVCC must not offer it
     /// on a plain connection. Set this for a test setup without TLS.
     pub allow_unsecured: bool,
     /// `MaximumSupportingPoints` of the schedule exchange: how many entries of a schedule the
@@ -62,7 +62,7 @@ pub struct Config {
     /// `SessionSetupReq` carries its id; when the charger agrees, authorization and service
     /// selection are not repeated.
     pub resume: Option<super::types::Resume>,
-    /// Answer `EVSENotification` Pause (V2G20-1850) with a pause of the session
+    /// Answer `EVSENotification` Pause (Amd 1 V2G20-3317) with a pause of the session
     /// (`SessionStopReq` Pause) instead of a standby period; the standard allows either.
     pub pause_on_notification: bool,
     /// Authorize with Plug & Charge when the charger offers it and the vehicle has a contract
@@ -85,8 +85,8 @@ pub struct Config {
     /// Set `MeterInfoRequested` in the charge loop requests (V2G20-1081): the charger then sends its
     /// meter reading in every answer ([`super::MeterReading`] in the status).
     pub request_meter_info: bool,
-    /// Follow `GoToPause` (V2G20-2121, 2122): when the charger has no power and says so in the `ScheduleExchangeRes`, the
-    /// vehicle skips the cable check and pre-charge, stops the power delivery (V2G20-2123) and pauses the session
+    /// Follow `GoToPause` (V2G20-2121, Amd 1 V2G20-3301, 3302, 3304, 3305): when the charger has no power and says so in the
+    /// `ScheduleExchangeRes`, the vehicle skips the cable check and pre-charge, stops the power delivery (V2G20-2123) and pauses the session
     /// (`SessionStopReq` Pause), to come back later. Off: the vehicle goes on as usual.
     pub follow_go_to_pause: bool,
     /// The vehicle asks the host to change the control pilot (DIN SPEC 70121 V2G-DC-501, 502; ISO 15118-2

@@ -424,7 +424,7 @@ pub enum DinEnergyTransfer {
 pub struct Din {
     /// The `EnergyTransferType` of `ServiceDiscoveryRes`.
     pub energy_transfer: DinEnergyTransfer,
-    /// The EVSE id in the format of DIN SPEC 91286 (`49*89*6360`), sent as hexBinary (V2G-DC-621).
+    /// The EVSE id in the format of DIN SPEC 91286 (`49*890*6360`), sent as hexBinary (V2G-DC-621).
     pub evse_id: String,
     /// Also offer the payment option `Contract` (DIN SPEC 70121 defines `ExternalPayment` only).
     pub offer_contract_payment: bool,
@@ -437,7 +437,7 @@ pub struct Din {
 
 impl Default for Din {
     fn default() -> Self {
-        Self { energy_transfer: DinEnergyTransfer::default(), evse_id: "49*89*6360".into(), offer_contract_payment: false, cpd_ongoing_responses: 0, shutdown_after_loops: None }
+        Self { energy_transfer: DinEnergyTransfer::default(), evse_id: "49*890*6360".into(), offer_contract_payment: false, cpd_ongoing_responses: 0, shutdown_after_loops: None }
     }
 }
 
@@ -540,7 +540,7 @@ pub struct Config {
     /// After this many `DC_ChargeLoopRes` the EVSE asks the EV to terminate (`EVSENotification`).
     pub terminate_after_loops: Option<u32>,
     /// After this many `DC_ChargeLoopRes` the EVSE asks the EV to pause (`EVSENotification`
-    /// Pause, `NotificationMaxDelay` 60 s, V2G20-1850) and repeats it until the EV reacts.
+    /// Pause, `NotificationMaxDelay` 60 s, V2G20-3308) and repeats it, with the delay left, until the EV reacts (V2G20-3318).
     pub pause_after_loops: Option<u32>,
     /// With the control pilot wire: after this many charge loop requests the charger has an emergency of its own
     /// (IEC 61851-23 CC.3.4.3, scenario 2): its oscillator goes off and it drops the connection without a word.
@@ -692,6 +692,15 @@ mod tests {
             )]
         );
         assert_eq!(config.evse_id, Config::default().evse_id);
+    }
+
+    #[test]
+    fn the_default_identifiers_are_well_formed() {
+        use evcc_linux::certificates::{check_evseid, check_evseid_din, check_evseid_iso2};
+        let c = Config::default();
+        assert_eq!(check_evseid(&c.evse_id), Ok(()));
+        assert_eq!(check_evseid_iso2(&c.iso2.evse_id), Ok(()));
+        assert_eq!(check_evseid_din(&c.din.evse_id), Ok(()));
     }
 
     #[test]
