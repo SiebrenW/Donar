@@ -7,7 +7,7 @@ pub fn words(s: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut cur = String::new();
     for (i, &c) in chars.iter().enumerate() {
-        if c == '_' || c == '-' || c == '.' || c == '/' {
+        if c == '_' || c == '-' || c == '.' || c == '/' || c == ' ' {
             if !cur.is_empty() {
                 out.push(std::mem::take(&mut cur));
             }
@@ -85,6 +85,7 @@ mod tests {
         assert_eq!(words("OK_NewSessionEstablished"), ["OK", "New", "Session", "Established"]);
         assert_eq!(words("CPDReq"), ["CPD", "Req"]);
         assert_eq!(words("SupportedServiceIDs"), ["Supported", "Service", "IDs"]);
+        assert_eq!(words("External confirmation"), ["External", "confirmation"]);
     }
 
     #[test]

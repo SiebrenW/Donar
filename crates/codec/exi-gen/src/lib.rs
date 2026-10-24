@@ -40,13 +40,15 @@ pub const NS_COMMON_TYPES: &str = "urn:iso:std:iso:15118:-20:CommonTypes";
 pub const NS_COMMON: &str = "urn:iso:std:iso:15118:-20:CommonMessages";
 pub const NS_DC: &str = "urn:iso:std:iso:15118:-20:DC";
 pub const NS_AC: &str = "urn:iso:std:iso:15118:-20:AC";
+pub const NS_ACDP: &str = "urn:iso:std:iso:15118:-20:ACDP";
+pub const NS_WPT: &str = "urn:iso:std:iso:15118:-20:WPT";
 pub const NS_APP_PROTOCOL: &str = "urn:iso:15118:2:2010:AppProtocol";
 
 pub const ISO20: Group = Group {
     name: "iso15118-20",
     dir: "iso15118-20",
-    files: &["V2G_CI_CommonTypes.xsd", "V2G_CI_CommonMessages.xsd", "V2G_CI_DC.xsd", "V2G_CI_AC.xsd", "xmldsig-core-schema.xsd"],
-    modules: &[(NS_COMMON_TYPES, "common_types"), (NS_COMMON, "common"), (NS_DC, "dc"), (NS_AC, "ac"), (xsd::XMLDSIG, "xmldsig")],
+    files: &["V2G_CI_CommonTypes.xsd", "V2G_CI_CommonMessages.xsd", "V2G_CI_DC.xsd", "V2G_CI_AC.xsd", "V2G_CI_ACDP.xsd", "V2G_CI_WPT.xsd", "xmldsig-core-schema.xsd"],
+    modules: &[(NS_COMMON_TYPES, "common_types"), (NS_COMMON, "common"), (NS_DC, "dc"), (NS_AC, "ac"), (NS_ACDP, "acdp"), (NS_WPT, "wpt"), (xsd::XMLDSIG, "xmldsig")],
     fragment: &["V2G_CI_CommonMessages.xsd", "V2G_CI_CommonTypes.xsd", "xmldsig-core-schema.xsd"],
     document: None,
     value_table: false,

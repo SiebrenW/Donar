@@ -17,6 +17,9 @@ Three kinds of entry: the **text contradicts itself** (or a standard it refers t
 | V2G20-2121 to 2123, 1068 | The text has the vehicle send a `PowerDeliveryReq` with `ChargeProgress` "Pause", but the schema's values are Start, Stop, Standby and ScheduleRenegotiation. V2G20-2123 names Stop for a vehicle that wants to start with a pause. | `GoToPause`: skip the cable check and pre-charge, send Stop, then `SessionStopReq(Pause)`. |
 | V2G20-479 | Names the code `FAILED_TariffSelectionInvalid` for an unknown schedule tuple; the schema has `FAILED_ScheduleSelectionInvalid` (and the tariff code is not one of the response codes). | `FAILED_ScheduleSelectionInvalid`. |
 | V2G20-2584, 2598 against the certificate tables | "Shall not contain any further values" in the subject of a SECC or vehicle certificate, but the tables allow C, OU and DC. | The tables are followed; a domain component must be CSO or EV. |
+| V2G20-1437 against Table 204 | Names the services `AC_ACDP` and `AC_ACD_BPT`; Table 204 has only `DC_ACDP` (4) and `DC_ACDP_BPT` (7), and there are no AC messages for ACDP. | Only the DC services exist. |
+| V2G20-4061 | Names an `ACDP_ConnectDeviceRes`, which is not a message (`ACDP_ConnectRes` is meant). | `ACDP_ConnectRes`. |
+| V2G20-4013 to 4019 against `EVTechnicalStatus` | The text says `EV_Status_ReadyToCharge`; the element is `EVReadyToCharge`. | The schema's name. |
 | Annex C.3.2 | The SECCID example does not come out with the check digit the algorithm gives (4, not 2); the EMAID and EVCCID examples do. | The algorithm. |
 
 ### Conflicts with a referenced standard, or cannot be satisfied

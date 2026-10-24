@@ -644,20 +644,25 @@ impl<'a, 'w> Emitter<'a, 'w> {
         let mut encode_arms = String::new();
         let per_message_roots = self.document.is_none();
         let table = if self.value_table { "new" } else { "without_values" };
+        // Two root elements may share one type (ACDP's disconnect messages are typed as the connect messages): the
+        // first keeps `encode`, the others are `encode_as_<element>`.
+        let mut seen: Vec<&QName> = Vec::new();
         for (el, ty, index) in messages.iter().filter(|_| per_message_roots) {
+            let method = if seen.contains(&ty) { format!("encode_as_{}", names::snake(&el.local)) } else { "encode".to_string() };
+            seen.push(ty);
             let tname = names::type_name(&ty.local);
             let lt = self.complex_lt(ty);
             let ltp = if lt { "<'a>" } else { "" };
             let impl_head = if lt { "impl<'a>" } else { "impl" };
             let _ = writeln!(
                 tail,
-                "{impl_head} {tname}{ltp} {{\n    /// Encodes the message as a complete EXI stream (root element `{}`).\n    pub fn encode(&self, out: &mut [u8]) -> Result<usize, ::exi::EncodeError> {{\n        let mut t = ::exi::strings::Table::{table}();\n        let mut e = {E}::new(out, &mut t)?;\n        e.root({index}, {root_bits})?;\n        self.encode_content(&mut e)?;\n        e.finish()\n    }}\n}}",
+                "{impl_head} {tname}{ltp} {{\n    /// Encodes the message as a complete EXI stream (root element `{}`).\n    pub fn {method}(&self, out: &mut [u8]) -> Result<usize, ::exi::EncodeError> {{\n        let mut t = ::exi::strings::Table::{table}();\n        let mut e = {E}::new(out, &mut t)?;\n        e.root({index}, {root_bits})?;\n        self.encode_content(&mut e)?;\n        e.finish()\n    }}\n}}",
                 el.local
             );
             let vname = names::pascal(&el.local);
             let _ = writeln!(variants, "    {vname}({tname}{ltp}),");
             let _ = writeln!(arms, "        {index} => Message::{vname}({tname}::decode_content(&mut d)?),");
-            let _ = writeln!(encode_arms, "            Message::{vname}(m) => m.encode(out),");
+            let _ = writeln!(encode_arms, "            Message::{vname}(m) => m.{method}(out),");
         }
         if has_messages {
         let _ = writeln!(

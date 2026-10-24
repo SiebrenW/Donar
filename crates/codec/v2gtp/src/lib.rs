@@ -19,7 +19,7 @@ const INVERSE_VERSION: u8 = 0xFE;
 /// Ref: ISO 15118-20:2022 Table 14 (payload types); the header is Table 12/13.
 /// `SDP_REQUEST`/`SDP_RESPONSE` are common to ISO 15118-2, -20 and DIN SPEC 70121. Not
 /// listed here yet: the multiplexed side streams (`0x8101` schedule renegotiation, `0x8102`
-/// metering confirmation, ...).
+/// metering confirmation, `0x8103` ACDP system status, ...).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PayloadType(pub u16);
 
@@ -34,6 +34,8 @@ impl PayloadType {
     pub const SCHEDULE_RENEGOTIATION: Self = Self(0x8101);
     /// Side stream of the metering confirmation, multiplexed with the charge loop (Table 14).
     pub const METERING_CONFIRMATION: Self = Self(0x8102);
+    /// Side stream of `ACDP_SystemStatus`, independent of the main stream (Table 14, 8.3.4.7.8).
+    pub const ACDP_SYSTEM_STATUS: Self = Self(0x8103);
     pub const SDP_REQUEST: Self = Self(0x9000);
     pub const SDP_RESPONSE: Self = Self(0x9001);
 }

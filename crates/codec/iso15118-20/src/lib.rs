@@ -4,7 +4,9 @@
 //! and is `no_std` and allocation-free: decoded messages borrow from a host-provided
 //! [`exi::Arena`]. Each module is one schema namespace: [`common_types`] (shared types such
 //! as the header and response codes), [`common`] (the messages every service uses) and
-//! [`dc`] and [`ac`].
+//! [`dc`], [`ac`], [`acdp`] and [`wpt`]. The ACDP schema types its disconnect messages as the
+//! connect messages, so `AcdpConnectReq` encodes as either: `encode` is `ACDP_ConnectReq`,
+//! `encode_as_acdp_disconnect_req` is `ACDP_DisconnectReq` (likewise for the response).
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
@@ -13,6 +15,6 @@ mod rational;
 pub mod response_codes;
 pub mod signature;
 
-pub use generated::{ac, common, common_types, dc, xmldsig};
+pub use generated::{ac, acdp, common, common_types, dc, wpt, xmldsig};
 pub use response_codes::ResponseMessage;
 pub use signature::Signature;
