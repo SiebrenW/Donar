@@ -2,6 +2,7 @@
 name = "exi-gen"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 description = "Host tool: ISO 15118 XSD -> schema-informed EXI codec source for no_std Rust"
 

@@ -2,6 +2,7 @@
 name = "scenarios"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 description = "Scenarios (simulated vehicle and charger, external partners) and the end-to-end tests that run them"
 

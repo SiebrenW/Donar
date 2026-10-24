@@ -2,4 +2,5 @@
 name = "v2gtp"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false

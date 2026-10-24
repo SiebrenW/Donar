@@ -2,6 +2,7 @@
 name = "sim-control"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 description = "The control channel of the simulators: live values and commands as JSON lines on a Unix socket"
 

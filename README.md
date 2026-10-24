@@ -128,3 +128,7 @@ The charger side is the mirror image: [`crates/evse/core`](crates/evse/core) is 
 How the codec compares with EXIficient, OpenV2G and libcbv2g (round trip, speed, memory, code size): [crates/codec/exi-gen/benchmarks](crates/codec/exi-gen/benchmarks/RESULTS.md).
 
 Test it against something: `cargo xtask linux-test` (everything), `cargo xtask interop` (the Python library as charger), `cargo xtask web` (the web page).
+
+## License
+
+Licensed under either of [0BSD](LICENSE-0BSD) or [Apache License 2.0](LICENSE-APACHE), at your option. Unless you state otherwise, a contribution you submit is licensed under both, without further terms.
