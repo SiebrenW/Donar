@@ -100,6 +100,8 @@ pub struct Config {
     /// a test of the positioning alone (like `slac_only` for SLAC). Without it the session goes on with the
     /// authorization.
     pub positioning_only: bool,
+    /// ACDP: the interval of `ACDP_SystemStatusReq` (the standard names none; the status also goes out at once when the host reports a change).
+    pub status_interval_ms: u32,
 }
 
 impl Config {
@@ -182,6 +184,7 @@ impl Config {
         follow_go_to_pause: true,
         control_pilot: false,
         positioning_only: false,
+        status_interval_ms: 1000,
     };
 
     /// ISO 15118-20 ACDP (a pantograph on the infrastructure, wireless communication), version 1.0, schema id 3: the

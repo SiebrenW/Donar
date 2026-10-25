@@ -90,6 +90,8 @@ struct Announced {
 pub(crate) struct SimSecc {
     /// ACDP: the pantograph model, made when the first request for it arrives.
     pantograph: Option<crate::pantograph::Pantograph>,
+    /// ACDP: the last status the log told of.
+    last_status_line: Option<String>,
     pub(crate) config: Config,
     pub(crate) live: Option<Arc<EvseLive>>,
     /// What the charger did, one line each (the log of the simulator).
@@ -161,6 +163,7 @@ impl SimSecc {
             acdp_sets: Vec::new(),
             acdp_bpt_sets: Vec::new(),
             pantograph: None,
+            last_status_line: None,
             ac_sets: Vec::new(),
             tuples: Vec::new(),
             service: 0,
@@ -230,13 +233,18 @@ impl SimSecc {
         self.log.push(line.into());
     }
 
-    /// The pantograph asked to go to `to`: where it is, and the control pilot state its contacts give (B only while it is down).
-    fn pantograph_to(&mut self, to: iso15118_20::acdp::MechanicalChargingDeviceStatus, what: &str, seen: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> evse_core::secc::AcdpConnection {
-        use iso15118_20::acdp::{ElectricalChargingDeviceStatus as E, MechanicalChargingDeviceStatus as M};
+    /// The pantograph model, made when it is first needed (it writes its state into the world).
+    fn pantograph_mut(&mut self) -> Option<&mut crate::pantograph::Pantograph> {
         if self.pantograph.is_none() {
             self.pantograph = self.config.acdp.as_ref().and_then(|a| crate::pantograph::Pantograph::new(a).ok());
         }
-        let Some(pantograph) = self.pantograph.as_mut() else {
+        self.pantograph.as_mut()
+    }
+
+    /// The pantograph asked to go to `to`: where it is, and the control pilot state its contacts give (B only while it is down).
+    fn pantograph_to(&mut self, to: iso15118_20::acdp::MechanicalChargingDeviceStatus, what: &str, seen: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> evse_core::secc::AcdpConnection {
+        use iso15118_20::acdp::{ElectricalChargingDeviceStatus as E, MechanicalChargingDeviceStatus as M};
+        let Some(pantograph) = self.pantograph_mut() else {
             // No world to keep it in: a pantograph that is there at once.
             return evse_core::secc::AcdpConnection { finished: true, electrical: if to == M::EndPosition { E::StateB } else { E::StateA }, mechanical: to };
         };
@@ -516,6 +524,28 @@ impl Secc for SimSecc {
         !self.config.reject_protocol
             && (namespace == "urn:iso:std:iso:15118:-20:DC" || namespace == "urn:iso:std:iso:15118:-20:AC" || (self.config.acdp.is_some() && namespace == "urn:iso:std:iso:15118:-20:ACDP"))
             && major == 1
+    }
+
+    fn acdp_system_status(&mut self, vehicle: &iso15118_20::acdp::EvTechnicalStatus) -> evse_core::secc::AcdpSystemStatus {
+        use iso15118_20::acdp::{IsolationStatus, MechanicalChargingDeviceStatus as M};
+        let now = Instant::now();
+        let mechanical = self.pantograph_mut().map_or(M::Home, |p| p.update(now));
+        let ppd = self.config.acdp.as_ref().and_then(|a| crate::ppd::Ppd::new(a).ok().map(|ppd| ppd.positioning(&a.paired_evid)));
+        let status = evse_core::secc::AcdpSystemStatus {
+            mechanical,
+            // Nothing to monitor while the pantograph is up.
+            isolation: if mechanical == M::EndPosition { IsolationStatus::Safe } else { IsolationStatus::Invalid },
+            in_charge_position: ppd.is_some_and(|p| p.in_charge_position),
+            association: ppd.is_some_and(|p| p.association),
+            ..evse_core::secc::AcdpSystemStatus::HEALTHY
+        };
+        // Once a second would fill the log: a line when something changed.
+        let line = format!("system status: the vehicle says {vehicle:?}; the charging point is {status:?}");
+        if self.last_status_line.as_deref() != Some(line.as_str()) {
+            self.note(line.clone());
+            self.last_status_line = Some(line);
+        }
+        status
     }
 
     fn acdp_connect(&mut self, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> evse_core::secc::AcdpConnection {

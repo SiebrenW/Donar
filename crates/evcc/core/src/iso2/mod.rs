@@ -228,6 +228,8 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 let step = m.on_pilot(reading);
                 if m.awaited_pilot_seen() { m.pilot_arrived(tx) } else { step }
             }
+            // The status of an ACDP vehicle: the other protocols have no such stream.
+            Event::AcdpStatusChanged => Step::default(),
             Event::ConnectionClosed => match m.pending_end {
                 Some(reason) => m.end(reason),
                 None => Step::default(),

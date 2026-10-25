@@ -300,6 +300,9 @@ pub struct ApproachPoint {
     /// while approaching, Annex D of ISO 15118-20), y lateral.
     pub x_mm: i32,
     pub y_mm: i32,
+    /// The radio's signal strength from this point on, in dBm (`EVWLANStrength`); without it the one before holds.
+    #[serde(default)]
+    pub wlan_dbm: Option<i16>,
 }
 
 /// A vehicle that charges through a pantograph on the infrastructure (ACDP, ISO 15118-20 8.3.4.7): wireless SDP and a positioning phase
@@ -320,6 +323,10 @@ pub struct Acdp {
     pub own_window_y_mm: i16,
     /// End the session after the positioning (a test of the positioning alone).
     pub positioning_only: bool,
+    /// The radio's signal strength before the approach says otherwise, dBm.
+    pub wlan_dbm: i16,
+    /// The interval of the status stream, `ACDP_SystemStatusReq`.
+    pub status_interval_ms: u32,
     /// The directory the vehicle writes its position into; the scenario runner fills it.
     pub world: Option<String>,
 }
@@ -330,15 +337,17 @@ impl Default for Acdp {
             evid: "BUS42".into(),
             positioning_support: true,
             approach: vec![
-                ApproachPoint { t_ms: 0, x_mm: -9000, y_mm: 300 },
-                ApproachPoint { t_ms: 800, x_mm: -2500, y_mm: 200 },
-                ApproachPoint { t_ms: 1600, x_mm: -600, y_mm: 80 },
-                ApproachPoint { t_ms: 2200, x_mm: -60, y_mm: 15 },
+                ApproachPoint { t_ms: 0, x_mm: -9000, y_mm: 300, wlan_dbm: None },
+                ApproachPoint { t_ms: 800, x_mm: -2500, y_mm: 200, wlan_dbm: None },
+                ApproachPoint { t_ms: 1600, x_mm: -600, y_mm: 80, wlan_dbm: None },
+                ApproachPoint { t_ms: 2200, x_mm: -60, y_mm: 15, wlan_dbm: None },
             ],
             brake_ms: 300,
             own_window_x_mm: 150,
             own_window_y_mm: 100,
             positioning_only: false,
+            wlan_dbm: -62,
+            status_interval_ms: 1000,
             world: None,
         }
     }
@@ -579,7 +588,8 @@ impl Settings {
         };
         let base = if let Some(acdp) = &self.acdp {
             let base = if self.bpt { evcc_core::session::Config::ACDP_BPT_20 } else { evcc_core::session::Config::ACDP_20 };
-            if acdp.positioning_only { base.positioning_only() } else { base }
+            let base = if acdp.positioning_only { base.positioning_only() } else { base };
+            evcc_core::session::Config { status_interval_ms: acdp.status_interval_ms, ..base }
         } else if self.ac && self.scheduled { base.scheduled() } else if self.mobility_needs_by_secc { base.mobility_needs_by_secc() } else { base };
         let mut config = evcc_core::session::Config { allow_unsecured: self.tls.is_none(), prefer_pnc: self.pnc.is_some(), state_tolerance_always: self.state_tolerance_always, request_meter_info: self.request_meter_info, control_pilot: self.control_pilot_wire.is_some(), ..base };
         if let Some(ms) = self.poll_interval_ms {

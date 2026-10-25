@@ -54,7 +54,13 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             }
         }
         // ACDP: the vehicle is positioned first (8.3.4.7.5).
-        let mut step = if self.config.acdp() { self.send_vehicle_positioning_req(tx) } else { self.send_authorization_setup_req(tx) };
+        let mut step = if self.config.acdp() {
+            // The status stream starts with the first request (V2G20-4016).
+            let step = self.send_vehicle_positioning_req(tx);
+            self.start_status(step, tx)
+        } else {
+            self.send_authorization_setup_req(tx)
+        };
         step.notice = Some(Notice::SessionSetUp { session_id: self.session_id });
         if step.end.is_none() {
             step.timers = step.timers.with(TimerCmd::Cancel(Timer::Setup));

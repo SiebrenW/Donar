@@ -46,6 +46,8 @@ pub enum Timer {
     SlacResults,
     /// `TT_matching_repetition`: how long a failed SLAC run is repeated.
     SlacOverall,
+    /// ACDP: the interval of the `ACDP_SystemStatusReq` stream.
+    Status,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
