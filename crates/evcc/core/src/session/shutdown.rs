@@ -78,7 +78,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         self.send_session_stop_req(tx)
     }
 
-    fn send_session_stop_req(&mut self, tx: &mut [u8]) -> Step {
+    pub(super) fn send_session_stop_req(&mut self, tx: &mut [u8]) -> Step {
         self.pilot.set_stopping(true);
         let msg = common::SessionStopReq {
             header: self.header(),

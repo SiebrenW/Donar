@@ -1,0 +1,25 @@
+name = "acdp-pantograph-stuck-down"
+description = "ACDP, a pantograph that does not come down (it stays in Moving): ACDP_Connect never finishes, the vehicle repeats the request for its Ongoing bound (V2G_EVCC_Ongoing_Timeout, shortened here) and ends with a timeout. Nothing of the DC sequence has started."
+timeout_s = 60
+# The link is WLAN (ISO 15118-8): no SLAC; the control pilot exists only through the pantograph's contacts.
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session.acdp]
+ppd = "optical"
+pantograph_move_ms = 600
+pantograph_fault = "stuck_lowering"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+poll_interval_ms = 50
+charge_loop_interval_ms = 10
+ongoing_timeout_ms = 2000
+[evcc.settings.acdp]
+positioning_support = true
+
+[expect]
+evcc_exit = 1
+evcc_log = ["mechanical: Moving", "session: Ended(Timeout)"]
+secc_log = ["pantograph connect: the vehicle sees StateA"]

@@ -38,6 +38,10 @@ const WITHOUT_SLAC: &[(&str, &str)] = &[
     ("acdp-positioning-optical", "ACDP: the link is WLAN (ISO 15118-8), there is no PLC"),
     ("acdp-positioning-unguided", "ACDP: the link is WLAN (ISO 15118-8), there is no PLC"),
     ("acdp-leaves-the-zone", "ACDP: the link is WLAN (ISO 15118-8), there is no PLC"),
+    ("acdp-dc", "ACDP: the link is WLAN (ISO 15118-8), there is no PLC"),
+    ("acdp-dc-bpt", "ACDP: the link is WLAN (ISO 15118-8), there is no PLC"),
+    ("acdp-pantograph-stuck-down", "ACDP: the link is WLAN (ISO 15118-8), there is no PLC"),
+    ("acdp-pantograph-stuck-up", "ACDP: the link is WLAN (ISO 15118-8), there is no PLC"),
 ];
 
 #[test]
@@ -139,6 +143,10 @@ mod run {
         acdp_positioning_optical => "acdp-positioning-optical",
         acdp_positioning_unguided => "acdp-positioning-unguided",
         acdp_leaves_the_zone => "acdp-leaves-the-zone",
+        acdp_dc => "acdp-dc",
+        acdp_dc_bpt => "acdp-dc-bpt",
+        acdp_pantograph_stuck_down => "acdp-pantograph-stuck-down",
+        acdp_pantograph_stuck_up => "acdp-pantograph-stuck-up",
         slac_too_far => "slac-too-far",
         slac_ac_restarts => "slac-ac-restarts",
         dc_tls_slac => "dc-tls-slac",

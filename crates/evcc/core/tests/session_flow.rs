@@ -1723,3 +1723,81 @@ fn a_dc_session_is_not_positioned() {
     let step = deliver(&mut s, &setup_res(ResponseCode::OkNewSessionEstablished, SID));
     sent_common(&s, &step, |m| assert!(matches!(m, common::Message::AuthorizationSetupReq(_))));
 }
+
+/// The ACDP session up to the schedule exchange (the charger offers the service 4 with a parameter set that has no `Connector`).
+fn acdp_up_to_schedule_exchange<'a>(rig: &'a mut Rig, config: Config) -> (Sess<'a>, Step) {
+    IMMOBILIZED.with(|c| c.set(true));
+    let service = config.energy_service;
+    let (mut s, _) = acdp_up_to_positioning(rig, config);
+    deliver(&mut s, &positioning_res(ResponseCode::Ok, Processing::Finished, true));
+    deliver(&mut s, &auth_setup_res(ResponseCode::Ok, &[Authorization::Eim]));
+    deliver(&mut s, &auth_res(ResponseCode::Ok, Processing::Finished));
+    deliver(&mut s, &discovery_res(ResponseCode::Ok, &[service]));
+    let step = deliver(&mut s, &detail_res(ResponseCode::Ok, service, &[(1, &[("ControlMode", 2), ("MobilityNeedsMode", 1)])]));
+    assert_eq!(s.state(), State::AwaitServiceSelectionRes, "a set without Connector is acceptable");
+    let _ = step;
+    let step = deliver(&mut s, &selection_res(ResponseCode::Ok));
+    assert_eq!(step.notice, Some(Notice::ServiceSelected { service_id: service, parameter_set_id: 1 }));
+    deliver(&mut s, &cpd_res(ResponseCode::Ok));
+    assert_eq!(s.state(), State::AwaitScheduleExchangeRes);
+    let step = deliver(&mut s, &se_res(ResponseCode::Ok, Processing::Finished));
+    (s, step)
+}
+
+fn connect_res(processing: Processing, mechanical: iso15118_20::acdp::MechanicalChargingDeviceStatus, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> std::vec::Vec<u8> {
+    framed(PayloadType::ACDP_MAINSTREAM, |out| {
+        iso15118_20::acdp::AcdpConnectRes {
+            header: hdr(),
+            response_code: ResponseCode::Ok,
+            evse_processing: processing,
+            evse_electrical_charging_device_status: electrical,
+            evse_mechanical_charging_device_status: mechanical,
+        }
+        .encode(out)
+        .unwrap()
+    })
+}
+
+#[test]
+fn the_pantograph_is_connected_after_the_schedule_exchange_and_before_the_cable_check() {
+    use iso15118_20::acdp::{ElectricalChargingDeviceStatus as E, MechanicalChargingDeviceStatus as M};
+    let mut rig = Rig::new();
+    let (mut s, step) = acdp_up_to_schedule_exchange(&mut rig, Config::ACDP_20);
+    assert_eq!(s.state(), State::AwaitConnectRes);
+    assert_eq!(step.notice, Some(Notice::ScheduleExchanged));
+    let (pt, payload) = sent(&s, &step);
+    assert_eq!(pt, PayloadType::ACDP_MAINSTREAM);
+    let mut mem = [0u8; 1024];
+    let arena = Arena::new(&mut mem);
+    let iso15118_20::acdp::Message::AcdpConnectReq(req) = iso15118_20::acdp::decode(&payload, &arena).unwrap() else { panic!("not a connect request") };
+    assert_eq!(req.ev_electrical_charging_device_status, E::StateA, "the contacts have no connection yet");
+
+    // The pantograph moves: the host sees it and the request is repeated.
+    let step = deliver(&mut s, &connect_res(Processing::Ongoing, M::Moving, E::StateA));
+    assert_eq!(step.notice, Some(Notice::AcdpConnection(AcdpConnection { finished: false, electrical: E::StateA, mechanical: M::Moving })));
+    assert!(step.send.is_some());
+    assert_eq!(s.state(), State::AwaitConnectRes);
+
+    // It is down: the cable check follows (V2G20-4052).
+    let step = deliver(&mut s, &connect_res(Processing::Finished, M::EndPosition, E::StateB));
+    assert_eq!(step.notice, Some(Notice::AcdpConnection(AcdpConnection { finished: true, electrical: E::StateB, mechanical: M::EndPosition })));
+    let (pt, _) = sent(&s, &step);
+    assert_eq!(pt, PayloadType::DC_MAINSTREAM, "the DC_CableCheckReq");
+    assert_eq!(s.state(), State::AwaitCableCheckRes);
+}
+
+#[test]
+fn a_pantograph_that_never_arrives_ends_with_the_ongoing_timeout() {
+    use iso15118_20::acdp::{ElectricalChargingDeviceStatus as E, MechanicalChargingDeviceStatus as M};
+    let mut rig = Rig::new();
+    let (mut s, _) = acdp_up_to_schedule_exchange(&mut rig, Config::ACDP_20);
+    deliver(&mut s, &connect_res(Processing::Ongoing, M::Moving, E::StateA));
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Ongoing)).end, Some(EndReason::Timeout));
+}
+
+#[test]
+fn an_acdp_bpt_vehicle_selects_the_bpt_service() {
+    let mut rig = Rig::new();
+    let (s, _) = acdp_up_to_schedule_exchange(&mut rig, Config::ACDP_BPT_20);
+    assert_eq!(s.state(), State::AwaitConnectRes);
+}

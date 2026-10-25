@@ -360,7 +360,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         };
         sets.iter()
             .find(|set| {
-                (if is_ac { has(set, "Connector", ac_connector) || has(set, "Connector", 2) } else { has(set, "Connector", connector) })
+                (if is_ac { has(set, "Connector", ac_connector) || has(set, "Connector", 2) } else if self.config.acdp() { true } else { has(set, "Connector", connector) })
                     && self.config.parameter_filter.iter().all(|&(name, want)| has(set, name, want))
                     && self.config.optional_parameters.iter().all(|&(name, want)| has(set, name, want) || !set.parameter.iter().any(|p| p.name == name))
             })

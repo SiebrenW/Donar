@@ -106,6 +106,10 @@ impl Ev for SimulatedEv {
     fn immobilized(&self) -> bool {
         self.driver.as_ref().is_none_or(|d| d.immobilized())
     }
+    fn acdp_electrical_status(&self) -> iso15118_20::acdp::ElectricalChargingDeviceStatus {
+        use iso15118_20::acdp::ElectricalChargingDeviceStatus as E;
+        if self.driver.as_ref().is_some_and(|d| d.pantograph_down()) { E::StateB } else { E::StateA }
+    }
     fn schedule_request(&self) -> ScheduleRequest {
         let l = &self.limits();
         // With a battery model the energy requests follow the state of charge: what is needed

@@ -9,6 +9,7 @@ pub mod slac;
 mod answers;
 mod config;
 mod evse;
+mod pantograph;
 mod pnc;
 mod ppd;
 mod live;
@@ -17,7 +18,7 @@ mod secc_din;
 mod secc_iso2;
 mod net;
 
-pub use config::{Acdp, CertificateChecks, Config, Din, DinEnergyTransfer, Iso2, Iso2Mode, Limits, OfferedSet, Pnc, Ppd, Protocol, Settings, TlsVersions, value_name};
+pub use config::{Acdp, CertificateChecks, Config, Din, DinEnergyTransfer, Iso2, Iso2Mode, Limits, OfferedSet, PantographFault, Pnc, Ppd, Protocol, Settings, TlsVersions, value_name};
 pub use live::EvseLive;
 pub use evse::{Evse, Output, State};
 pub use net::{answer_discovery, answer_wireless_discovery, serve, serve_live, serve_one, serve_wired};

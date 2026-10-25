@@ -578,7 +578,7 @@ impl Settings {
             (true, true) => evcc_core::session::Config::AC_BPT_20,
         };
         let base = if let Some(acdp) = &self.acdp {
-            let base = evcc_core::session::Config::ACDP_20;
+            let base = if self.bpt { evcc_core::session::Config::ACDP_BPT_20 } else { evcc_core::session::Config::ACDP_20 };
             if acdp.positioning_only { base.positioning_only() } else { base }
         } else if self.ac && self.scheduled { base.scheduled() } else if self.mobility_needs_by_secc { base.mobility_needs_by_secc() } else { base };
         let mut config = evcc_core::session::Config { allow_unsecured: self.tls.is_none(), prefer_pnc: self.pnc.is_some(), state_tolerance_always: self.state_tolerance_always, request_meter_info: self.request_meter_info, control_pilot: self.control_pilot_wire.is_some(), ..base };

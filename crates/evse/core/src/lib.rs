@@ -85,11 +85,16 @@ pub enum State {
     AwaitServiceSelectionReq,
     AwaitChargeParameterDiscoveryReq,
     AwaitScheduleExchangeReq,
+    /// ACDP: the pantograph is connected before the cable check (`ACDP_ConnectReq`, Table 80).
+    AwaitConnectReq,
     AwaitCableCheckReq,
     AwaitPreChargeReq,
     AwaitPowerDeliveryReq,
     /// Energy flows; charge loop requests and the stop are accepted.
     ChargeLoop,
+    /// ACDP: the pantograph is disconnected after the power delivery has stopped (`ACDP_DisconnectReq`), in place of the
+    /// welding detection.
+    AwaitDisconnectReq,
     /// Welding detection after the stop (V2G20-1448); ends with a `Finished` request.
     AwaitWeldingReq,
     AwaitSessionStopReq,

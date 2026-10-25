@@ -38,6 +38,7 @@ mod metering;
 mod parameters;
 mod renegotiation;
 mod schedule;
+mod pantograph;
 mod positioning;
 mod setup;
 mod shutdown;
@@ -45,7 +46,7 @@ mod tariff;
 mod types;
 
 pub use config::{Config, SERVICE_ID_AC, SERVICE_ID_AC_BPT, SERVICE_ID_DC, SERVICE_ID_DC_ACDP, SERVICE_ID_DC_ACDP_BPT, SERVICE_ID_DC_BPT};
-pub use types::{AcChargeLoopStatus, AcdpPosition, Buffers, ChargeLoopStatus, MeterReading, ControlPilot, EndReason, Event, Notice, Resume, State, Step};
+pub use types::{AcChargeLoopStatus, AcdpConnection, AcdpPosition, Buffers, ChargeLoopStatus, MeterReading, ControlPilot, EndReason, Event, Notice, Resume, State, Step};
 
 pub struct Session<'a, E: Ev, L: LogSink> {
     rx: &'a mut [u8],
@@ -258,6 +259,8 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                     Timer::Ongoing,
                     State::AwaitAuthorizationRes
                     | State::AwaitScheduleExchangeRes
+                    | State::AwaitConnectRes
+                    | State::AwaitDisconnectRes
                     | State::AwaitCableCheckRes
                     | State::AwaitPreChargeRes,
                 ) => m.end(EndReason::Timeout),
@@ -299,7 +302,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 if m.config.control_pilot {
                     return m.change_control_pilot(types::ControlPilot::B, State::AwaitControlPilotB);
                 }
-                let step = m.send_welding_req(false, tx);
+                let step = m.after_contactors_open(tx);
                 m.sequence_done(step)
             }
             Event::StopRequested => m.stop_requested_by_vehicle(),
@@ -428,6 +431,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             State::AwaitSupportedAppProtocolRes
                 | State::AwaitSessionSetupRes
                 | State::AwaitVehiclePositioningRes
+                | State::AwaitConnectRes
+                | State::AwaitDisconnectRes
                 | State::AwaitAuthorizationSetupRes
                 | State::AwaitAuthorizationRes
                 | State::AwaitServiceDiscoveryRes
@@ -522,7 +527,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             State::AwaitControlPilotC => {
                 self.pilot.set_ready(true);
                 let mut step = self.send_cable_check_req(tx);
-                if step.end.is_none() {
+                if step.end.is_none() && !self.config.acdp() {
                     step.notice = Some(Notice::ScheduleExchanged);
                 }
                 self.sequence_done(step)
@@ -532,10 +537,16 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 self.sequence_done(step)
             }
             _ => {
-                let step = self.send_welding_req(false, tx);
+                let step = self.after_contactors_open(tx);
                 self.sequence_done(step)
             }
         }
+    }
+
+    /// The contactors are open (and the pilot at B if the host sets it): welding detection, or with ACDP the disconnect of the
+    /// pantograph (Table 80: `PowerDelivery(Stop)`, `ACDP_Disconnect`, `SessionStop`, no welding detection).
+    fn after_contactors_open(&mut self, tx: &mut [u8]) -> Step {
+        if self.config.acdp() { self.send_acdp_disconnect_req(tx) } else { self.send_welding_req(false, tx) }
     }
 
     /// The control pilot change the host is asked for (`Config::control_pilot`).
@@ -636,6 +647,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             State::AwaitScheduleExchangeRes => self.send_schedule_exchange_req(tx),
             // The positioning takes as long as the driver does: no bound on the repeats, as with the charge loop.
             State::AwaitVehiclePositioningRes => return self.send_vehicle_positioning_req(tx),
+            State::AwaitConnectRes => self.send_acdp_connect_req(tx),
+            State::AwaitDisconnectRes => self.send_acdp_disconnect_req(tx),
             State::AwaitCableCheckRes => self.send_cable_check_req(tx),
             State::AwaitPreChargeRes => self.send_precharge_req(false, tx),
             // The charge loop has its own cycle and no `Ongoing` bound.
@@ -783,6 +796,14 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             }),
             State::AwaitVehiclePositioningRes => self.acdp_mainstream(payload_type, payload, arena, |m, msg| match msg {
                 acdp::Message::AcdpVehiclePositioningRes(res) => Some(m.on_vehicle_positioning_res(res, tx)),
+                _ => None,
+            }),
+            State::AwaitConnectRes => self.acdp_mainstream(payload_type, payload, arena, |m, msg| match msg {
+                acdp::Message::AcdpConnectRes(res) => Some(m.on_acdp_connect_res(res, tx)),
+                _ => None,
+            }),
+            State::AwaitDisconnectRes => self.acdp_mainstream(payload_type, payload, arena, |m, msg| match msg {
+                acdp::Message::AcdpDisconnectRes(res) => Some(m.on_acdp_disconnect_res(res, tx)),
                 _ => None,
             }),
             State::AwaitAuthorizationSetupRes => self.mainstream(payload_type, payload, arena, |m, msg| match msg {

@@ -102,11 +102,28 @@ static DC_BY_SECC_PARAMS: [Parameter<'static>; 4] = [
 ];
 static DC_SETS: [ParameterSet<'static>; 2] = [ParameterSet { parameter_set_id: 1, parameter: &DC_PARAMS }, ParameterSet { parameter_set_id: 2, parameter: &DC_BY_SECC_PARAMS }];
 static AC_SETS: [ParameterSet<'static>; 2] = [ParameterSet { parameter_set_id: 1, parameter: &AC_PARAMS }, ParameterSet { parameter_set_id: 2, parameter: &AC_SCHEDULED_PARAMS }];
-static SERVICES: [Service; 4] = [
+// ACDP (Tables 210, 211): no `Connector`; the BPT service has the BPT parameters.
+static ACDP_PARAMS: [Parameter<'static>; 3] = [
+    Parameter { name: "ControlMode", choice: ParameterChoice::IntValue(2) },
+    Parameter { name: "MobilityNeedsMode", choice: ParameterChoice::IntValue(1) },
+    Parameter { name: "Pricing", choice: ParameterChoice::IntValue(0) },
+];
+static ACDP_BPT_PARAMS: [Parameter<'static>; 5] = [
+    Parameter { name: "ControlMode", choice: ParameterChoice::IntValue(2) },
+    Parameter { name: "MobilityNeedsMode", choice: ParameterChoice::IntValue(1) },
+    Parameter { name: "BPTChannel", choice: ParameterChoice::IntValue(1) },
+    Parameter { name: "GeneratorMode", choice: ParameterChoice::IntValue(1) },
+    Parameter { name: "Pricing", choice: ParameterChoice::IntValue(0) },
+];
+static ACDP_SETS: [ParameterSet<'static>; 1] = [ParameterSet { parameter_set_id: 1, parameter: &ACDP_PARAMS }];
+static ACDP_BPT_SETS: [ParameterSet<'static>; 1] = [ParameterSet { parameter_set_id: 1, parameter: &ACDP_BPT_PARAMS }];
+static SERVICES: [Service; 6] = [
     Service { service_id: 1, free_service: false },
     Service { service_id: 2, free_service: false },
+    Service { service_id: 4, free_service: false },
     Service { service_id: 5, free_service: false },
     Service { service_id: 6, free_service: false },
+    Service { service_id: 7, free_service: false },
 ];
 static SCHEDULE_ENTRIES: [PowerScheduleEntry; 1] = [PowerScheduleEntry { duration: 3600, power: RationalNumber { exponent: 3, value: 11 }, power_l2: None, power_l3: None }];
 static TUPLES: [ScheduleTuple<'static>; 1] = [ScheduleTuple {
@@ -140,6 +157,8 @@ struct TestCharger {
     v2x_loop: Option<(RationalNumber, RationalNumber)>,
     /// ACDP: the positioning requests the charger saw, the charger's PPD losing the vehicle at the n-th, a charger without ACDP.
     positioning: Vec<AcdpPositioningRequest>,
+    /// ACDP: the connect and disconnect requests the charger saw, with the pilot state the vehicle reported.
+    pantograph: Vec<(&'static str, iso15118_20::acdp::ElectricalChargingDeviceStatus)>,
     lose_association_at: Option<usize>,
     no_acdp: bool,
 }
@@ -155,6 +174,19 @@ impl Secc for TestCharger {
     }
     fn supports_protocol(&self, namespace: &str, major: u32) -> bool {
         major == 1 && (matches!(namespace, "urn:iso:std:iso:15118:-20:DC" | "urn:iso:std:iso:15118:-20:AC") || (!self.no_acdp && namespace == "urn:iso:std:iso:15118:-20:ACDP"))
+    }
+    fn acdp_connect(&mut self, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> evse_core::secc::AcdpConnection {
+        use iso15118_20::acdp::{ElectricalChargingDeviceStatus as E, MechanicalChargingDeviceStatus as M};
+        self.pantograph.push(("connect", electrical));
+        // The first request finds the pantograph moving, the second down.
+        let down = self.pantograph.iter().filter(|(k, _)| *k == "connect").count() >= 2;
+        evse_core::secc::AcdpConnection { finished: down, electrical: if down { E::StateB } else { E::StateA }, mechanical: if down { M::EndPosition } else { M::Moving } }
+    }
+    fn acdp_disconnect(&mut self, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> evse_core::secc::AcdpConnection {
+        use iso15118_20::acdp::{ElectricalChargingDeviceStatus as E, MechanicalChargingDeviceStatus as M};
+        self.pantograph.push(("disconnect", electrical));
+        let home = self.pantograph.iter().filter(|(k, _)| *k == "disconnect").count() >= 2;
+        evse_core::secc::AcdpConnection { finished: home, electrical: E::StateA, mechanical: if home { M::Home } else { M::Moving } }
     }
     fn acdp_positioning(&mut self, request: AcdpPositioningRequest) -> AcdpPositioning {
         self.positioning.push(request);
@@ -189,6 +221,8 @@ impl Secc for TestCharger {
         match service_id {
             1 | 5 => &AC_SETS,
             2 | 6 => &DC_SETS,
+            4 => &ACDP_SETS,
+            7 => &ACDP_BPT_SETS,
             _ => &[],
         }
     }
@@ -956,16 +990,6 @@ fn an_acdp_vehicle_is_positioned_by_the_charger_before_anything_else() {
 }
 
 #[test]
-fn an_acdp_session_goes_on_with_the_authorization_after_the_positioning() {
-    IMMOBILIZED_AFTER.with(|c| c.set(1));
-    // The charger of this test offers the DC service only (the ACDP service is offered by the step that follows the
-    // positioning), so the session runs through the authorization and ends at the service selection.
-    let (end, charger, _) = run(config(Config::ACDP_20), acdp_ev(), 0);
-    assert_eq!(charger.positioning.len(), 1);
-    assert_eq!(end, EndReason::NoCompatibleService);
-}
-
-#[test]
 fn a_vehicle_the_ppd_loses_is_answered_with_an_association_error() {
     IMMOBILIZED_AFTER.with(|c| c.set(5));
     let secc = TestCharger { lose_association_at: Some(2), ..TestCharger::default() };
@@ -980,5 +1004,35 @@ fn a_charger_without_acdp_refuses_the_protocol() {
     let secc = TestCharger { no_acdp: true, ..TestCharger::default() };
     let (end, charger, _) = run_with(secc, config(Config::ACDP_20), acdp_ev(), 0);
     assert_eq!(end, EndReason::NoCommonProtocol);
+    assert!(charger.positioning.is_empty());
+}
+
+#[test]
+fn an_acdp_session_connects_the_pantograph_after_the_schedule_exchange_and_disconnects_it_before_the_stop() {
+    IMMOBILIZED_AFTER.with(|c| c.set(1));
+    let (end, charger, state) = run(config(Config::ACDP_20), acdp_ev(), 3);
+    assert_eq!(end, EndReason::Completed);
+    assert_eq!(state, State::Stopped);
+    let order: Vec<&str> = charger.pantograph.iter().map(|(k, _)| *k).collect();
+    assert_eq!(order, ["connect", "connect", "disconnect", "disconnect"], "moving, down; moving, home");
+    assert_eq!(charger.loops, 3);
+    assert_eq!(charger.cable_checks, 2, "the cable check follows the connect");
+    assert!(!charger.delivering);
+}
+
+#[test]
+fn an_acdp_bpt_session_runs_the_same_way() {
+    IMMOBILIZED_AFTER.with(|c| c.set(1));
+    let (end, charger, state) = run(config(Config::ACDP_BPT_20), acdp_ev(), 3);
+    assert_eq!((end, state), (EndReason::Completed, State::Stopped));
+    assert_eq!(charger.pantograph.len(), 4);
+}
+
+#[test]
+fn a_vehicle_that_positions_itself_although_it_negotiated_the_dc_schema_is_out_of_sequence() {
+    // The vehicle behaves as an ACDP one (service 4) but offered the DC namespace: the charger expects the authorization.
+    let config = Config { energy_service: evcc_core::session::SERVICE_ID_DC_ACDP, ..config(Config::DC_20) };
+    let (end, charger, _) = run(config, acdp_ev(), 3);
+    assert_eq!(end, EndReason::Rejected(ResponseCode::FailedSequenceError));
     assert!(charger.positioning.is_empty());
 }
