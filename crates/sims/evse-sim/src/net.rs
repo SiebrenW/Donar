@@ -152,6 +152,47 @@ pub fn serve_wired<T: evcc_linux::Transport>(stream: &mut T, config: crate::Conf
     }
 }
 
+/// Answers wireless SECC discovery requests (ISO 15118-20 7.10.1.8, 7.10.1.9) of an ACDP charger on `socket` (blocking): a
+/// request of the right coupling type that names a pairing and positioning device on the infrastructure is answered
+/// `Ongoing` while the device does not read the EVID the request carries, and `Finished` with the EVSEID when it does
+/// (V2G20-4102, 4103). Returns the EVID of the vehicle that was paired.
+pub fn answer_wireless_discovery(socket: &std::net::UdpSocket, response: v2gtp::sdp::Response, acdp: &crate::Acdp) -> std::io::Result<String> {
+    use v2gtp::sdp::{DiagStatus, EvseId, WirelessRequest, WirelessResponse, p2ps};
+    let ppd = crate::ppd::Ppd::new(acdp)?;
+    let evse_id = EvseId::new(&acdp.evse_id).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "acdp.evse_id: at most 37 letters and digits"))?;
+    let mut buf = [0u8; 128];
+    loop {
+        let (n, from) = socket.recv_from(&mut buf)?;
+        let Ok(Parse::Frame(frame)) = parse(&buf[..n], WirelessRequest::PAYLOAD_LEN) else { continue };
+        if frame.payload_type != PayloadType::SDP_REQUEST_WIRELESS {
+            continue;
+        }
+        let Ok(request) = WirelessRequest::from_payload(frame.payload) else { continue };
+        // A charger of another coupling type does not answer, nor does it one the vehicle does not pair by a device on the
+        // infrastructure with.
+        if request.coupling_type != acdp.coupling_type || request.p2ps_ppd[0] & p2ps::PPD_ON_INFRASTRUCTURE == 0 {
+            continue;
+        }
+        let paired = ppd.detect().is_some_and(|v| v.evid == request.evid.as_str());
+        let answer = WirelessResponse {
+            address: response.address,
+            port: response.port,
+            security: response.security,
+            transport: response.transport,
+            diag_status: if paired { DiagStatus::FinishedWithEvseId } else { DiagStatus::Ongoing },
+            coupling_type: acdp.coupling_type,
+            evse_id,
+        };
+        let mut out = [0u8; 80];
+        let len = answer.to_datagram(&mut out).expect("buffer fits a response");
+        socket.send_to(&out[..len], from)?;
+        if paired {
+            eprintln!("sdp: the PPD reads {}: paired", request.evid.as_str());
+            return Ok(request.evid.as_str().to_string());
+        }
+    }
+}
+
 /// Answers SECC discovery requests on `socket` (blocking): the first `ignore` requests get no
 /// answer, then one request is answered with `response` sent back to the requester. Returns
 /// the number of requests seen, including the answered one.

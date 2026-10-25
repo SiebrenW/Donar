@@ -466,7 +466,19 @@ impl Secc for SimSecc {
     }
 
     fn supports_protocol(&self, namespace: &str, major: u32) -> bool {
-        !self.config.reject_protocol && (namespace == "urn:iso:std:iso:15118:-20:DC" || namespace == "urn:iso:std:iso:15118:-20:AC") && major == 1
+        !self.config.reject_protocol
+            && (namespace == "urn:iso:std:iso:15118:-20:DC" || namespace == "urn:iso:std:iso:15118:-20:AC" || (self.config.acdp.is_some() && namespace == "urn:iso:std:iso:15118:-20:ACDP"))
+            && major == 1
+    }
+
+    fn acdp_positioning(&mut self, request: evse_core::secc::AcdpPositioningRequest) -> evse_core::secc::AcdpPositioning {
+        let Some(acdp) = &self.config.acdp else { return evse_core::secc::AcdpPositioning::UNGUIDED };
+        let seen = match crate::ppd::Ppd::new(acdp) {
+            Ok(ppd) => ppd.positioning(&acdp.paired_evid),
+            Err(_) => evse_core::secc::AcdpPositioning { association: false, ..evse_core::secc::AcdpPositioning::UNGUIDED },
+        };
+        self.note(format!("positioning: the vehicle says immobilized {}, positioning support {}; the PPD sees {seen:?}", request.immobilized, request.positioning_support));
+        seen
     }
 
     fn authorization_services(&self) -> &[Authorization] {

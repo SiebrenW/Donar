@@ -193,7 +193,15 @@ fn run(args: &Args) -> io::Result<bool> {
     let mut emergency = false;
     let sessions = args.sessions.unwrap_or(settings.sessions);
     while sessions == 0 || served < sessions {
-        let seen = evse_sim::answer_discovery(&udp, response, 0)?;
+        // An ACDP charger answers the wireless SDP `Ongoing` until its PPD reads the EVID of the vehicle, and pairs with that one.
+        let mut session_config = settings.session.clone();
+        let seen = match session_config.acdp.as_mut() {
+            Some(acdp) => {
+                acdp.paired_evid = evse_sim::answer_wireless_discovery(&udp, response, acdp)?;
+                1
+            }
+            None => evse_sim::answer_discovery(&udp, response, 0)?,
+        };
         eprintln!("sdp: answered after {seen} request(s)");
         if let (true, Some(wire)) = (std::mem::take(&mut emergency), &wire) {
             wire.set_evse(control_pilot::Pwm::Duty(5))?;
@@ -208,9 +216,9 @@ fn run(args: &Args) -> io::Result<bool> {
                     evcc_linux::tls::check_peer_certificates(&stream, evcc_linux::certificates::Peer::Vehicle, settings.certificate_checks.into(), |v| eprintln!("certificates: {v}"))?;
                     eprintln!("tls: {} {}", stream.ssl().version_str(), stream.ssl().current_cipher().map_or("?", |c| c.name()));
                     match (&wire, &live) {
-                        (Some(wire), _) => evse_sim::serve_wired(&mut stream, settings.session.clone(), live.as_ref(), wire),
+                        (Some(wire), _) => evse_sim::serve_wired(&mut stream, session_config.clone(), live.as_ref(), wire),
                         (None, Some(live)) => evse_sim::serve_live(&mut stream, live),
-                        (None, None) => evse_sim::serve(&mut stream, settings.session.clone()),
+                        (None, None) => evse_sim::serve(&mut stream, session_config.clone()),
                     }
                 };
                 session().unwrap_or_else(|e| {
@@ -219,9 +227,9 @@ fn run(args: &Args) -> io::Result<bool> {
                 })
             }
             None => match (&wire, &live) {
-                (Some(wire), _) => evse_sim::serve_wired(&mut tcp.accept()?.0, settings.session.clone(), live.as_ref(), wire)?,
+                (Some(wire), _) => evse_sim::serve_wired(&mut tcp.accept()?.0, session_config.clone(), live.as_ref(), wire)?,
                 (None, Some(live)) => evse_sim::serve_live(&mut tcp.accept()?.0, live)?,
-                (None, None) => evse_sim::serve_one(&tcp, settings.session.clone())?,
+                (None, None) => evse_sim::serve_one(&tcp, session_config.clone())?,
             },
         };
         if let Some(wire) = &wire {

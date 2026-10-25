@@ -42,6 +42,10 @@ impl PayloadType {
     pub const ACDP_SYSTEM_STATUS: Self = Self(0x8103);
     pub const SDP_REQUEST: Self = Self(0x9000);
     pub const SDP_RESPONSE: Self = Self(0x9001);
+    /// SECC discovery request for wireless communication, ISO 15118-8 (Table 14).
+    pub const SDP_REQUEST_WIRELESS: Self = Self(0x9002);
+    /// SECC discovery response for wireless communication (Table 14).
+    pub const SDP_RESPONSE_WIRELESS: Self = Self(0x9003);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

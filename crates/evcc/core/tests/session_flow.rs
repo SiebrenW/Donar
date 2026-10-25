@@ -32,6 +32,13 @@ thread_local! {
 }
 
 thread_local! {
+    /// ACDP: the vehicle is positioned and immobilized.
+    static IMMOBILIZED: Cell<bool> = const { Cell::new(true) };
+    /// ACDP: the vehicle can be guided by the charger.
+    static POSITIONING_SUPPORT: Cell<bool> = const { Cell::new(false) };
+}
+
+thread_local! {
     /// The maximum charge current the vehicle can take right now (amperes); 0: as announced.
     static LOOP_CURRENT: Cell<i16> = const { Cell::new(0) };
 }
@@ -88,6 +95,15 @@ impl Ev for TestEv {
     }
     fn dc_connector(&self) -> DcConnector {
         DcConnector::Core
+    }
+    fn evid(&self) -> &str {
+        "BUS42"
+    }
+    fn acdp_positioning_support(&self) -> bool {
+        POSITIONING_SUPPORT.with(Cell::get)
+    }
+    fn immobilized(&self) -> bool {
+        IMMOBILIZED.with(Cell::get)
     }
     fn now_micros(&self) -> u64 {
         let t = self.0.get();
@@ -1576,4 +1592,134 @@ fn frames_that_arrive_together_are_handled_one_per_call() {
     assert!(step.send.is_some(), "the AuthorizationSetupReq answers the second");
     assert_eq!(s.state(), State::AwaitAuthorizationSetupRes);
     assert!(!s.frame_pending());
+}
+
+// ---------------------------------------------------------------- ACDP
+
+fn acdp_session<'a>(rig: &'a mut Rig, config: Config) -> Sess<'a> {
+    let Rig { rx, tx, arena } = rig;
+    Session::new(Config { poll_interval_ms: 0, allow_unsecured: true, ..config }, TestEv::new(), Capture::default(), Buffers { rx, tx, arena })
+}
+
+fn positioning_res(code: ResponseCode, processing: Processing, in_charge_position: bool) -> std::vec::Vec<u8> {
+    framed(PayloadType::ACDP_MAINSTREAM, |out| {
+        let msg = iso15118_20::acdp::AcdpVehiclePositioningRes {
+            header: hdr(),
+            response_code: code,
+            evse_processing: processing,
+            evse_positioning_support: true,
+            ev_relative_x_deviation: -120,
+            ev_relative_y_deviation: 35,
+            contact_window_xc: 150,
+            contact_window_yc: 100,
+            ev_in_charge_position: in_charge_position,
+        };
+        msg.encode(out).unwrap()
+    })
+}
+
+/// The ACDP request the step sent: (immobilized, positioning support).
+fn sent_positioning(s: &Sess<'_>, step: &Step) -> (bool, bool) {
+    let (pt, payload) = sent(s, step);
+    assert_eq!(pt, PayloadType::ACDP_MAINSTREAM);
+    let mut mem = [0u8; 1024];
+    let arena = Arena::new(&mut mem);
+    match iso15118_20::acdp::decode(&payload, &arena).unwrap() {
+        iso15118_20::acdp::Message::AcdpVehiclePositioningReq(r) => (r.ev_mobility_status, r.ev_positioning_support),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The handshake and the setup of an ACDP session; the first positioning request is out.
+fn acdp_up_to_positioning<'a>(rig: &'a mut Rig, config: Config) -> (Sess<'a>, Step) {
+    let mut s = acdp_session(rig, config);
+    s.handle(Event::Start { secured: false });
+    deliver(&mut s, &sap_res(SapCode::OkSuccessfulNegotiation, Some(3)));
+    let step = deliver(&mut s, &setup_res(ResponseCode::OkNewSessionEstablished, SID));
+    (s, step)
+}
+
+#[test]
+fn an_acdp_session_is_positioned_before_it_is_authorized() {
+    IMMOBILIZED.with(|c| c.set(false));
+    POSITIONING_SUPPORT.with(|c| c.set(true));
+    let mut rig = Rig::new();
+    let (mut s, step) = acdp_up_to_positioning(&mut rig, Config::ACDP_20);
+    assert_eq!(s.state(), State::AwaitVehiclePositioningRes);
+    assert_eq!(step.notice, Some(Notice::SessionSetUp { session_id: SID }));
+    assert_eq!(sent_positioning(&s, &step), (false, true), "mobilized, and it wants the charger's help");
+
+    // Ongoing: the host is told where the vehicle is and the request goes out again, still mobilized.
+    let step = deliver(&mut s, &positioning_res(ResponseCode::Ok, Processing::Ongoing, false));
+    let Some(Notice::AcdpPosition(position)) = step.notice else { panic!("{step:?}") };
+    assert_eq!((position.x_deviation_mm, position.y_deviation_mm, position.window_x_mm, position.window_y_mm), (-120, 35, 150, 100));
+    assert!(position.evse_positioning_support && !position.in_charge_position);
+    assert_eq!(sent_positioning(&s, &step), (false, true));
+    assert_eq!(s.state(), State::AwaitVehiclePositioningRes);
+
+    // The host immobilizes the vehicle: the next request says so (V2G20-4048).
+    IMMOBILIZED.with(|c| c.set(true));
+    let step = deliver(&mut s, &positioning_res(ResponseCode::Ok, Processing::Ongoing, true));
+    assert_eq!(sent_positioning(&s, &step), (true, true));
+
+    // Finished: the authorization starts (V2G20-4049).
+    let step = deliver(&mut s, &positioning_res(ResponseCode::Ok, Processing::Finished, true));
+    assert!(matches!(step.notice, Some(Notice::AcdpPosition(p)) if p.in_charge_position));
+    sent_common(&s, &step, |m| assert!(matches!(m, common::Message::AuthorizationSetupReq(_))));
+    assert_eq!(s.state(), State::AwaitAuthorizationSetupRes);
+}
+
+#[test]
+fn a_vehicle_that_is_already_immobilized_asks_once() {
+    IMMOBILIZED.with(|c| c.set(true));
+    POSITIONING_SUPPORT.with(|c| c.set(false));
+    let mut rig = Rig::new();
+    let (mut s, step) = acdp_up_to_positioning(&mut rig, Config::ACDP_20);
+    assert_eq!(sent_positioning(&s, &step), (true, false), "case 2: no positioning support of its own to ask for");
+    let step = deliver(&mut s, &positioning_res(ResponseCode::Ok, Processing::Finished, true));
+    sent_common(&s, &step, |m| assert!(matches!(m, common::Message::AuthorizationSetupReq(_))));
+}
+
+#[test]
+fn finished_to_a_mobilized_request_is_out_of_sequence() {
+    IMMOBILIZED.with(|c| c.set(false));
+    let mut rig = Rig::new();
+    let (mut s, _) = acdp_up_to_positioning(&mut rig, Config::ACDP_20);
+    let step = deliver(&mut s, &positioning_res(ResponseCode::Ok, Processing::Finished, true));
+    assert_eq!(step.end, Some(EndReason::UnexpectedMessage));
+}
+
+#[test]
+fn a_lost_association_ends_with_a_session_stop() {
+    IMMOBILIZED.with(|c| c.set(false));
+    let mut rig = Rig::new();
+    let (mut s, _) = acdp_up_to_positioning(&mut rig, Config::ACDP_20);
+    // V2G20-4031: the failing answer is followed by SessionStopReq; the end carries the reason.
+    let step = deliver(&mut s, &positioning_res(ResponseCode::FailedAssociationError, Processing::Ongoing, false));
+    sent_common(&s, &step, |m| assert!(matches!(m, common::Message::SessionStopReq(_))));
+    assert_eq!(step.end, None);
+    let res = framed(PayloadType::MAINSTREAM, |out| common::SessionStopRes { header: hdr(), response_code: ResponseCode::Ok }.encode(out).unwrap());
+    let step = deliver(&mut s, &res);
+    assert_eq!(step.end, Some(EndReason::Rejected(ResponseCode::FailedAssociationError)));
+}
+
+#[test]
+fn positioning_only_stops_after_the_positioning() {
+    IMMOBILIZED.with(|c| c.set(true));
+    let mut rig = Rig::new();
+    let (mut s, _) = acdp_up_to_positioning(&mut rig, Config::ACDP_20.positioning_only());
+    let step = deliver(&mut s, &positioning_res(ResponseCode::Ok, Processing::Finished, true));
+    sent_common(&s, &step, |m| assert!(matches!(m, common::Message::SessionStopReq(_))));
+    let res = framed(PayloadType::MAINSTREAM, |out| common::SessionStopRes { header: hdr(), response_code: ResponseCode::Ok }.encode(out).unwrap());
+    assert_eq!(deliver(&mut s, &res).end, Some(EndReason::Completed));
+}
+
+#[test]
+fn a_dc_session_is_not_positioned() {
+    let mut rig = Rig::new();
+    let mut s = session(&mut rig, Capture::default());
+    s.handle(Event::Start { secured: false });
+    deliver(&mut s, &sap_res(SapCode::OkSuccessfulNegotiation, Some(1)));
+    let step = deliver(&mut s, &setup_res(ResponseCode::OkNewSessionEstablished, SID));
+    sent_common(&s, &step, |m| assert!(matches!(m, common::Message::AuthorizationSetupReq(_))));
 }

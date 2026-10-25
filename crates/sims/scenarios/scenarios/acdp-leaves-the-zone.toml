@@ -1,0 +1,29 @@
+name = "acdp-leaves-the-zone"
+description = "ACDP, loss of association (8.3.4.7.5.1, V2G20-4063 to 4066): the bus is paired and approaching, then drives off to another pantograph (it leaves the PPD's detection zone before it has braked). The charger answers the next positioning request FAILED_AssociationError and closes; the vehicle sends SessionStopReq and ends with that reason, after which a real vehicle starts the discovery again."
+timeout_s = 40
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session.acdp]
+ppd = "optical"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+poll_interval_ms = 50
+[evcc.settings.acdp]
+positioning_only = true
+brake_ms = 400
+# Into the zone (3 m), a little way towards the pantograph, then away again and out of the zone.
+approach = [
+  { t_ms = 0, x_mm = -8000, y_mm = 100 },
+  { t_ms = 700, x_mm = -2000, y_mm = 100 },
+  { t_ms = 1000, x_mm = -1800, y_mm = 100 },
+  { t_ms = 1600, x_mm = -9000, y_mm = 100 },
+]
+
+[expect]
+evcc_exit = 1
+secc_exit = 1
+evcc_log = ["FailedAssociationError", "session: Ended(Rejected(FailedAssociationError))"]
+secc_log = ["sdp: the PPD reads BUS42: paired", "positioning:"]

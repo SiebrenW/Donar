@@ -20,6 +20,7 @@ Three kinds of entry: the **text contradicts itself** (or a standard it refers t
 | V2G20-1437 against Table 204 | Names the services `AC_ACDP` and `AC_ACD_BPT`; Table 204 has only `DC_ACDP` (4) and `DC_ACDP_BPT` (7), and there are no AC messages for ACDP. | Only the DC services exist. |
 | V2G20-4061 | Names an `ACDP_ConnectDeviceRes`, which is not a message (`ACDP_ConnectRes` is meant). | `ACDP_ConnectRes`. |
 | V2G20-4013 to 4019 against `EVTechnicalStatus` | The text says `EV_Status_ReadyToCharge`; the element is `EVReadyToCharge`. | The schema's name. |
+| V2G20-4063, 4066 against 8.6.4.6.2.2 | The association of the vehicle with the charger is supervised by the PPD "until the ACDP is activated successfully" (the text), but V2G20-4066 stops the supervision when the positioning has finished with `Finished`. | The requirement: the supervision ends with the `Finished` answer; the PPD of the simulator is asked during the positioning only. |
 | Annex C.3.2 | The SECCID example does not come out with the check digit the algorithm gives (4, not 2); the EMAID and EVCCID examples do. | The algorithm. |
 
 ### Conflicts with a referenced standard, or cannot be satisfied
@@ -45,6 +46,8 @@ Not covered at all: cross certificates (V2G20-1002, 1005, 1853), the profiles of
 | BPT service parameters (Table 207) | Whether `BPTChannel` and `GeneratorMode` are mandatory in a DC_BPT parameter set. The Python SECC offers none. | The vehicle accepts a set without them (`Config::optional_parameters`). Unchecked. |
 | `EVMaximumV2XEnergyRequest`, `EVMinimumV2XEnergyRequest` (V2G20-2681, 2682, 2124, 2125) | Sign conventions are given in prose only ("a negative value indicates that PresentSOC is above the V2X range"). | Both values or none, clamped into minimum energy ≤ minimum V2X ≤ maximum V2X ≤ maximum energy. |
 | Discharge in Dynamic mode | The convention for the target energy and power when discharging (a negative `EVTargetEnergyRequest`, a negative target active power). | Negative means discharge. Open item in PLAN. |
+| Wireless SDP (V2G20-4003, Tables 22 to 27) | The coding of the EVID and the EVSEID: Table 25 gives the character set and the maximum lengths (20, 37), not what fills the rest of the field. V2G20-4003 sets "Coupling Type (Bit 0/1)" to 1, while Table 23 defines the coupling type as an enumeration (0x01 is EN 50696 Annex A.3). | Zero padded; the coupling type is the value 0x01 for ACDP (a setting of the simulated charger). |
+| `ACDP_VehiclePositioningRes` (8.3.4.7.5.1, Table 82) | What the deviations, the windows and `EVSEPositioningSupport` contain when the charger cannot position (cases 2 and 3: "do not care"), and whether `Finished` may answer a request that says the vehicle is still mobilized. | The basic device answers `EVSEPositioningSupport` false with zeros and `EVInChargePosition` true while it reads the marker; `Finished` answers the immobilized request only, the vehicle ends the session with `UnexpectedMessage` on any other. |
 | `ScheduleExchangeRes` `Ongoing` | No ScheduleExchange-specific rule for the repeat timing. | V2G_EVCC_Ongoing_Timeout applies, as for other `Ongoing` answers. |
 
 ## ISO 15118-2 and DIN SPEC 70121

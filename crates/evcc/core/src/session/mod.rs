@@ -23,6 +23,7 @@ use exi::{Arena, DecodeError};
 use iso15118_20::common::{self, SelectedService};
 use iso15118_20::common_types::{MessageHeader, ResponseCode};
 use iso15118_20::ac;
+use iso15118_20::acdp;
 use iso15118_20::dc;
 use v2gtp::{FrameError, HEADER_LEN, Parse, PayloadType, parse, write_header};
 
@@ -37,13 +38,14 @@ mod metering;
 mod parameters;
 mod renegotiation;
 mod schedule;
+mod positioning;
 mod setup;
 mod shutdown;
 mod tariff;
 mod types;
 
-pub use config::{Config, SERVICE_ID_AC, SERVICE_ID_AC_BPT, SERVICE_ID_DC, SERVICE_ID_DC_BPT};
-pub use types::{AcChargeLoopStatus, Buffers, ChargeLoopStatus, MeterReading, ControlPilot, EndReason, Event, Notice, Resume, State, Step};
+pub use config::{Config, SERVICE_ID_AC, SERVICE_ID_AC_BPT, SERVICE_ID_DC, SERVICE_ID_DC_ACDP, SERVICE_ID_DC_ACDP_BPT, SERVICE_ID_DC_BPT};
+pub use types::{AcChargeLoopStatus, AcdpPosition, Buffers, ChargeLoopStatus, MeterReading, ControlPilot, EndReason, Event, Notice, Resume, State, Step};
 
 pub struct Session<'a, E: Ev, L: LogSink> {
     rx: &'a mut [u8],
@@ -72,6 +74,8 @@ struct Machine<E, L> {
     ongoing_armed: bool,
     /// A poll pause is running; when it ends the request of the current state is repeated.
     poll_pending: bool,
+    /// ACDP: the last positioning request said the vehicle is immobilized.
+    positioning_immobilized: bool,
     /// The last `DC_PreChargeReq` carried `EVProcessing = Finished`.
     precharge_finishing: bool,
     /// The last `DC_WeldingDetectionReq` carried `EVProcessing = Finished`.
@@ -157,6 +161,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 session_id: [0; 8],
                 ongoing_armed: false,
                 poll_pending: false,
+                positioning_immobilized: false,
                 precharge_finishing: false,
                 welding_finishing: false,
                 stop_requested: false,
@@ -422,6 +427,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             state,
             State::AwaitSupportedAppProtocolRes
                 | State::AwaitSessionSetupRes
+                | State::AwaitVehiclePositioningRes
                 | State::AwaitAuthorizationSetupRes
                 | State::AwaitAuthorizationRes
                 | State::AwaitServiceDiscoveryRes
@@ -628,6 +634,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         let step = match self.state {
             State::AwaitAuthorizationRes => self.send_authorization_req(State::AwaitAuthorizationRes, tx),
             State::AwaitScheduleExchangeRes => self.send_schedule_exchange_req(tx),
+            // The positioning takes as long as the driver does: no bound on the repeats, as with the charge loop.
+            State::AwaitVehiclePositioningRes => return self.send_vehicle_positioning_req(tx),
             State::AwaitCableCheckRes => self.send_cable_check_req(tx),
             State::AwaitPreChargeRes => self.send_precharge_req(false, tx),
             // The charge loop has its own cycle and no `Ongoing` bound.
@@ -698,6 +706,23 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
     }
 
+    /// The same for ACDP mainstream messages.
+    fn acdp_mainstream(
+        &mut self,
+        payload_type: PayloadType,
+        payload: &[u8],
+        arena: &Arena<'_>,
+        f: impl FnOnce(&mut Self, acdp::Message<'_>) -> Option<Step>,
+    ) -> Step {
+        if payload_type != PayloadType::ACDP_MAINSTREAM {
+            return self.ignore(payload_type);
+        }
+        match acdp::decode(payload, arena) {
+            Ok(msg) => f(self, msg).unwrap_or_else(|| self.ignore(payload_type)),
+            Err(e) => self.malformed(e),
+        }
+    }
+
     /// The same for DC mainstream messages.
     fn dc_mainstream(
         &mut self,
@@ -754,6 +779,10 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             }
             State::AwaitSessionSetupRes => self.mainstream(payload_type, payload, arena, |m, msg| match msg {
                 M::SessionSetupRes(res) => Some(m.on_session_setup_res(res, tx)),
+                _ => None,
+            }),
+            State::AwaitVehiclePositioningRes => self.acdp_mainstream(payload_type, payload, arena, |m, msg| match msg {
+                acdp::Message::AcdpVehiclePositioningRes(res) => Some(m.on_vehicle_positioning_res(res, tx)),
                 _ => None,
             }),
             State::AwaitAuthorizationSetupRes => self.mainstream(payload_type, payload, arena, |m, msg| match msg {

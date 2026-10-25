@@ -6,6 +6,7 @@ use app_protocol::{self, ResponseCode as SapCode, SupportedAppProtocolRes};
 use exi::{Arena, EncodeError};
 use iso15118_20::ResponseMessage as M;
 use iso15118_20::ac;
+use iso15118_20::acdp;
 use iso15118_20::common::{
     self, AReqAuthorizationModeChoice, AsResAuthorizationModeChoice, Authorization, AuthorizationRes, AuthorizationSetupRes, ChargeProgress, ChargingSession,
     EimAsResAuthorizationMode, EvpptControlModeChoice, PnCAsResAuthorizationMode, SelectedService, ServiceDetailRes, ServiceDiscoveryRes, ServiceList,
@@ -15,7 +16,7 @@ use iso15118_20::common_types::{MessageHeader, Processing, RationalNumber, Respo
 use iso15118_20::dc;
 use v2gtp::{FrameError, HEADER_LEN, Parse, PayloadType, parse, write_header};
 
-use crate::secc::{Action, Authorize, Ended, Progress, Request, Secc, Signed};
+use crate::secc::{AcdpPositioningRequest, Action, Authorize, Ended, Progress, Request, Secc, Signed};
 use crate::{Event, State, Step, Timer, TimerCmd};
 
 /// Memory the host provides; nothing is allocated here.
@@ -77,6 +78,8 @@ struct Machine<S> {
     secured: bool,
     /// The vehicle offered the AC schema.
     ac_namespace: bool,
+    /// The vehicle offered the ACDP schema: it is positioned after the session setup.
+    acdp_namespace: bool,
     session_id: [u8; 8],
     challenge: [u8; 16],
     service: u16,
@@ -107,6 +110,7 @@ impl<S: Secc> Session<S> {
                 pilot: control_pilot::EvseWatch::new(), last_guard: control_pilot::Guard::disarmed(control_pilot::Side::Charger),
                 secured: false,
                 ac_namespace: false,
+                acdp_namespace: false,
                 session_id: [0; 8],
                 challenge: [0; 16],
                 service: 0,
@@ -312,7 +316,7 @@ impl<S: Secc> Machine<S> {
         // V2G20-800: a payload type that is not supported or a payload that is empty is a header with wrong data: ignored.
         let supported = matches!(
             payload_type,
-            PayloadType::SAP | PayloadType::MAINSTREAM | PayloadType::METERING_CONFIRMATION | PayloadType::DC_MAINSTREAM | PayloadType::AC_MAINSTREAM | PayloadType::SCHEDULE_RENEGOTIATION
+            PayloadType::SAP | PayloadType::MAINSTREAM | PayloadType::METERING_CONFIRMATION | PayloadType::DC_MAINSTREAM | PayloadType::AC_MAINSTREAM | PayloadType::ACDP_MAINSTREAM | PayloadType::SCHEDULE_RENEGOTIATION
         );
         if !supported || payload.is_empty() {
             self.secc.note(format_args!("ignoring a frame with payload type {:#06x} and {} bytes (V2G20-800)", payload_type.0, payload.len()));
@@ -325,6 +329,7 @@ impl<S: Secc> Machine<S> {
             PayloadType::MAINSTREAM | PayloadType::METERING_CONFIRMATION => common::decode(payload, arena).ok().map(Request::Common),
             PayloadType::DC_MAINSTREAM => dc::decode(payload, arena).ok().map(Request::Dc),
             PayloadType::AC_MAINSTREAM => ac::decode(payload, arena).ok().map(Request::Ac),
+            PayloadType::ACDP_MAINSTREAM => acdp::decode(payload, arena).ok().map(Request::Acdp),
             PayloadType::SCHEDULE_RENEGOTIATION => ac::decode(payload, arena)
                 .ok()
                 .map(Request::Ac)
@@ -364,6 +369,7 @@ impl<S: Secc> Machine<S> {
         match pick {
             Some(p) => {
                 self.ac_namespace = p.protocol_namespace.ends_with(":AC");
+                self.acdp_namespace = p.protocol_namespace.ends_with(":ACDP");
                 self.secc.note(format_args!("protocol {}, schema id {}", p.protocol_namespace, p.schema_id));
                 self.goto(State::AwaitSessionSetupReq);
                 let res = SupportedAppProtocolRes { response_code: SapCode::OkSuccessfulNegotiation, schema_id: Some(p.schema_id) };
@@ -454,6 +460,21 @@ impl<S: Secc> Machine<S> {
                 common::Message::MeteringConfirmationReq(_) => frame(out, PayloadType::METERING_CONFIRMATION, |o| common::MeteringConfirmationRes { header, response_code: code }.encode(o)),
                 _ => return None,
             },
+            Request::Acdp(acdp::Message::AcdpVehiclePositioningReq(_)) => frame(out, PayloadType::ACDP_MAINSTREAM, |o| {
+                acdp::AcdpVehiclePositioningRes {
+                    header,
+                    response_code: code,
+                    evse_processing: Processing::Finished,
+                    evse_positioning_support: false,
+                    ev_relative_x_deviation: 0,
+                    ev_relative_y_deviation: 0,
+                    contact_window_xc: 0,
+                    contact_window_yc: 0,
+                    ev_in_charge_position: false,
+                }
+                .encode(o)
+            }),
+            Request::Acdp(_) => return None,
             Request::Dc(m) => {
                 let dcm = PayloadType::DC_MAINSTREAM;
                 match m {
@@ -660,7 +681,14 @@ impl<S: Secc> Machine<S> {
                 let ok = is_ok(code);
                 if ok {
                     // V2G20-1032: after a resumed session the next request is the charge parameter discovery.
-                    self.goto(if resumed { State::AwaitChargeParameterDiscoveryReq } else { State::AwaitAuthorizationSetupReq });
+                    // V2G20-4067: with ACDP the vehicle is positioned first.
+                    self.goto(if resumed {
+                        State::AwaitChargeParameterDiscoveryReq
+                    } else if self.acdp_namespace {
+                        State::AwaitVehiclePositioningReq
+                    } else {
+                        State::AwaitAuthorizationSetupReq
+                    });
                 }
                 let res = SessionSetupRes { header, response_code: code, evseid: self.secc.evse_id() };
                 let r = reply(frame(out, main, |o| res.encode(o)), !ok);
@@ -668,6 +696,38 @@ impl<S: Secc> Machine<S> {
                     self.goto(State::Closed);
                 }
                 r
+            }
+            (State::AwaitVehiclePositioningReq, Request::Acdp(acdp::Message::AcdpVehiclePositioningReq(req))) => {
+                if self.unknown_session(req.header.session_id) {
+                    return self.out_of_turn_code(&Request::Acdp(acdp::Message::AcdpVehiclePositioningReq(req)), ResponseCode::FailedUnknownSession, out);
+                }
+                let seen = self.secc.acdp_positioning(AcdpPositioningRequest { immobilized: req.ev_mobility_status, positioning_support: req.ev_positioning_support });
+                // The association of the vehicle with this charger is supervised until the pantograph is activated; losing it
+                // ends the session, and the vehicle starts the discovery again (8.3.4.7.5.1, V2G20-4066).
+                let (code, processing) = match (seen.association, req.ev_mobility_status) {
+                    (false, _) => (ResponseCode::FailedAssociationError, Processing::Ongoing),
+                    (true, true) => (ResponseCode::Ok, Processing::Finished),
+                    (true, false) => (ResponseCode::Ok, Processing::Ongoing),
+                };
+                let header = self.header();
+                let res = acdp::AcdpVehiclePositioningRes {
+                    header,
+                    response_code: code,
+                    evse_processing: processing,
+                    evse_positioning_support: seen.positioning_support,
+                    ev_relative_x_deviation: seen.x_deviation_mm,
+                    ev_relative_y_deviation: seen.y_deviation_mm,
+                    contact_window_xc: seen.window_x_mm,
+                    contact_window_yc: seen.window_y_mm,
+                    ev_in_charge_position: seen.in_charge_position,
+                };
+                if !is_ok(code) {
+                    return self.main_reply(out, PayloadType::ACDP_MAINSTREAM, |o| res.encode(o), true);
+                }
+                if processing == Processing::Finished {
+                    self.goto(State::AwaitAuthorizationSetupReq);
+                }
+                reply(frame(out, PayloadType::ACDP_MAINSTREAM, |o| res.encode(o)), false)
             }
             (State::AwaitAuthorizationSetupReq, Request::Common(C::AuthorizationSetupReq(req))) => {
                 if self.unknown_session(req.header.session_id) {

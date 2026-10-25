@@ -11,6 +11,7 @@ pub mod certificates;
 pub mod ocsp;
 #[cfg(feature = "tls")]
 pub mod pnc;
+pub mod acdp;
 pub mod pilot;
 pub mod sdp;
 #[cfg(feature = "tls")]

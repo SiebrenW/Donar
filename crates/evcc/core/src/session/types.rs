@@ -22,6 +22,8 @@ pub enum State {
     Idle,
     AwaitSupportedAppProtocolRes,
     AwaitSessionSetupRes,
+    /// ACDP: `ACDP_VehiclePositioningReq` is out; the charger answers `Ongoing` while the vehicle is guided into position.
+    AwaitVehiclePositioningRes,
     AwaitAuthorizationSetupRes,
     AwaitAuthorizationRes,
     AwaitServiceDiscoveryRes,
@@ -215,6 +217,10 @@ pub enum ControlPilot {
 pub enum Notice {
     /// The EVSE accepted the session; `session_id` is the id it assigned.
     SessionSetUp { session_id: [u8; 8] },
+    /// ACDP: the charger's answer to a positioning request: where the pantograph's pairing and positioning device sees
+    /// the vehicle. Guide the driver (or the parking system) with it; the vehicle is positioned when the host says so
+    /// ([`crate::ev::Ev::immobilized`]), not when this says it is in position.
+    AcdpPosition(AcdpPosition),
     /// Authorization finished successfully.
     Authorized,
     /// The EVSE accepted the service selection.
@@ -259,6 +265,21 @@ pub enum Notice {
     /// DIN SPEC 70121: change the control pilot to this state, then send
     /// [`Event::ControlPilotChanged`].
     ControlPilot(ControlPilot),
+}
+
+/// The charger's answer to `ACDP_VehiclePositioningReq` (Table 82): the deviation of the vehicle's contact interface from the
+/// pantograph's, in millimetres (x against the driving direction, y lateral), and half of the contact window of each axis.
+/// The deviations and the windows mean something only when the charger supports positioning. The contact condition is that
+/// both deviations are within their windows (Annex D).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcdpPosition {
+    pub evse_positioning_support: bool,
+    pub x_deviation_mm: i16,
+    pub y_deviation_mm: i16,
+    pub window_x_mm: i16,
+    pub window_y_mm: i16,
+    /// The vehicle is within the tolerances of the pantograph (`EVInChargePosition`); the basic RFID PPD reports only this.
+    pub in_charge_position: bool,
 }
 
 /// What the charger's meter said in a charge loop answer (`MeterInfo`, V2G20-902: the energy of the

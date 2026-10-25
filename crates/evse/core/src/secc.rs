@@ -12,6 +12,7 @@
 
 use iso15118_20::ResponseMessage;
 use iso15118_20::ac;
+use iso15118_20::acdp;
 use iso15118_20::common::{
     self, Authorization, ChargingSession, MeteringConfirmationReq, ParameterSet, PnCAReqAuthorizationMode, PowerDeliveryReq, SelectedService,
     Service, ServiceSelectionReq,
@@ -26,6 +27,37 @@ pub enum Progress<T> {
     /// Not yet: the machine answers `Ongoing` and the vehicle asks again.
     Ongoing,
     Done(T),
+}
+
+/// What an `ACDP_VehiclePositioningReq` says (Table 81).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcdpPositioningRequest {
+    /// `EVMobilityStatus`: the vehicle is positioned and immobilized and asks for the pantograph.
+    pub immobilized: bool,
+    /// `EVPositioningSupport`: the vehicle wants to be guided by the charger.
+    pub positioning_support: bool,
+}
+
+/// What the charger's pairing and positioning device (PPD) sees of the vehicle, for the answer to
+/// `ACDP_VehiclePositioningReq` (Table 82). The deviations and the windows are in millimetres and
+/// mean something only with `positioning_support` (the basic RFID device only knows `in_charge_position`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcdpPositioning {
+    /// The EVID the vehicle was paired by is still the one the device detects. False: the vehicle left the zone or another
+    /// one took its place, the answer is `FAILED_AssociationError` and the session ends (8.3.4.7.5.1, 8.6.4.6.2.2).
+    pub association: bool,
+    pub positioning_support: bool,
+    pub x_deviation_mm: i16,
+    pub y_deviation_mm: i16,
+    pub window_x_mm: i16,
+    pub window_y_mm: i16,
+    pub in_charge_position: bool,
+}
+
+impl AcdpPositioning {
+    /// A charger without a positioning device that can tell: associated, no guidance, in position.
+    pub const UNGUIDED: AcdpPositioning =
+        AcdpPositioning { association: true, positioning_support: false, x_deviation_mm: 0, y_deviation_mm: 0, window_x_mm: 0, window_y_mm: 0, in_charge_position: true };
 }
 
 /// What the machine does with a request before looking at it (for faults and tests).
@@ -148,6 +180,15 @@ pub trait Secc {
     /// Agree to a `SessionStopReq(ServiceRenegotiation)` (V2G20-1643, V2G20-1955); by default when it was offered.
     fn accept_service_renegotiation(&mut self) -> bool {
         self.service_renegotiation_supported()
+    }
+
+    // ---- ACDP
+
+    /// What the pairing and positioning device sees of the vehicle now. The machine answers `Ongoing` to a
+    /// request that says the vehicle is still mobilized and `Finished` to one that says it is immobilized (V2G20-4068, 4069);
+    /// the answer decides only what goes with it, and whether the association holds ([`AcdpPositioning::association`]).
+    fn acdp_positioning(&mut self, _request: AcdpPositioningRequest) -> AcdpPositioning {
+        AcdpPositioning::UNGUIDED
     }
 
     // ---- the service flow
@@ -274,4 +315,5 @@ pub enum Request<'a> {
     Common(common::Message<'a>),
     Dc(dc::Message<'a>),
     Ac(ac::Message<'a>),
+    Acdp(acdp::Message<'a>),
 }

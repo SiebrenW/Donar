@@ -4,7 +4,7 @@
 use evcc_core::ev::{DcConnector, DcLimits, Ev, ScheduleRequest};
 use evcc_core::log::NoLog;
 use evcc_core::session::{Buffers as EvBuffers, Config, EndReason, Event as EvEvent, Notice, Session as EvSession};
-use evse_core::secc::{AcLoopAnswer, DcLoopAnswer, Progress, Secc};
+use evse_core::secc::{AcLoopAnswer, AcdpPositioning, AcdpPositioningRequest, DcLoopAnswer, Progress, Secc};
 use evse_core::{Buffers, Event, Session, State};
 use iso15118_20::ac;
 use iso15118_20::common::{Authorization, Parameter, ParameterChoice, ParameterSet, PowerSchedule, PowerScheduleEntry, PowerScheduleEntryList, ScheduleTuple, ChargingSchedule, Service};
@@ -34,6 +34,17 @@ impl Ev for TestEv {
     }
     fn dc_connector(&self) -> DcConnector {
         DcConnector::Core
+    }
+    fn acdp_positioning_support(&self) -> bool {
+        true
+    }
+    fn immobilized(&self) -> bool {
+        // The driver needs a few rounds to park.
+        IMMOBILIZED_AFTER.with(|c| {
+            let left = c.get();
+            c.set(left.saturating_sub(1));
+            left <= 1
+        })
     }
     fn dc_limits(&self) -> DcLimits {
         DcLimits {
@@ -127,11 +138,37 @@ struct TestCharger {
     /// The preferred BPT range (maximum, minimum) of the schedule exchange and of the last charge loop request.
     v2x_schedule: Option<(RationalNumber, RationalNumber)>,
     v2x_loop: Option<(RationalNumber, RationalNumber)>,
+    /// ACDP: the positioning requests the charger saw, the charger's PPD losing the vehicle at the n-th, a charger without ACDP.
+    positioning: Vec<AcdpPositioningRequest>,
+    lose_association_at: Option<usize>,
+    no_acdp: bool,
+}
+
+thread_local! {
+    /// ACDP: the vehicle is immobilized when `immobilized()` is called this many times.
+    static IMMOBILIZED_AFTER: std::cell::Cell<u32> = const { std::cell::Cell::new(1) };
 }
 
 impl Secc for TestCharger {
     fn evse_id(&self) -> &str {
         "DE*TST*E1"
+    }
+    fn supports_protocol(&self, namespace: &str, major: u32) -> bool {
+        major == 1 && (matches!(namespace, "urn:iso:std:iso:15118:-20:DC" | "urn:iso:std:iso:15118:-20:AC") || (!self.no_acdp && namespace == "urn:iso:std:iso:15118:-20:ACDP"))
+    }
+    fn acdp_positioning(&mut self, request: AcdpPositioningRequest) -> AcdpPositioning {
+        self.positioning.push(request);
+        let n = self.positioning.len();
+        AcdpPositioning {
+            association: self.lose_association_at != Some(n),
+            positioning_support: request.positioning_support,
+            // The bus creeps towards the pantograph.
+            x_deviation_mm: 400 - 100 * n as i16,
+            y_deviation_mm: 30,
+            window_x_mm: 150,
+            window_y_mm: 100,
+            in_charge_position: n >= 3,
+        }
     }
     fn now_micros(&self) -> u64 {
         1_700_000_000_000_000
@@ -899,4 +936,49 @@ fn a_frame_with_a_wrong_v2gtp_header_is_ignored() {
         assert!(!step.close, "case {i}");
         assert_eq!(charger.state(), before, "case {i}");
     }
+}
+
+// ---------------------------------------------------------------- ACDP
+
+fn acdp_ev() -> TestEv {
+    TestEv { clock: 1.into(), offer: false, v2x: false }
+}
+
+#[test]
+fn an_acdp_vehicle_is_positioned_by_the_charger_before_anything_else() {
+    // Three rounds until the driver has parked and braked; the session ends after the positioning.
+    IMMOBILIZED_AFTER.with(|c| c.set(3));
+    let (end, charger, state) = run(config(Config::ACDP_20.positioning_only()), acdp_ev(), 0);
+    assert_eq!(end, EndReason::Completed);
+    assert_eq!(state, State::Stopped);
+    let seen: Vec<(bool, bool)> = charger.positioning.iter().map(|r| (r.immobilized, r.positioning_support)).collect();
+    assert_eq!(seen, [(false, true), (false, true), (true, true)], "mobilized twice, then immobilized");
+}
+
+#[test]
+fn an_acdp_session_goes_on_with_the_authorization_after_the_positioning() {
+    IMMOBILIZED_AFTER.with(|c| c.set(1));
+    // The charger of this test offers the DC service only (the ACDP service is offered by the step that follows the
+    // positioning), so the session runs through the authorization and ends at the service selection.
+    let (end, charger, _) = run(config(Config::ACDP_20), acdp_ev(), 0);
+    assert_eq!(charger.positioning.len(), 1);
+    assert_eq!(end, EndReason::NoCompatibleService);
+}
+
+#[test]
+fn a_vehicle_the_ppd_loses_is_answered_with_an_association_error() {
+    IMMOBILIZED_AFTER.with(|c| c.set(5));
+    let secc = TestCharger { lose_association_at: Some(2), ..TestCharger::default() };
+    let (end, charger, state) = run_with(secc, config(Config::ACDP_20), acdp_ev(), 0);
+    assert_eq!(end, EndReason::Rejected(ResponseCode::FailedAssociationError));
+    assert_eq!(state, State::Closed);
+    assert_eq!(charger.positioning.len(), 2);
+}
+
+#[test]
+fn a_charger_without_acdp_refuses_the_protocol() {
+    let secc = TestCharger { no_acdp: true, ..TestCharger::default() };
+    let (end, charger, _) = run_with(secc, config(Config::ACDP_20), acdp_ev(), 0);
+    assert_eq!(end, EndReason::NoCommonProtocol);
+    assert!(charger.positioning.is_empty());
 }

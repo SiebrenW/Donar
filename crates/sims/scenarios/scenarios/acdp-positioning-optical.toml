@@ -1,0 +1,21 @@
+name = "acdp-positioning-optical"
+description = "ACDP, the positioning with an optical PPD that measures the contact interface (case 1 of 8.3.4.7.5.1: both sides support positioning): every answer carries the deviations and the contact windows while the bus creeps up, and the vehicle brakes when the charger says it is within the windows (EVInChargePosition)."
+timeout_s = 40
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session.acdp]
+ppd = "optical"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+poll_interval_ms = 50
+[evcc.settings.acdp]
+positioning_support = true
+positioning_only = true
+
+[expect]
+secc_exit = 0
+evcc_log = ["evse_positioning_support: true", "in_charge_position: true", "session: Ended(Completed)"]
+secc_log = ["sdp: the PPD reads BUS42: paired", "positioning:", "session: Stopped"]

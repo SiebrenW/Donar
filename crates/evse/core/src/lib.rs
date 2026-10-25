@@ -76,6 +76,8 @@ pub struct Step {
 pub enum State {
     AwaitSupportedAppProtocolReq,
     AwaitSessionSetupReq,
+    /// ACDP: the vehicle is positioned with `ACDP_VehiclePositioningReq` before it is authorized.
+    AwaitVehiclePositioningReq,
     AwaitAuthorizationSetupReq,
     AwaitAuthorizationReq,
     AwaitServiceDiscoveryReq,

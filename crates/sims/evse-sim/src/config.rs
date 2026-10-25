@@ -328,6 +328,53 @@ pub struct Pnc {
     pub check_profile: bool,
 }
 
+/// The pairing and positioning device (PPD) of an ACDP charger (ISO 15118-20 8.3.4.7.1, Annex E).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Ppd {
+    /// The basic device of Annex E.2: a reader on the pantograph reads the EVID of the tags on the roof of the bus inside a
+    /// zone that does not reach the next vehicle. It pairs and partitions; it cannot position (the answers say
+    /// `EVSEPositioningSupport` false).
+    #[default]
+    Rfid,
+    /// A device that also measures the position of the vehicle's contact interface against the pantograph's (an optical
+    /// one): the answers carry the deviations and the contact windows.
+    Optical,
+}
+
+/// An ACDP charger: a pantograph on the infrastructure for buses (ISO 15118-20 8.3.4.7). The vehicle finds it with the wireless
+/// SDP, which answers `Ongoing` until the PPD reads the vehicle's EVID, and is positioned before the authorization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Acdp {
+    pub ppd: Ppd,
+    /// The device reads an EVID only while the vehicle's contact interface is within this many millimetres of the
+    /// pantograph's along x (the driving direction), and within `detection_zone_y_mm` laterally (partitioning).
+    pub detection_zone_x_mm: u32,
+    pub detection_zone_y_mm: u32,
+    /// Half of the contact window in x and y (`ContactWindowXc`, `ContactWindowYc`): the vehicle is in position when both
+    /// deviations are inside (Annex D).
+    pub contact_window_x_mm: i16,
+    pub contact_window_y_mm: i16,
+    /// The EVSEID of the wireless SDP response: letters and digits, at most 37.
+    pub evse_id: String,
+    /// The coupling type of the wireless SDP: 1 is EN 50696 Annex A.3 (in line contacts, V2G20-4003), 0 is A.2 (cross rail).
+    pub coupling_type: u8,
+    /// The directory the vehicle simulator writes its position into; the scenario runner fills it.
+    pub world: Option<String>,
+    /// The EVID of the vehicle the SDP paired with this charger: the one the PPD has to keep reading until the pantograph
+    /// is down. Set by the command after the SDP.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub paired_evid: String,
+}
+
+impl Default for Acdp {
+    fn default() -> Self {
+        Self { ppd: Ppd::Rfid, detection_zone_x_mm: 3000, detection_zone_y_mm: 1500, contact_window_x_mm: 150, contact_window_y_mm: 100, evse_id: "DE9ACDP0001".into(), coupling_type: 1, world: None, paired_evid: String::new() }
+    }
+}
+
 /// A protocol the charger speaks; it picks the one the vehicle prefers of those both have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum Protocol {
@@ -456,6 +503,8 @@ pub struct Config {
     pub iso2: Iso2,
     /// Plug & Charge.
     pub pnc: Pnc,
+    /// An ACDP charger (a pantograph for buses): wireless SDP, positioning, and the ACDP schema in `SupportedAppProtocol`.
+    pub acdp: Option<Acdp>,
     /// Answer a charge loop request whose limits break V2G20-2198 or 2199 with `FAILED`; without
     /// it the violation is only noted.
     pub fail_on_limit_violation: bool,
@@ -590,6 +639,7 @@ impl Default for Config {
             din: Din::default(),
             iso2: Iso2::default(),
             pnc: Pnc::default(),
+            acdp: None,
             silent: false,
             fail_on_limit_violation: false,
             limits: Limits::default(),

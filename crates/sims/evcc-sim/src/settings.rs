@@ -291,6 +291,59 @@ pub struct Tls {
     pub disclose_secrets: bool,
 }
 
+/// A point of the approach of an ACDP vehicle to the pantograph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ApproachPoint {
+    /// Milliseconds after the start of the vehicle.
+    pub t_ms: u32,
+    /// The contact interface of the vehicle against the pantograph's, in millimetres: x in the driving direction (negative
+    /// while approaching, Annex D of ISO 15118-20), y lateral.
+    pub x_mm: i32,
+    pub y_mm: i32,
+}
+
+/// A vehicle that charges through a pantograph on the infrastructure (ACDP, ISO 15118-20 8.3.4.7): wireless SDP and a positioning phase
+/// before the authorization. A bus driver, simulated: the vehicle follows `approach`, brakes and asks the charger for the pantograph.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Acdp {
+    /// The EVID of the vehicle's marker: letters and digits, at most 20.
+    pub evid: String,
+    /// Ask the charger to guide the vehicle (`EVPositioningSupport`).
+    pub positioning_support: bool,
+    /// The approach; linear between the points, still after the last.
+    pub approach: Vec<ApproachPoint>,
+    /// After the last point the driver needs this long to brake and lock the vehicle before it tells the charger it is immobilized.
+    pub brake_ms: u32,
+    /// Without the charger's guidance the driver judges the position itself: both deviations inside these windows (half widths).
+    pub own_window_x_mm: i16,
+    pub own_window_y_mm: i16,
+    /// End the session after the positioning (a test of the positioning alone).
+    pub positioning_only: bool,
+    /// The directory the vehicle writes its position into; the scenario runner fills it.
+    pub world: Option<String>,
+}
+
+impl Default for Acdp {
+    fn default() -> Self {
+        Self {
+            evid: "BUS42".into(),
+            positioning_support: true,
+            approach: vec![
+                ApproachPoint { t_ms: 0, x_mm: -9000, y_mm: 300 },
+                ApproachPoint { t_ms: 800, x_mm: -2500, y_mm: 200 },
+                ApproachPoint { t_ms: 1600, x_mm: -600, y_mm: 80 },
+                ApproachPoint { t_ms: 2200, x_mm: -60, y_mm: 15 },
+            ],
+            brake_ms: 300,
+            own_window_x_mm: 150,
+            own_window_y_mm: 100,
+            positioning_only: false,
+            world: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
@@ -383,6 +436,8 @@ pub struct Settings {
     /// A contract for Plug & Charge: the vehicle uses it when the charger offers PnC, and EIM
     /// otherwise. A scenario names none: the runner supplies the files.
     pub pnc: Option<Contract>,
+    /// A bus at a pantograph (ACDP): wireless SDP and a positioning phase. The protocol is ISO 15118-20 with the ACDP schema.
+    pub acdp: Option<Acdp>,
     /// State of charge (percent) at the start of the session, for the battery model.
     pub start_soc: u8,
     /// How much faster than real time the battery model runs (1: real time).
@@ -430,6 +485,7 @@ impl Default for Settings {
             charge_loop_interval_ms: None,
             limits: Limits::default(),
             pnc: None,
+            acdp: None,
             start_soc: 20,
             time_scale: 1,
             stop_at_target_soc: false,
@@ -521,7 +577,10 @@ impl Settings {
             (true, false) => evcc_core::session::Config::AC_20,
             (true, true) => evcc_core::session::Config::AC_BPT_20,
         };
-        let base = if self.ac && self.scheduled { base.scheduled() } else if self.mobility_needs_by_secc { base.mobility_needs_by_secc() } else { base };
+        let base = if let Some(acdp) = &self.acdp {
+            let base = evcc_core::session::Config::ACDP_20;
+            if acdp.positioning_only { base.positioning_only() } else { base }
+        } else if self.ac && self.scheduled { base.scheduled() } else if self.mobility_needs_by_secc { base.mobility_needs_by_secc() } else { base };
         let mut config = evcc_core::session::Config { allow_unsecured: self.tls.is_none(), prefer_pnc: self.pnc.is_some(), state_tolerance_always: self.state_tolerance_always, request_meter_info: self.request_meter_info, control_pilot: self.control_pilot_wire.is_some(), ..base };
         if let Some(ms) = self.poll_interval_ms {
             config.poll_interval_ms = ms;
