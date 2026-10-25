@@ -206,6 +206,9 @@ pub enum Event {
     /// (a reason of its own before the power, a welded contactor) ends with that reason, since no answer will come; otherwise
     /// the event does nothing and the host reports the hang-up itself.
     ConnectionClosed,
+    /// ACDP: the vehicle's status changed (an error, the immobilization, the pilot state): `ACDP_SystemStatusReq` goes out at once
+    /// instead of at the next interval. Ignored outside an ACDP session.
+    AcdpStatusChanged,
 }
 
 /// A control pilot state (IEC 61851-1) the vehicle changes to.
@@ -228,6 +231,8 @@ pub enum Notice {
     /// ACDP: the charger's answer to `ACDP_ConnectReq` or `ACDP_DisconnectReq`: where the pantograph is, and the control pilot state the
     /// charger sees. `finished` ends the movement; the cable check (or the session stop) follows.
     AcdpConnection(AcdpConnection),
+    /// ACDP: the charger's answer to `ACDP_SystemStatusReq`, once a second or so, from the session setup to the stop.
+    AcdpSystemStatus(AcdpSystemStatus),
     /// Authorization finished successfully.
     Authorized,
     /// The EVSE accepted the service selection.
@@ -287,6 +292,24 @@ pub struct AcdpPosition {
     pub window_y_mm: i16,
     /// The vehicle is within the tolerances of the pantograph (`EVInChargePosition`); the basic RFID PPD reports only this.
     pub in_charge_position: bool,
+}
+
+/// What the charger says about the charging point in `ACDP_SystemStatusRes` (Table 88).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcdpSystemStatus {
+    pub mechanical: iso15118_20::acdp::MechanicalChargingDeviceStatus,
+    pub ready_to_charge: bool,
+    pub isolation: iso15118_20::acdp::IsolationStatus,
+    /// Disabled by the operator or for maintenance.
+    pub disabled: bool,
+    pub utility_interrupt: bool,
+    /// An emergency shutdown, or the E-stop pressed.
+    pub emergency_shutdown: bool,
+    /// A non-recoverable fault of the charger.
+    pub malfunction: bool,
+    /// The pairing and positioning device sees the vehicle within the contact window / still associated with the charger.
+    pub in_charge_position: bool,
+    pub association: bool,
 }
 
 /// The state of the pantograph in an answer to `ACDP_ConnectReq` or `ACDP_DisconnectReq` (Tables 84, 86).

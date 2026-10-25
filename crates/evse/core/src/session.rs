@@ -191,6 +191,8 @@ impl<S: Secc> Session<S> {
             Event::Received(n) => {
                 *rx_len = (*rx_len + n).min(rx.len());
                 let mut sent = 0;
+                // The status stream is independent of the main stream (8.3.4.7.8): its answers do not restart the sequence timer.
+                let mut main_sent = false;
                 let mut close = false;
                 loop {
                     match parse(&rx[..*rx_len], rx.len() - HEADER_LEN) {
@@ -200,6 +202,7 @@ impl<S: Secc> Session<S> {
                             let (payload_type, payload) = (frame.payload_type, frame.payload);
                             let reply = m.on_frame(payload_type, payload, &arena, scratch, &mut tx[sent..]);
                             sent += reply.len;
+                            main_sent |= reply.len > 0 && payload_type != PayloadType::ACDP_SYSTEM_STATUS;
                             close |= reply.close;
                             let consumed = frame.consumed;
                             rx.copy_within(consumed..*rx_len, 0);
@@ -227,7 +230,7 @@ impl<S: Secc> Session<S> {
                 }
                 let timer = if close || ended(m.state) {
                     Some(TimerCmd::Cancel(Timer::Sequence))
-                } else if sent > 0 {
+                } else if main_sent {
                     Some(TimerCmd::Arm { timer: Timer::Sequence, ms: SEQUENCE_TIMEOUT_MS })
                 } else {
                     None
@@ -322,7 +325,7 @@ impl<S: Secc> Machine<S> {
         // V2G20-800: a payload type that is not supported or a payload that is empty is a header with wrong data: ignored.
         let supported = matches!(
             payload_type,
-            PayloadType::SAP | PayloadType::MAINSTREAM | PayloadType::METERING_CONFIRMATION | PayloadType::DC_MAINSTREAM | PayloadType::AC_MAINSTREAM | PayloadType::ACDP_MAINSTREAM | PayloadType::SCHEDULE_RENEGOTIATION
+            PayloadType::SAP | PayloadType::MAINSTREAM | PayloadType::METERING_CONFIRMATION | PayloadType::DC_MAINSTREAM | PayloadType::AC_MAINSTREAM | PayloadType::ACDP_MAINSTREAM | PayloadType::ACDP_SYSTEM_STATUS | PayloadType::SCHEDULE_RENEGOTIATION
         );
         if !supported || payload.is_empty() {
             self.secc.note(format_args!("ignoring a frame with payload type {:#06x} and {} bytes (V2G20-800)", payload_type.0, payload.len()));
@@ -335,7 +338,7 @@ impl<S: Secc> Machine<S> {
             PayloadType::MAINSTREAM | PayloadType::METERING_CONFIRMATION => common::decode(payload, arena).ok().map(Request::Common),
             PayloadType::DC_MAINSTREAM => dc::decode(payload, arena).ok().map(Request::Dc),
             PayloadType::AC_MAINSTREAM => ac::decode(payload, arena).ok().map(Request::Ac),
-            PayloadType::ACDP_MAINSTREAM => acdp::decode(payload, arena).ok().map(Request::Acdp),
+            PayloadType::ACDP_MAINSTREAM | PayloadType::ACDP_SYSTEM_STATUS => acdp::decode(payload, arena).ok().map(Request::Acdp),
             PayloadType::SCHEDULE_RENEGOTIATION => ac::decode(payload, arena)
                 .ok()
                 .map(Request::Ac)
@@ -359,7 +362,9 @@ impl<S: Secc> Machine<S> {
                 return Reply { len: 0, close: true };
             }
         }
-        if payload_type == PayloadType::SCHEDULE_RENEGOTIATION {
+        if payload_type == PayloadType::ACDP_SYSTEM_STATUS {
+            self.on_system_status(request, out)
+        } else if payload_type == PayloadType::SCHEDULE_RENEGOTIATION {
             self.on_side(request, out)
         } else if payload_type == PayloadType::METERING_CONFIRMATION {
             self.on_metering(request, scratch, out)
@@ -1299,6 +1304,35 @@ impl<S: Secc> Machine<S> {
             }
             _ => Reply::default(),
         }
+    }
+
+    /// `ACDP_SystemStatusReq` on its own stream (8.3.4.7.8): answered in any state after the session setup, whatever the main stream is
+    /// doing. A request that is no status request, or from a vehicle that did not negotiate ACDP, gets no answer.
+    fn on_system_status(&mut self, request: Request<'_>, out: &mut [u8]) -> Reply {
+        let Request::Acdp(acdp::Message::AcdpSystemStatusReq(req)) = request else { return Reply::default() };
+        if !self.acdp_namespace || matches!(self.state, State::AwaitSupportedAppProtocolReq | State::AwaitSessionSetupReq | State::Closed) {
+            return Reply::default();
+        }
+        let (code, seen) = if self.unknown_session(req.header.session_id) {
+            (ResponseCode::FailedUnknownSession, crate::secc::AcdpSystemStatus::HEALTHY)
+        } else {
+            (ResponseCode::Ok, self.secc.acdp_system_status(&req.ev_technical_status))
+        };
+        let header = self.header();
+        let res = acdp::AcdpSystemStatusRes {
+            header,
+            response_code: code,
+            evse_mechanical_charging_device_status: seen.mechanical,
+            evse_ready_to_charge: seen.ready_to_charge,
+            evse_isolation_status: seen.isolation,
+            evse_disabled: seen.disabled,
+            evse_utility_interrupt_event: seen.utility_interrupt,
+            evse_emergency_shutdown: seen.emergency_shutdown,
+            evse_malfunction: seen.malfunction,
+            ev_in_charge_position: seen.in_charge_position,
+            ev_association_status: seen.association,
+        };
+        reply(frame(out, PayloadType::ACDP_SYSTEM_STATUS, |o| res.encode(o)), false)
     }
 
     /// The metering confirmation side stream (V2G20-1084, 1085).

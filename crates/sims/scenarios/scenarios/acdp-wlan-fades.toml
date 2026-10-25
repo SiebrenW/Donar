@@ -1,0 +1,29 @@
+name = "acdp-wlan-fades"
+description = "ACDP, the status stream (8.3.4.7.8): the vehicle tells the charger how it is every 300 ms, from the session setup on (which comes when the bus is inside the PPD's zone), beside the positioning; the radio's signal strength (EVWLANStrength) follows the approach script and falls while the bus nears the pantograph, and the charger sees every value."
+timeout_s = 40
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session.acdp]
+ppd = "optical"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+poll_interval_ms = 50
+[evcc.settings.acdp]
+positioning_only = true
+status_interval_ms = 300
+wlan_dbm = -55
+brake_ms = 300
+approach = [
+  { t_ms = 0, x_mm = -9000, y_mm = 100 },
+  { t_ms = 1200, x_mm = -2500, y_mm = 100, wlan_dbm = -70 },
+  { t_ms = 2400, x_mm = -400, y_mm = 60, wlan_dbm = -82 },
+  { t_ms = 3200, x_mm = -30, y_mm = 10, wlan_dbm = -90 },
+]
+
+[expect]
+secc_exit = 0
+evcc_log = ["session: Ended(Completed)"]
+secc_log = ["value: -70", "value: -82", "value: -90", "session: Stopped"]

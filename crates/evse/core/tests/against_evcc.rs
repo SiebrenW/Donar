@@ -38,6 +38,19 @@ impl Ev for TestEv {
     fn acdp_positioning_support(&self) -> bool {
         true
     }
+    fn acdp_technical_status(&self) -> iso15118_20::acdp::EvTechnicalStatus {
+        // Not through `immobilized()`, which counts the rounds of the driver.
+        iso15118_20::acdp::EvTechnicalStatus {
+            ev_ready_to_charge: true,
+            ev_immobilization_request: false,
+            ev_immobilized: None,
+            evwlan_strength: None,
+            evcp_status: None,
+            evsoc: None,
+            ev_error_code: None,
+            ev_timeout: None,
+        }
+    }
     fn immobilized(&self) -> bool {
         // The driver needs a few rounds to park.
         IMMOBILIZED_AFTER.with(|c| {
@@ -159,8 +172,15 @@ struct TestCharger {
     positioning: Vec<AcdpPositioningRequest>,
     /// ACDP: the connect and disconnect requests the charger saw, with the pilot state the vehicle reported.
     pantograph: Vec<(&'static str, iso15118_20::acdp::ElectricalChargingDeviceStatus)>,
+    /// ACDP: how many status requests the charger answered.
+    status_requests: u32,
     lose_association_at: Option<usize>,
     no_acdp: bool,
+}
+
+thread_local! {
+    /// ACDP: the answers to the status requests the vehicle's host was told of.
+    static STATUS_NOTICES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 thread_local! {
@@ -174,6 +194,10 @@ impl Secc for TestCharger {
     }
     fn supports_protocol(&self, namespace: &str, major: u32) -> bool {
         major == 1 && (matches!(namespace, "urn:iso:std:iso:15118:-20:DC" | "urn:iso:std:iso:15118:-20:AC") || (!self.no_acdp && namespace == "urn:iso:std:iso:15118:-20:ACDP"))
+    }
+    fn acdp_system_status(&mut self, _vehicle: &iso15118_20::acdp::EvTechnicalStatus) -> evse_core::secc::AcdpSystemStatus {
+        self.status_requests += 1;
+        evse_core::secc::AcdpSystemStatus::HEALTHY
     }
     fn acdp_connect(&mut self, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> evse_core::secc::AcdpConnection {
         use iso15118_20::acdp::{ElectricalChargingDeviceStatus as E, MechanicalChargingDeviceStatus as M};
@@ -563,8 +587,15 @@ impl<E: Ev> Rig<'_, E> {
                     // The vehicle measures what it set; that is what it waits for.
                     Some(EvEvent::Pilot(reading))
                 }
+                Notice::AcdpSystemStatus(_) => {
+                    STATUS_NOTICES.with(|c| c.set(c.get() + 1));
+                    None
+                }
                 Notice::ChargeLoop(_) | Notice::AcChargeLoop(_) => {
                     self.loops += 1;
+                    // Time passes in the charge loop: the status timer of an ACDP vehicle (nothing for the others).
+                    let tick = self.vehicle.handle(EvEvent::TimerExpired(evcc_core::Timer::Status));
+                    self.process(tick);
                     if let Some((n, reading)) = self.host.inject.filter(|(n, _)| *n == self.loops) {
                         let _ = n;
                         let step = self.charger.handle(Event::Pilot(reading), &mut self.charger_buffers);
@@ -605,6 +636,12 @@ impl<E: Ev> Rig<'_, E> {
                 at += len;
             }
             self.closed |= reply.close;
+            // A connection the charger closed is known to the vehicle's host (the hang-up): a session that had announced its end
+            // with a SessionStopReq ends with that reason.
+            if reply.close {
+                let s = self.vehicle.handle(EvEvent::ConnectionClosed);
+                self.process(s);
+            }
         }
     }
 }
@@ -630,6 +667,9 @@ fn run_with<E: Ev>(secc: TestCharger, config: Config, ev: E, stop_after: u32) ->
         }
         // Nothing in flight: the vehicle waits for its poll pause or loop interval.
         let s = rig.vehicle.handle(EvEvent::TimerExpired(evcc_core::Timer::Poll));
+        rig.process(s);
+        // The status timer of an ACDP vehicle (nothing for the others).
+        let s = rig.vehicle.handle(EvEvent::TimerExpired(evcc_core::Timer::Status));
         rig.process(s);
     }
     let state = rig.charger.state();
@@ -1035,4 +1075,59 @@ fn a_vehicle_that_positions_itself_although_it_negotiated_the_dc_schema_is_out_o
     let (end, charger, _) = run(config, acdp_ev(), 3);
     assert_eq!(end, EndReason::Rejected(ResponseCode::FailedSequenceError));
     assert!(charger.positioning.is_empty());
+}
+
+#[test]
+fn the_status_stream_runs_beside_an_acdp_session_and_is_answered_throughout() {
+    IMMOBILIZED_AFTER.with(|c| c.set(1));
+    STATUS_NOTICES.with(|c| c.set(0));
+    let (end, charger, state) = run(config(Config::ACDP_20), acdp_ev(), 3);
+    assert_eq!((end, state), (EndReason::Completed, State::Stopped));
+    assert!(charger.status_requests >= 4, "{} requests: one with the first request and one for every charge loop answer (a tick of the timer)", charger.status_requests);
+    assert_eq!(STATUS_NOTICES.with(std::cell::Cell::get), charger.status_requests, "every answer reached the vehicle's host");
+}
+
+#[test]
+fn a_status_answer_does_not_restart_the_sequence_timer_of_the_main_stream() {
+    use app_protocol::{AppProtocol, SupportedAppProtocolReq};
+    use evse_core::TimerCmd;
+    use iso15118_20::common::SessionSetupReq;
+    use iso15118_20::common_types::MessageHeader;
+    let (mut rx, mut tx, mut arena, mut scratch) = (vec![0u8; 4096], vec![0u8; 4096], vec![0u8; 16384], vec![0u8; 4096]);
+    let mut buffers = Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena, scratch: &mut scratch };
+    let mut charger = Session::new(TestCharger::default());
+    charger.handle(Event::Connected { secured: true }, &mut buffers);
+    let feed = |charger: &mut Session<TestCharger>, buffers: &mut Buffers<'_>, payload_type: v2gtp::PayloadType, encode: &dyn Fn(&mut [u8]) -> usize| {
+        let mut f = vec![0u8; 512];
+        let n = encode(&mut f[8..]);
+        v2gtp::write_header(&mut f, payload_type, n).unwrap();
+        let space = charger.rx_space(buffers.rx);
+        space[..8 + n].copy_from_slice(&f[..8 + n]);
+        charger.handle(Event::Received(8 + n), buffers)
+    };
+    let offer = [AppProtocol { protocol_namespace: "urn:iso:std:iso:15118:-20:ACDP", version_number_major: 1, version_number_minor: 0, schema_id: 3, priority: 1 }];
+    feed(&mut charger, &mut buffers, v2gtp::PayloadType::SAP, &|o| SupportedAppProtocolReq { app_protocol: &offer }.encode(o).unwrap());
+    let setup = feed(&mut charger, &mut buffers, v2gtp::PayloadType::MAINSTREAM, &|o| SessionSetupReq { header: MessageHeader::new([0; 8], 1), evccid: "WMIV1234567890ABCDEX" }.encode(o).unwrap());
+    assert!(matches!(setup.timer, Some(TimerCmd::Arm { .. })), "a main stream answer restarts the timer");
+    let status = |o: &mut [u8]| {
+        iso15118_20::acdp::AcdpSystemStatusReq {
+            header: MessageHeader::new([1, 2, 3, 4, 5, 6, 7, 8], 2),
+            ev_technical_status: iso15118_20::acdp::EvTechnicalStatus {
+                ev_ready_to_charge: true,
+                ev_immobilization_request: false,
+                ev_immobilized: None,
+                evwlan_strength: None,
+                evcp_status: None,
+                evsoc: None,
+                ev_error_code: None,
+                ev_timeout: None,
+            },
+        }
+        .encode(o)
+        .unwrap()
+    };
+    let answer = feed(&mut charger, &mut buffers, v2gtp::PayloadType::ACDP_SYSTEM_STATUS, &status);
+    assert!(answer.send > 0, "answered");
+    assert_eq!(answer.timer, None, "the sequence timer is for the main stream");
+    assert_eq!(charger.secc().status_requests, 1);
 }

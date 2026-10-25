@@ -273,6 +273,29 @@ pub trait Ev {
     fn immobilized(&self) -> bool {
         true
     }
+    /// ACDP: how the vehicle is, as `ACDP_SystemStatusReq` tells the charger (Table 87, 8.3.4.7.8): ready to charge (false after an error of its
+    /// own, V2G20-4013), the immobilization the driver wants (false when the driver releases the hand brake), the radio's signal strength (dBm,
+    /// `EVWLANStrength`), the pilot state, the state of charge, an error code and a timeout. The default builds it from the other
+    /// methods of the ACDP part and says nothing about the radio, the charge and errors.
+    fn acdp_technical_status(&self) -> iso15118_20::acdp::EvTechnicalStatus {
+        use iso15118_20::acdp::{CpStatus, ElectricalChargingDeviceStatus as E};
+        let immobilized = self.immobilized();
+        iso15118_20::acdp::EvTechnicalStatus {
+            ev_ready_to_charge: true,
+            ev_immobilization_request: immobilized,
+            ev_immobilized: Some(immobilized),
+            evwlan_strength: None,
+            evcp_status: Some(match self.acdp_electrical_status() {
+                E::StateA => CpStatus::StateA,
+                E::StateB => CpStatus::StateB,
+                E::StateC => CpStatus::StateC,
+                E::StateD => CpStatus::StateD,
+            }),
+            evsoc: None,
+            ev_error_code: None,
+            ev_timeout: Some(false),
+        }
+    }
     /// ACDP: the control pilot state the vehicle sees through the pantograph's contacts, as `ACDP_Connect` and `ACDP_Disconnect` report it: A
     /// while the pantograph is up (no connection), B, C or D once it is down (Tables 83, 85). The default is A.
     fn acdp_electrical_status(&self) -> iso15118_20::acdp::ElectricalChargingDeviceStatus {

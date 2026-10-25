@@ -60,6 +60,40 @@ impl AcdpPositioning {
         AcdpPositioning { association: true, positioning_support: false, x_deviation_mm: 0, y_deviation_mm: 0, window_x_mm: 0, window_y_mm: 0, in_charge_position: true };
 }
 
+/// The charger's side of `ACDP_SystemStatusRes` (Table 88): how the charging point is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcdpSystemStatus {
+    pub mechanical: acdp::MechanicalChargingDeviceStatus,
+    /// All sub-systems of the charger are ready to charge.
+    pub ready_to_charge: bool,
+    pub isolation: acdp::IsolationStatus,
+    /// Disabled by the operator or for maintenance.
+    pub disabled: bool,
+    pub utility_interrupt: bool,
+    /// An emergency shutdown, or the E-stop pressed at the charger.
+    pub emergency_shutdown: bool,
+    /// A non-recoverable fault (a breaker failure, say).
+    pub malfunction: bool,
+    /// The PPD sees the vehicle within the contact window, and the vehicle is still associated (only meaningful with a PPD).
+    pub in_charge_position: bool,
+    pub association: bool,
+}
+
+impl AcdpSystemStatus {
+    /// A charging point without a fault: home, ready, isolation safe, nothing wrong.
+    pub const HEALTHY: AcdpSystemStatus = AcdpSystemStatus {
+        mechanical: acdp::MechanicalChargingDeviceStatus::Home,
+        ready_to_charge: true,
+        isolation: acdp::IsolationStatus::Safe,
+        disabled: false,
+        utility_interrupt: false,
+        emergency_shutdown: false,
+        malfunction: false,
+        in_charge_position: true,
+        association: true,
+    };
+}
+
 /// The charger's answer to `ACDP_ConnectReq` and `ACDP_DisconnectReq` (Tables 84, 86): the pantograph, and the control pilot state the
 /// charger sees through its contacts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,6 +244,12 @@ pub trait Secc {
     /// a pantograph that is home at once.
     fn acdp_disconnect(&mut self, _electrical: acdp::ElectricalChargingDeviceStatus) -> AcdpConnection {
         AcdpConnection { finished: true, electrical: acdp::ElectricalChargingDeviceStatus::StateA, mechanical: acdp::MechanicalChargingDeviceStatus::Home }
+    }
+
+    /// The vehicle's status (`ACDP_SystemStatusReq`, once a second or so from the session setup to the stop): how the charging point is
+    /// (V2G20-4017 to 4019). The vehicle's `EVReadyToCharge` false is answered like any other (4019).
+    fn acdp_system_status(&mut self, _vehicle: &acdp::EvTechnicalStatus) -> AcdpSystemStatus {
+        AcdpSystemStatus::HEALTHY
     }
 
     // ---- the service flow

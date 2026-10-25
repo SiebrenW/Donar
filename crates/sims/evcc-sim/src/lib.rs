@@ -106,6 +106,25 @@ impl Ev for SimulatedEv {
     fn immobilized(&self) -> bool {
         self.driver.as_ref().is_none_or(|d| d.immobilized())
     }
+    fn acdp_technical_status(&self) -> iso15118_20::acdp::EvTechnicalStatus {
+        use iso15118_20::acdp::{CpStatus, ElectricalChargingDeviceStatus as E};
+        let immobilized = self.immobilized();
+        iso15118_20::acdp::EvTechnicalStatus {
+            ev_ready_to_charge: true,
+            ev_immobilization_request: immobilized,
+            ev_immobilized: Some(immobilized),
+            evwlan_strength: self.driver.as_ref().map(|d| RationalNumber { exponent: 0, value: d.wlan_dbm() }),
+            evcp_status: Some(match self.acdp_electrical_status() {
+                E::StateA => CpStatus::StateA,
+                E::StateB => CpStatus::StateB,
+                E::StateC => CpStatus::StateC,
+                E::StateD => CpStatus::StateD,
+            }),
+            evsoc: None,
+            ev_error_code: None,
+            ev_timeout: Some(false),
+        }
+    }
     fn acdp_electrical_status(&self) -> iso15118_20::acdp::ElectricalChargingDeviceStatus {
         use iso15118_20::acdp::ElectricalChargingDeviceStatus as E;
         if self.driver.as_ref().is_some_and(|d| d.pantograph_down()) { E::StateB } else { E::StateA }
@@ -422,6 +441,8 @@ pub fn run_car_pilot(
             None
         }
         Notice::ScheduleRenegotiated => behaviour.stop_when_rescheduled.then_some(Event::StopRequested),
+        // The pilot state its contacts give has changed: the charger is told at once.
+        Notice::AcdpConnection(c) if c.finished => Some(Event::AcdpStatusChanged),
         // The charger's PPD says where the bus is: the driver goes by it when the charger guides.
         Notice::AcdpPosition(p) => {
             if let Some(driver) = &driver {

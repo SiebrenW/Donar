@@ -28,6 +28,8 @@ pub enum MsgKind {
     SessionSetupRes,
     AcdpVehiclePositioningReq,
     AcdpVehiclePositioningRes,
+    AcdpSystemStatusReq,
+    AcdpSystemStatusRes,
     AcdpConnectReq,
     AcdpConnectRes,
     AcdpDisconnectReq,

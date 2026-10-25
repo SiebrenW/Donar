@@ -34,6 +34,11 @@ impl Approach {
         (lerp(a.x_mm, b.x_mm), lerp(a.y_mm, b.y_mm))
     }
 
+    /// The signal strength of the last point passed that names one.
+    fn wlan_at(&self, elapsed_ms: u32, default: i16) -> i16 {
+        self.points.iter().take_while(|p| p.t_ms <= elapsed_ms).filter_map(|p| p.wlan_dbm).last().unwrap_or(default)
+    }
+
     fn elapsed_ms(&self) -> u32 {
         self.started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32
     }
@@ -72,6 +77,11 @@ impl Driver {
     /// that nothing (A).
     pub fn pantograph_down(&self) -> bool {
         self.world.pantograph().as_deref() == Some("EndPosition")
+    }
+
+    /// The radio's signal strength now, dBm.
+    pub fn wlan_dbm(&self) -> i16 {
+        self.approach.wlan_at(self.approach.elapsed_ms(), self.settings.wlan_dbm)
     }
 
     pub fn evid(&self) -> &str {
@@ -119,7 +129,7 @@ mod tests {
     use super::*;
 
     fn p(t_ms: u32, x_mm: i32, y_mm: i32) -> ApproachPoint {
-        ApproachPoint { t_ms, x_mm, y_mm }
+        ApproachPoint { t_ms, x_mm, y_mm, wlan_dbm: None }
     }
 
     #[test]
@@ -131,5 +141,16 @@ mod tests {
         assert_eq!(a.at(2500), (-500, 0));
         assert_eq!(a.at(9000), (0, 0), "after the last");
         assert_eq!(Approach { started: Instant::now(), points: vec![] }.at(5), (0, 0));
+    }
+
+    #[test]
+    fn the_signal_strength_is_the_last_one_a_point_named() {
+        let mut points = vec![p(0, -9000, 0), p(1000, -3000, 0), p(2000, -100, 0)];
+        points[1].wlan_dbm = Some(-75);
+        points[2].wlan_dbm = Some(-88);
+        let a = Approach { started: Instant::now(), points };
+        assert_eq!(a.wlan_at(500, -62), -62, "before any point that names one");
+        assert_eq!(a.wlan_at(1500, -62), -75);
+        assert_eq!(a.wlan_at(2500, -62), -88);
     }
 }

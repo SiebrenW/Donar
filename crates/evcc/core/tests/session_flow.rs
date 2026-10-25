@@ -274,7 +274,11 @@ fn selection_res(code: ResponseCode) -> std::vec::Vec<u8> {
 fn sent(s: &Sess<'_>, step: &Step) -> (PayloadType, std::vec::Vec<u8>) {
     let bytes = &s.tx()[..step.send.expect("nothing to send")];
     let v2gtp::Parse::Frame(f) = v2gtp::parse(bytes, 512).unwrap() else { panic!("incomplete frame") };
-    assert_eq!(f.consumed, bytes.len());
+    // One frame, or with an ACDP session the status request behind it (its stream goes out with the first request).
+    if f.consumed != bytes.len() {
+        let v2gtp::Parse::Frame(rest) = v2gtp::parse(&bytes[f.consumed..], 512).unwrap() else { panic!("incomplete second frame") };
+        assert_eq!((rest.payload_type, f.consumed + rest.consumed), (PayloadType::ACDP_SYSTEM_STATUS, bytes.len()));
+    }
     (f.payload_type, f.payload.to_vec())
 }
 
@@ -1800,4 +1804,78 @@ fn an_acdp_bpt_vehicle_selects_the_bpt_service() {
     let mut rig = Rig::new();
     let (s, _) = acdp_up_to_schedule_exchange(&mut rig, Config::ACDP_BPT_20);
     assert_eq!(s.state(), State::AwaitConnectRes);
+}
+
+fn status_res(code: ResponseCode, emergency: bool) -> std::vec::Vec<u8> {
+    use iso15118_20::acdp::{IsolationStatus, MechanicalChargingDeviceStatus};
+    framed(PayloadType::ACDP_SYSTEM_STATUS, |out| {
+        iso15118_20::acdp::AcdpSystemStatusRes {
+            header: hdr(),
+            response_code: code,
+            evse_mechanical_charging_device_status: MechanicalChargingDeviceStatus::Home,
+            evse_ready_to_charge: true,
+            evse_isolation_status: IsolationStatus::Safe,
+            evse_disabled: false,
+            evse_utility_interrupt_event: false,
+            evse_emergency_shutdown: emergency,
+            evse_malfunction: false,
+            ev_in_charge_position: true,
+            ev_association_status: true,
+        }
+        .encode(out)
+        .unwrap()
+    })
+}
+
+/// The status request in the frames a step sends: the last frame, if it has the status payload type.
+fn status_frame(s: &Sess<'_>, step: &Step) -> bool {
+    let bytes = &s.tx()[..step.send.expect("nothing to send")];
+    let mut at = 0;
+    let mut last = None;
+    while at < bytes.len() {
+        let v2gtp::Parse::Frame(f) = v2gtp::parse(&bytes[at..], 512).unwrap() else { panic!("incomplete") };
+        last = Some(f.payload_type);
+        at += f.consumed;
+    }
+    last == Some(PayloadType::ACDP_SYSTEM_STATUS)
+}
+
+#[test]
+fn the_status_stream_starts_with_the_first_request_runs_on_a_timer_and_stops_with_the_session() {
+    IMMOBILIZED.with(|c| c.set(false));
+    let mut rig = Rig::new();
+    let (mut s, step) = acdp_up_to_positioning(&mut rig, Config::ACDP_20);
+    // V2G20-4016: the status request goes out behind the positioning request, and the timer is armed.
+    assert!(status_frame(&s, &step), "the status request is the second frame");
+    assert!(step.timers.iter().any(|c| c == TimerCmd::Arm { timer: Timer::Status, ms: 1000 }), "{:?}", step.timers);
+    // The timer: a status request and the timer again.
+    let step = s.handle(Event::TimerExpired(Timer::Status));
+    assert!(status_frame(&s, &step));
+    assert_eq!(step.timers, Timers::one(TimerCmd::Arm { timer: Timer::Status, ms: 1000 }));
+    // The host reports a change: at once, and the timer is left alone.
+    let step = s.handle(Event::AcdpStatusChanged);
+    assert!(status_frame(&s, &step));
+    assert_eq!(step.timers, Timers::NONE);
+    // The answer reaches the host; a failing one is ignored (V2G20-4015).
+    let step = deliver(&mut s, &status_res(ResponseCode::Ok, true));
+    assert!(matches!(step.notice, Some(Notice::AcdpSystemStatus(st)) if st.emergency_shutdown && st.association));
+    assert_eq!(s.state(), State::AwaitVehiclePositioningRes, "the main stream is not touched");
+    assert_eq!(deliver(&mut s, &status_res(ResponseCode::Failed, true)).notice, None);
+    // The session ends: the stream ends with it.
+    let step = deliver(&mut s, &positioning_res(ResponseCode::Ok, Processing::Finished, true));
+    assert_eq!(step.end, Some(EndReason::UnexpectedMessage), "Finished to a mobilized request");
+    assert!(step.timers.iter().any(|c| c == TimerCmd::Cancel(Timer::Status)));
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Status)), Step::default());
+}
+
+#[test]
+fn a_dc_session_has_no_status_stream() {
+    let mut rig = Rig::new();
+    let mut s = session(&mut rig, Capture::default());
+    s.handle(Event::Start { secured: false });
+    deliver(&mut s, &sap_res(SapCode::OkSuccessfulNegotiation, Some(1)));
+    let step = deliver(&mut s, &setup_res(ResponseCode::OkNewSessionEstablished, SID));
+    assert!(!step.timers.iter().any(|c| matches!(c, TimerCmd::Arm { timer: Timer::Status, .. })));
+    assert_eq!(s.handle(Event::TimerExpired(Timer::Status)), Step::default());
+    assert_eq!(s.handle(Event::AcdpStatusChanged), Step::default());
 }

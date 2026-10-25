@@ -40,13 +40,14 @@ mod renegotiation;
 mod schedule;
 mod pantograph;
 mod positioning;
+mod status;
 mod setup;
 mod shutdown;
 mod tariff;
 mod types;
 
 pub use config::{Config, SERVICE_ID_AC, SERVICE_ID_AC_BPT, SERVICE_ID_DC, SERVICE_ID_DC_ACDP, SERVICE_ID_DC_ACDP_BPT, SERVICE_ID_DC_BPT};
-pub use types::{AcChargeLoopStatus, AcdpConnection, AcdpPosition, Buffers, ChargeLoopStatus, MeterReading, ControlPilot, EndReason, Event, Notice, Resume, State, Step};
+pub use types::{AcChargeLoopStatus, AcdpConnection, AcdpPosition, AcdpSystemStatus, Buffers, ChargeLoopStatus, MeterReading, ControlPilot, EndReason, Event, Notice, Resume, State, Step};
 
 pub struct Session<'a, E: Ev, L: LogSink> {
     rx: &'a mut [u8],
@@ -77,6 +78,8 @@ struct Machine<E, L> {
     poll_pending: bool,
     /// ACDP: the last positioning request said the vehicle is immobilized.
     positioning_immobilized: bool,
+    /// ACDP: the status stream runs (from the `SessionSetupRes` until the session ends).
+    status_active: bool,
     /// The last `DC_PreChargeReq` carried `EVProcessing = Finished`.
     precharge_finishing: bool,
     /// The last `DC_WeldingDetectionReq` carried `EVProcessing = Finished`.
@@ -163,6 +166,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 ongoing_armed: false,
                 poll_pending: false,
                 positioning_immobilized: false,
+                status_active: false,
                 precharge_finishing: false,
                 welding_finishing: false,
                 stop_requested: false,
@@ -279,6 +283,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                     | State::AwaitDutyCycle,
                 ) => m.end(EndReason::Timeout),
                 (Timer::Side, _) => m.on_side_timer(tx),
+                (Timer::Status, _) => m.on_status_timer(tx),
                 (Timer::Poll, _) if m.poll_pending => {
                     m.poll_pending = false;
                     m.repeat(tx)
@@ -305,6 +310,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 let step = m.after_contactors_open(tx);
                 m.sequence_done(step)
             }
+            Event::AcdpStatusChanged => m.status_changed(tx),
             Event::StopRequested => m.stop_requested_by_vehicle(),
             Event::PauseRequested => match m.state {
                 State::AwaitChargeLoopRes if m.poll_pending => {
@@ -570,9 +576,10 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             _ => reason,
         };
         self.goto(State::Ended);
+        self.status_active = false;
         self.log.record(&Record::Ended { reason });
         Step {
-            timers: Timers::one(TimerCmd::Cancel(Timer::Response)).with(TimerCmd::Cancel(Timer::Ongoing)),
+            timers: Timers::one(TimerCmd::Cancel(Timer::Response)).with(TimerCmd::Cancel(Timer::Ongoing)).with(TimerCmd::Cancel(Timer::Status)),
             end: Some(reason),
             ..Step::default()
         }
@@ -778,6 +785,9 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         }
         if payload_type == PayloadType::METERING_CONFIRMATION {
             return self.on_metering_frame(payload_type, payload, arena);
+        }
+        if payload_type == PayloadType::ACDP_SYSTEM_STATUS {
+            return self.on_status_frame(payload, arena);
         }
         match self.state {
             State::AwaitSupportedAppProtocolRes if payload_type == PayloadType::SAP => {
