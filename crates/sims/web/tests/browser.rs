@@ -231,6 +231,36 @@ fn every_choice_of_the_simulation_page_can_be_made() {
 }
 
 #[test]
+fn the_start_button_and_state_stay_in_view_on_every_tab_and_the_connection_follows_the_choice() {
+    let server = start();
+    let Some(mut b) = open(&server, "#simulation") else { return };
+    b.wait_for("the Start button", "!!document.querySelector('#primary')");
+    // The top (picture, readouts, status, Start) is outside the tab panes: every tab leaves it visible.
+    let tabs = b.eval("document.querySelectorAll('.subtabs button').length").as_u64().unwrap();
+    assert!(tabs >= 5, "{tabs} tabs");
+    for i in 0..tabs {
+        b.eval(&format!("document.querySelectorAll('.subtabs button')[{i}].click()"));
+        assert_eq!(b.eval("document.querySelectorAll('.tabbody > [data-pane]:not([hidden])').length"), json!(1), "one pane shows on tab {i}");
+        assert_eq!(b.eval("(() => { const r = document.getElementById('primary').getBoundingClientRect(); return r.width > 0 && r.top >= 0 && r.bottom <= innerHeight; })()"), json!(true), "Start not in view on tab {i}");
+        assert_eq!(b.eval("document.getElementById('sim-status').getBoundingClientRect().width > 0"), json!(true), "no status on tab {i}");
+        b.assert_no_errors(&format!("after tab {i}"));
+    }
+    // Plug is the connection the simulation runs; ACDP and OppCharge change the picture and the fields, and cannot be started yet.
+    b.eval("document.getElementById('subtab-setup').click()");
+    for (mode, protocol) in [("acdp", 0), ("opp", 1)] {
+        b.eval(&format!("document.getElementById('mode-{mode}').click()"));
+        assert_eq!(b.eval("document.getElementById('primary').disabled"), json!(true), "{mode} cannot be started");
+        assert_eq!(b.eval("document.getElementById('sim-energy').hidden"), json!(true), "{mode} has no AC/DC choice");
+        assert_eq!(b.eval(&format!("document.getElementById('sim-protocol').children[{protocol}].classList.contains('on')")), json!(true), "{mode} sets its protocol");
+        assert_eq!(b.eval("!!document.querySelector('#sceneview svg.scene3d')"), json!(true), "{mode} has its picture");
+        b.assert_no_errors(&format!("after choosing {mode}"));
+    }
+    b.eval("document.getElementById('mode-plug').click()");
+    assert_eq!(b.eval("document.getElementById('primary').disabled"), json!(false));
+    b.assert_no_errors("after going back to the plug");
+}
+
+#[test]
 fn the_scenarios_page_lists_the_scenarios() {
     let server = start();
     let Some(mut b) = open(&server, "") else { return };
