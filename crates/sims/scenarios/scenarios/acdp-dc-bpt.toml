@@ -1,0 +1,24 @@
+name = "acdp-dc-bpt"
+description = "A complete bidirectional ACDP session (ISO 15118-20 8.3.4.7, service DC_ACDP_BPT, Table 80, discharging): wireless SDP, the positioning of the bus, authorization and service selection (no Connector in the parameter set), charge parameters and schedule exchange, then ACDP_Connect (the pantograph moves down, the control pilot state its contacts give goes from A to B) before the cable check, pre-charge and the charge loop; after the stop ACDP_Disconnect (the pantograph goes up) takes the place of the welding detection, and the session stops."
+timeout_s = 60
+# The link is WLAN (ISO 15118-8): no SLAC; the control pilot exists only through the pantograph's contacts.
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session.acdp]
+ppd = "optical"
+pantograph_move_ms = 600
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+bpt = true
+poll_interval_ms = 50
+charge_loop_interval_ms = 10
+[evcc.settings.acdp]
+positioning_support = true
+
+[expect]
+secc_exit = 0
+evcc_log = ["service_id: 7", "Pantograph { processing: Ongoing", "mechanical: EndPosition", "mechanical: Home", "session: Ended(Completed)"]
+secc_log = ["service 7 selected", "pantograph connect: the vehicle sees StateA", "pantograph disconnect: the vehicle sees StateB", "session: Stopped"]

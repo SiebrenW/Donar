@@ -38,13 +38,19 @@ pub const SEQUENCE_TIMEOUT_MS: u32 = 60_000;
 const SERVICE_AC: u16 = 1;
 const SERVICE_AC_BPT: u16 = 5;
 const SERVICE_DC_BPT: u16 = 6;
+const SERVICE_DC_ACDP: u16 = 4;
+const SERVICE_DC_ACDP_BPT: u16 = 7;
 
 fn is_ac_service(service_id: u16) -> bool {
     matches!(service_id, SERVICE_AC | SERVICE_AC_BPT)
 }
 
 fn is_bpt_service(service_id: u16) -> bool {
-    matches!(service_id, SERVICE_AC_BPT | SERVICE_DC_BPT)
+    matches!(service_id, SERVICE_AC_BPT | SERVICE_DC_BPT | SERVICE_DC_ACDP_BPT)
+}
+
+fn is_acdp_service(service_id: u16) -> bool {
+    matches!(service_id, SERVICE_DC_ACDP | SERVICE_DC_ACDP_BPT)
 }
 
 pub fn is_ok(code: ResponseCode) -> bool {
@@ -474,6 +480,17 @@ impl<S: Secc> Machine<S> {
                 }
                 .encode(o)
             }),
+            Request::Acdp(acdp::Message::AcdpConnectReq(_) | acdp::Message::AcdpDisconnectReq(_)) => {
+                let res = acdp::AcdpConnectRes {
+                    header,
+                    response_code: code,
+                    evse_processing: Processing::Finished,
+                    evse_electrical_charging_device_status: acdp::ElectricalChargingDeviceStatus::StateA,
+                    evse_mechanical_charging_device_status: acdp::MechanicalChargingDeviceStatus::Home,
+                };
+                let disconnect = matches!(request, Request::Acdp(acdp::Message::AcdpDisconnectReq(_)));
+                frame(out, PayloadType::ACDP_MAINSTREAM, |o| if disconnect { res.encode_as_acdp_disconnect_res(o) } else { res.encode(o) })
+            }
             Request::Acdp(_) => return None,
             Request::Dc(m) => {
                 let dcm = PayloadType::DC_MAINSTREAM;
@@ -587,6 +604,11 @@ impl<S: Secc> Machine<S> {
 
     fn bpt(&self) -> bool {
         is_bpt_service(self.service)
+    }
+
+    /// The selected service is an ACDP one: the pantograph is connected and disconnected, and there is no welding detection.
+    fn acdp(&self) -> bool {
+        is_acdp_service(self.service)
     }
 
     /// A response to a message of the main stream.
@@ -843,7 +865,8 @@ impl<S: Secc> Machine<S> {
                 let valid = self.secc.energy_services().iter().any(|s| s.service_id == service_id)
                     && set_scheduled.is_some()
                     // The schema the vehicle offered is that of the service it selects.
-                    && is_ac_service(service_id) == self.ac_namespace;
+                    && is_ac_service(service_id) == self.ac_namespace
+                    && is_acdp_service(service_id) == self.acdp_namespace;
                 let code = if self.unknown_session(req.header.session_id) {
                     ResponseCode::FailedUnknownSession
                 } else if !valid {
@@ -867,6 +890,14 @@ impl<S: Secc> Machine<S> {
             (State::AwaitChargeParameterDiscoveryReq, Request::Dc(dc::Message::DcChargeParameterDiscoveryReq(req))) if !self.ac() => self.dc_charge_parameters(&req, PayloadType::DC_MAINSTREAM, false, out),
             (State::AwaitChargeParameterDiscoveryReq, Request::Ac(ac::Message::AcChargeParameterDiscoveryReq(req))) if self.ac() => self.ac_charge_parameters(&req, PayloadType::AC_MAINSTREAM, false, out),
             (State::AwaitScheduleExchangeReq, Request::Common(C::ScheduleExchangeReq(req))) => self.schedule_exchange(&req, main, false, out),
+            (State::AwaitConnectReq, Request::Acdp(acdp::Message::AcdpConnectReq(req))) => {
+                let unknown = self.unknown_session(req.header.session_id);
+                self.acdp_connection(unknown, req.ev_electrical_charging_device_status, true, out)
+            }
+            (State::AwaitDisconnectReq, Request::Acdp(acdp::Message::AcdpDisconnectReq(req))) => {
+                let unknown = self.unknown_session(req.header.session_id);
+                self.acdp_connection(unknown, req.ev_electrical_charging_device_status, false, out)
+            }
             (State::AwaitCableCheckReq, Request::Dc(dc::Message::DcCableCheckReq(req))) => {
                 let (processing, code) = if self.unknown_session(req.header.session_id) {
                     (Processing::Finished, ResponseCode::FailedUnknownSession)
@@ -1036,7 +1067,13 @@ impl<S: Secc> Machine<S> {
                         ChargeProgress::Stop => {
                             // V2G20-919: from here on the pilot is meant to go to B.
                             self.pilot.set_stopping();
-                            self.goto(if self.ac() { State::AwaitSessionStopReq } else { State::AwaitWeldingReq })
+                            self.goto(if self.ac() {
+                                State::AwaitSessionStopReq
+                            } else if self.acdp() {
+                                State::AwaitDisconnectReq
+                            } else {
+                                State::AwaitWeldingReq
+                            })
                         }
                         _ => {}
                     }
@@ -1159,6 +1196,37 @@ impl<S: Secc> Machine<S> {
         self.main_reply(out, payload_type, |o| res.encode(o), !is_ok(code))
     }
 
+    /// `ACDP_ConnectReq` (V2G20-4070 to 4072) and `ACDP_DisconnectReq` (V2G20-4073 to 4075): `Ongoing` while the pantograph moves, `Finished`
+    /// when it is at its end position or home. The cable check follows the connect, the session stop the disconnect.
+    fn acdp_connection(&mut self, unknown_session: bool, electrical: acdp::ElectricalChargingDeviceStatus, connect: bool, out: &mut [u8]) -> Reply {
+        let seen = if unknown_session {
+            None
+        } else if connect {
+            Some(self.secc.acdp_connect(electrical))
+        } else {
+            Some(self.secc.acdp_disconnect(electrical))
+        };
+        let (code, processing, electrical, mechanical) = match seen {
+            None => (ResponseCode::FailedUnknownSession, Processing::Finished, acdp::ElectricalChargingDeviceStatus::StateA, acdp::MechanicalChargingDeviceStatus::Home),
+            Some(c) => (ResponseCode::Ok, if c.finished { Processing::Finished } else { Processing::Ongoing }, c.electrical, c.mechanical),
+        };
+        let header = self.header();
+        let res = acdp::AcdpConnectRes {
+            header,
+            response_code: code,
+            evse_processing: processing,
+            evse_electrical_charging_device_status: electrical,
+            evse_mechanical_charging_device_status: mechanical,
+        };
+        if !is_ok(code) {
+            return self.main_reply(out, PayloadType::ACDP_MAINSTREAM, |o| if connect { res.encode(o) } else { res.encode_as_acdp_disconnect_res(o) }, true);
+        }
+        if processing == Processing::Finished {
+            self.goto(if connect { State::AwaitCableCheckReq } else { State::AwaitSessionStopReq });
+        }
+        reply(frame(out, PayloadType::ACDP_MAINSTREAM, |o| if connect { res.encode(o) } else { res.encode_as_acdp_disconnect_res(o) }), false)
+    }
+
     fn schedule_exchange(&mut self, req: &common::ScheduleExchangeReq<'_>, payload_type: PayloadType, side: bool, out: &mut [u8]) -> Reply {
         let scheduled_request = matches!(req.se_req_control_mode, common::SeReqControlModeChoice::Scheduled(_));
         let (processing, code) = if self.unknown_session(req.header.session_id) {
@@ -1180,7 +1248,13 @@ impl<S: Secc> Machine<S> {
         if !side && !ongoing && is_ok(code) {
             self.no_power = go_to_pause;
             // AC has no cable check or pre-charge: the power delivery follows.
-            self.goto(if self.ac() || go_to_pause { State::AwaitPowerDeliveryReq } else { State::AwaitCableCheckReq });
+            self.goto(if self.ac() || go_to_pause {
+                State::AwaitPowerDeliveryReq
+            } else if self.acdp() {
+                State::AwaitConnectReq
+            } else {
+                State::AwaitCableCheckReq
+            });
         }
         let needs = if !ongoing && is_ok(code) { self.secc.schedule_requested(req) } else { Default::default() };
         let control = if self.scheduled {

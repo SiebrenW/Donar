@@ -24,6 +24,10 @@ pub enum State {
     AwaitSessionSetupRes,
     /// ACDP: `ACDP_VehiclePositioningReq` is out; the charger answers `Ongoing` while the vehicle is guided into position.
     AwaitVehiclePositioningRes,
+    /// ACDP: `ACDP_ConnectReq` is out; the pantograph is moving down.
+    AwaitConnectRes,
+    /// ACDP: `ACDP_DisconnectReq` is out; the pantograph is moving up.
+    AwaitDisconnectRes,
     AwaitAuthorizationSetupRes,
     AwaitAuthorizationRes,
     AwaitServiceDiscoveryRes,
@@ -221,6 +225,9 @@ pub enum Notice {
     /// the vehicle. Guide the driver (or the parking system) with it; the vehicle is positioned when the host says so
     /// ([`crate::ev::Ev::immobilized`]), not when this says it is in position.
     AcdpPosition(AcdpPosition),
+    /// ACDP: the charger's answer to `ACDP_ConnectReq` or `ACDP_DisconnectReq`: where the pantograph is, and the control pilot state the
+    /// charger sees. `finished` ends the movement; the cable check (or the session stop) follows.
+    AcdpConnection(AcdpConnection),
     /// Authorization finished successfully.
     Authorized,
     /// The EVSE accepted the service selection.
@@ -280,6 +287,14 @@ pub struct AcdpPosition {
     pub window_y_mm: i16,
     /// The vehicle is within the tolerances of the pantograph (`EVInChargePosition`); the basic RFID PPD reports only this.
     pub in_charge_position: bool,
+}
+
+/// The state of the pantograph in an answer to `ACDP_ConnectReq` or `ACDP_DisconnectReq` (Tables 84, 86).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcdpConnection {
+    pub finished: bool,
+    pub electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus,
+    pub mechanical: iso15118_20::acdp::MechanicalChargingDeviceStatus,
 }
 
 /// What the charger's meter said in a charge loop answer (`MeterInfo`, V2G20-902: the energy of the

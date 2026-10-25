@@ -50,11 +50,11 @@ impl Phase {
             AwaitServiceDiscoveryRes | AwaitServiceDetailRes | AwaitServiceSelectionRes | AwaitServicePaymentSelectionRes => Phase::Service,
             AwaitChargeParameterDiscoveryRes | AwaitDutyCycle => Phase::ChargeParameters,
             AwaitScheduleExchangeRes => Phase::ScheduleExchange,
-            AwaitControlPilotC | AwaitCableCheckRes => Phase::CableCheck,
+            AwaitControlPilotC | AwaitConnectRes | AwaitCableCheckRes => Phase::CableCheck,
             AwaitPreChargeRes | AwaitContactors => Phase::PreCharge,
             AwaitPowerDeliveryRes => Phase::PowerDelivery,
             AwaitChargeLoopRes | AwaitPowerDeliveryStandbyRes | AwaitCurrentDemandRes | AwaitChargingStatusRes | AwaitMeteringReceiptRes => Phase::ChargeLoop,
-            AwaitCurrentStopped | AwaitPowerDeliveryStopRes | AwaitContactorsOpened | AwaitControlPilotB | AwaitWeldingDetectionRes | AwaitSessionStopRes => Phase::Stop,
+            AwaitCurrentStopped | AwaitPowerDeliveryStopRes | AwaitContactorsOpened | AwaitControlPilotB | AwaitDisconnectRes | AwaitWeldingDetectionRes | AwaitSessionStopRes => Phase::Stop,
             Ended => Phase::Ended,
         }
     }

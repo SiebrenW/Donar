@@ -26,6 +26,8 @@ const SERVICE_AC: u16 = 1;
 const SERVICE_DC: u16 = 2;
 const SERVICE_AC_BPT: u16 = 5;
 const SERVICE_DC_BPT: u16 = 6;
+const SERVICE_DC_ACDP: u16 = 4;
+const SERVICE_DC_ACDP_BPT: u16 = 7;
 
 /// The schedule tuples a scheduled session offers: 1 is the charger's full power for an entry
 /// (`schedule_entry_s`) and then half of it, 2 half of it throughout.
@@ -49,10 +51,21 @@ fn leak_str(s: &str) -> &'static str {
 /// The sets of a config as the codec wants them (the names and lists live for the rest of the process:
 /// a few hundred bytes per session of the simulator).
 fn build_sets(sets: &[OfferedSet], extra: &[(&str, i32)]) -> Vec<ParameterSet<'static>> {
+    build_sets_without(sets, extra, &[])
+}
+
+/// The same without the named parameters (the ACDP services have no `Connector`, Tables 210 and 211).
+fn build_sets_without(sets: &[OfferedSet], extra: &[(&str, i32)], skip: &[&str]) -> Vec<ParameterSet<'static>> {
     sets.iter()
         .map(|set| {
-            let parameters: Vec<Parameter<'static>> =
-                set.values.iter().map(|(n, v)| (n.as_str(), *v)).chain(extra.iter().copied()).map(|(name, v)| Parameter { name: leak_str(name), choice: ParameterChoice::IntValue(v) }).collect();
+            let parameters: Vec<Parameter<'static>> = set
+                .values
+                .iter()
+                .filter(|(n, _)| !skip.contains(&n.as_str()))
+                .map(|(n, v)| (n.as_str(), *v))
+                .chain(extra.iter().copied())
+                .map(|(name, v)| Parameter { name: leak_str(name), choice: ParameterChoice::IntValue(v) })
+                .collect();
             ParameterSet { parameter_set_id: set.id, parameter: leak(parameters) }
         })
         .collect()
@@ -75,6 +88,8 @@ struct Announced {
 }
 
 pub(crate) struct SimSecc {
+    /// ACDP: the pantograph model, made when the first request for it arrives.
+    pantograph: Option<crate::pantograph::Pantograph>,
     pub(crate) config: Config,
     pub(crate) live: Option<Arc<EvseLive>>,
     /// What the charger did, one line each (the log of the simulator).
@@ -83,6 +98,8 @@ pub(crate) struct SimSecc {
     dc_sets: Vec<ParameterSet<'static>>,
     dc_bpt_sets: Vec<ParameterSet<'static>>,
     ac_sets: Vec<ParameterSet<'static>>,
+    acdp_sets: Vec<ParameterSet<'static>>,
+    acdp_bpt_sets: Vec<ParameterSet<'static>>,
     tuples: Vec<ScheduleTuple<'static>>,
     // The selected service.
     service: u16,
@@ -141,6 +158,9 @@ impl SimSecc {
             services: Vec::new(),
             dc_sets: Vec::new(),
             dc_bpt_sets: Vec::new(),
+            acdp_sets: Vec::new(),
+            acdp_bpt_sets: Vec::new(),
+            pantograph: None,
             ac_sets: Vec::new(),
             tuples: Vec::new(),
             service: 0,
@@ -183,11 +203,22 @@ impl SimSecc {
 
     /// New settings (a test platform changed them during the session).
     pub(crate) fn set_config(&mut self, config: Config) {
-        self.services = config.energy_services.iter().map(|&service_id| Service { service_id, free_service: false }).collect();
+        let mut ids = config.energy_services.clone();
+        // An ACDP charger also offers the ACDP services (the vehicle that negotiated the ACDP schema selects them).
+        if config.acdp.is_some() {
+            for id in [SERVICE_DC_ACDP, SERVICE_DC_ACDP_BPT] {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+        self.services = ids.iter().map(|&service_id| Service { service_id, free_service: false }).collect();
         // Table 207: DC_BPT adds the channel (1 unified) and the generator mode (1 grid following).
         self.dc_sets = build_sets(&config.parameter_sets, &[]);
         self.dc_bpt_sets = build_sets(&config.parameter_sets, &[("BPTChannel", 1), ("GeneratorMode", 1)]);
         self.ac_sets = build_sets(&config.ac_parameter_sets, &[]);
+        self.acdp_sets = build_sets_without(&config.parameter_sets, &[], &["Connector"]);
+        self.acdp_bpt_sets = build_sets_without(&config.parameter_sets, &[("BPTChannel", 1), ("GeneratorMode", 1)], &["Connector"]);
         self.config = config;
     }
 
@@ -197,6 +228,22 @@ impl SimSecc {
 
     fn note(&mut self, line: impl Into<String>) {
         self.log.push(line.into());
+    }
+
+    /// The pantograph asked to go to `to`: where it is, and the control pilot state its contacts give (B only while it is down).
+    fn pantograph_to(&mut self, to: iso15118_20::acdp::MechanicalChargingDeviceStatus, what: &str, seen: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> evse_core::secc::AcdpConnection {
+        use iso15118_20::acdp::{ElectricalChargingDeviceStatus as E, MechanicalChargingDeviceStatus as M};
+        if self.pantograph.is_none() {
+            self.pantograph = self.config.acdp.as_ref().and_then(|a| crate::pantograph::Pantograph::new(a).ok());
+        }
+        let Some(pantograph) = self.pantograph.as_mut() else {
+            // No world to keep it in: a pantograph that is there at once.
+            return evse_core::secc::AcdpConnection { finished: true, electrical: if to == M::EndPosition { E::StateB } else { E::StateA }, mechanical: to };
+        };
+        let now = pantograph.go(to, Instant::now());
+        let connection = evse_core::secc::AcdpConnection { finished: now == to, electrical: if now == M::EndPosition { E::StateB } else { E::StateA }, mechanical: now };
+        self.note(format!("pantograph {what}: the vehicle sees {seen:?}; the pantograph is {now:?}"));
+        connection
     }
 
     fn set_for(&self, service_id: u16, id: u16) -> Option<&OfferedSet> {
@@ -471,6 +518,14 @@ impl Secc for SimSecc {
             && major == 1
     }
 
+    fn acdp_connect(&mut self, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> evse_core::secc::AcdpConnection {
+        self.pantograph_to(iso15118_20::acdp::MechanicalChargingDeviceStatus::EndPosition, "connect", electrical)
+    }
+
+    fn acdp_disconnect(&mut self, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> evse_core::secc::AcdpConnection {
+        self.pantograph_to(iso15118_20::acdp::MechanicalChargingDeviceStatus::Home, "disconnect", electrical)
+    }
+
     fn acdp_positioning(&mut self, request: evse_core::secc::AcdpPositioningRequest) -> evse_core::secc::AcdpPositioning {
         let Some(acdp) = &self.config.acdp else { return evse_core::secc::AcdpPositioning::UNGUIDED };
         let seen = match crate::ppd::Ppd::new(acdp) {
@@ -493,6 +548,8 @@ impl Secc for SimSecc {
         match service_id {
             SERVICE_AC | SERVICE_AC_BPT => &self.ac_sets,
             SERVICE_DC_BPT => &self.dc_bpt_sets,
+            SERVICE_DC_ACDP => &self.acdp_sets,
+            SERVICE_DC_ACDP_BPT => &self.acdp_bpt_sets,
             _ => &self.dc_sets,
         }
     }
@@ -550,7 +607,7 @@ impl Secc for SimSecc {
     fn service_selected(&mut self, selection: &ServiceSelectionReq<'_>) {
         let SelectedService { service_id, parameter_set_id } = selection.selected_energy_transfer_service;
         self.service = service_id;
-        self.bpt = matches!(service_id, SERVICE_AC_BPT | SERVICE_DC_BPT);
+        self.bpt = matches!(service_id, SERVICE_AC_BPT | SERVICE_DC_BPT | SERVICE_DC_ACDP_BPT);
         self.ac = matches!(service_id, SERVICE_AC | SERVICE_AC_BPT);
         let set = self.set_for(service_id, parameter_set_id).cloned();
         self.scheduled = set.as_ref().and_then(|s| parameter(s, "ControlMode")) == Some(1);

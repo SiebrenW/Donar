@@ -42,6 +42,26 @@ impl World {
         fs::rename(tmp, self.dir.join("vehicle"))
     }
 
+    /// The pantograph's state (`Home`, `Moving`, `EndPosition`), written by the charger.
+    pub fn set_pantograph(&self, state: &str) -> io::Result<()> {
+        let tmp = self.dir.join(".pantograph.tmp");
+        fs::write(&tmp, state)?;
+        fs::rename(tmp, self.dir.join("pantograph"))
+    }
+
+    /// The pantograph's state, if the charger wrote one. Read like [`World::vehicle`].
+    pub fn pantograph(&self) -> Option<String> {
+        for attempt in 0..5 {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            if let Some(state) = fs::read_to_string(self.dir.join("pantograph")).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+                return Some(state);
+            }
+        }
+        None
+    }
+
     /// The vehicle's position, if it wrote one. A read that finds nothing is repeated a few times: on some file systems (a bind
     /// mount of the host's directory into the container) a reader can miss the file for a moment while the writer replaces it,
     /// and what reads the position, the PPD, must not take that for a vehicle that left.

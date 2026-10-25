@@ -60,6 +60,16 @@ impl AcdpPositioning {
         AcdpPositioning { association: true, positioning_support: false, x_deviation_mm: 0, y_deviation_mm: 0, window_x_mm: 0, window_y_mm: 0, in_charge_position: true };
 }
 
+/// The charger's answer to `ACDP_ConnectReq` and `ACDP_DisconnectReq` (Tables 84, 86): the pantograph, and the control pilot state the
+/// charger sees through its contacts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcdpConnection {
+    /// The movement is over: the pantograph is at its end position (connect) or home (disconnect). `Ongoing` otherwise.
+    pub finished: bool,
+    pub electrical: acdp::ElectricalChargingDeviceStatus,
+    pub mechanical: acdp::MechanicalChargingDeviceStatus,
+}
+
 /// What the machine does with a request before looking at it (for faults and tests).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Action {
@@ -189,6 +199,17 @@ pub trait Secc {
     /// the answer decides only what goes with it, and whether the association holds ([`AcdpPositioning::association`]).
     fn acdp_positioning(&mut self, _request: AcdpPositioningRequest) -> AcdpPositioning {
         AcdpPositioning::UNGUIDED
+    }
+
+    /// The vehicle asks for the pantograph (`ACDP_ConnectReq`, `electrical` is the pilot state the vehicle sees). Lower it; answer with
+    /// `finished` false while it moves and true when it is down. The default is a pantograph that is down at once.
+    fn acdp_connect(&mut self, _electrical: acdp::ElectricalChargingDeviceStatus) -> AcdpConnection {
+        AcdpConnection { finished: true, electrical: acdp::ElectricalChargingDeviceStatus::StateB, mechanical: acdp::MechanicalChargingDeviceStatus::EndPosition }
+    }
+    /// The vehicle asks for the pantograph to go home (`ACDP_DisconnectReq`). Raise it; `finished` when it is home. The default is
+    /// a pantograph that is home at once.
+    fn acdp_disconnect(&mut self, _electrical: acdp::ElectricalChargingDeviceStatus) -> AcdpConnection {
+        AcdpConnection { finished: true, electrical: acdp::ElectricalChargingDeviceStatus::StateA, mechanical: acdp::MechanicalChargingDeviceStatus::Home }
     }
 
     // ---- the service flow

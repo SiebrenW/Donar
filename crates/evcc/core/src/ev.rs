@@ -273,6 +273,11 @@ pub trait Ev {
     fn immobilized(&self) -> bool {
         true
     }
+    /// ACDP: the control pilot state the vehicle sees through the pantograph's contacts, as `ACDP_Connect` and `ACDP_Disconnect` report it: A
+    /// while the pantograph is up (no connection), B, C or D once it is down (Tables 83, 85). The default is A.
+    fn acdp_electrical_status(&self) -> iso15118_20::acdp::ElectricalChargingDeviceStatus {
+        iso15118_20::acdp::ElectricalChargingDeviceStatus::StateA
+    }
     /// The MAC address of the EVCC: the EVCCID of DIN SPEC 70121 (six octets).
     fn evcc_mac(&self) -> [u8; 6] {
         [0; 6]

@@ -198,6 +198,14 @@ impl Config {
         ..Config::DC_20
     };
 
+    /// ACDP with bidirectional power transfer: the service `DC_ACDP_BPT`, a unified channel and grid-following generator mode as for `DC_BPT`
+    /// (Table 211).
+    pub const ACDP_BPT_20: Config = Config {
+        energy_service: SERVICE_ID_DC_ACDP_BPT,
+        optional_parameters: &[("BPTChannel", 1), ("GeneratorMode", 1)],
+        ..Config::ACDP_20
+    };
+
     /// Whether the session is an ACDP one (positioning before the authorization, `ACDP_Connect` before the cable check).
     pub fn acdp(&self) -> bool {
         matches!(self.energy_service, SERVICE_ID_DC_ACDP | SERVICE_ID_DC_ACDP_BPT)

@@ -40,6 +40,7 @@ impl Approach {
 }
 
 pub struct Driver {
+    world: World,
     approach: Approach,
     settings: Acdp,
     /// What the charger last said: it guides the vehicle, and the vehicle is within the contact windows.
@@ -55,7 +56,7 @@ impl Driver {
         let world = World::new(dir)?;
         let approach = Approach { started: Instant::now(), points: settings.approach.clone() };
         let stop = Arc::new(AtomicBool::new(false));
-        let driver = Arc::new(Driver { approach: approach.clone(), settings: settings.clone(), guided: AtomicBool::new(false), guided_in_position: AtomicBool::new(false), stop: stop.clone() });
+        let driver = Arc::new(Driver { world: world.clone(), approach: approach.clone(), settings: settings.clone(), guided: AtomicBool::new(false), guided_in_position: AtomicBool::new(false), stop: stop.clone() });
         let evid = settings.evid.clone();
         std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
@@ -65,6 +66,12 @@ impl Driver {
             }
         });
         Ok(driver)
+    }
+
+    /// Whether the contacts have a connection: the pantograph is down. Through them the vehicle sees the control pilot (B), before
+    /// that nothing (A).
+    pub fn pantograph_down(&self) -> bool {
+        self.world.pantograph().as_deref() == Some("EndPosition")
     }
 
     pub fn evid(&self) -> &str {

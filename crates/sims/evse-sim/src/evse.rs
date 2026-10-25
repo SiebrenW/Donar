@@ -42,6 +42,8 @@ pub enum State {
     AwaitContractAuthenticationReq,
     AwaitChargeParameterDiscoveryReq,
     AwaitScheduleExchangeReq,
+    /// ACDP: the pantograph is connected before the cable check.
+    AwaitConnectReq,
     AwaitCableCheckReq,
     AwaitPreChargeReq,
     AwaitPowerDeliveryReq,
@@ -49,6 +51,8 @@ pub enum State {
     ChargeLoop,
     /// Welding detection after the stop (V2G20-1448); ends with a `Finished` request.
     AwaitWeldingReq,
+    /// ACDP: the pantograph is disconnected after the stop, in place of the welding detection.
+    AwaitDisconnectReq,
     AwaitSessionStopReq,
     /// The session was stopped properly.
     Stopped,
@@ -226,11 +230,13 @@ impl From<evse_core::State> for State {
             C::AwaitServiceSelectionReq => State::AwaitServiceSelectionReq,
             C::AwaitChargeParameterDiscoveryReq => State::AwaitChargeParameterDiscoveryReq,
             C::AwaitScheduleExchangeReq => State::AwaitScheduleExchangeReq,
+            C::AwaitConnectReq => State::AwaitConnectReq,
             C::AwaitCableCheckReq => State::AwaitCableCheckReq,
             C::AwaitPreChargeReq => State::AwaitPreChargeReq,
             C::AwaitPowerDeliveryReq => State::AwaitPowerDeliveryReq,
             C::ChargeLoop => State::ChargeLoop,
             C::AwaitWeldingReq => State::AwaitWeldingReq,
+            C::AwaitDisconnectReq => State::AwaitDisconnectReq,
             C::AwaitSessionStopReq => State::AwaitSessionStopReq,
             C::Stopped => State::Stopped,
             C::Paused => State::Paused,

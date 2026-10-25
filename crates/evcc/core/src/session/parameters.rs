@@ -63,6 +63,14 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                     }
                     return step;
                 }
+                // ACDP: the pantograph is connected before anything else of the DC sequence (V2G20-4050).
+                if self.config.acdp() {
+                    let mut step = self.send_acdp_connect_req(tx);
+                    if step.end.is_none() {
+                        step.notice = Some(Notice::ScheduleExchanged);
+                    }
+                    return step;
+                }
                 // AC has no cable check or pre-charge: the power delivery starts at once.
                 if self.config.control_pilot && !self.config.ac() {
                     // V2G20-917: the pilot is C or D for the cable check; `Notice::ScheduleExchanged` follows with it.

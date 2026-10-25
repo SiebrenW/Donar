@@ -342,6 +342,18 @@ pub enum Ppd {
     Optical,
 }
 
+/// A fault of the simulated pantograph.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PantographFault {
+    #[default]
+    None,
+    /// Going down it stays in `Moving`: `ACDP_Connect` never finishes.
+    StuckLowering,
+    /// Going up it stays in `Moving`: `ACDP_Disconnect` never finishes (the vehicle must not drive off).
+    StuckRaising,
+}
+
 /// An ACDP charger: a pantograph on the infrastructure for buses (ISO 15118-20 8.3.4.7). The vehicle finds it with the wireless
 /// SDP, which answers `Ongoing` until the PPD reads the vehicle's EVID, and is positioned before the authorization.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -360,6 +372,9 @@ pub struct Acdp {
     pub evse_id: String,
     /// The coupling type of the wireless SDP: 1 is EN 50696 Annex A.3 (in line contacts, V2G20-4003), 0 is A.2 (cross rail).
     pub coupling_type: u8,
+    /// How long the pantograph takes to go down, and to go up (the movement is `Moving` meanwhile).
+    pub pantograph_move_ms: u32,
+    pub pantograph_fault: PantographFault,
     /// The directory the vehicle simulator writes its position into; the scenario runner fills it.
     pub world: Option<String>,
     /// The EVID of the vehicle the SDP paired with this charger: the one the PPD has to keep reading until the pantograph
@@ -371,7 +386,7 @@ pub struct Acdp {
 
 impl Default for Acdp {
     fn default() -> Self {
-        Self { ppd: Ppd::Rfid, detection_zone_x_mm: 3000, detection_zone_y_mm: 1500, contact_window_x_mm: 150, contact_window_y_mm: 100, evse_id: "DE9ACDP0001".into(), coupling_type: 1, world: None, paired_evid: String::new() }
+        Self { ppd: Ppd::Rfid, detection_zone_x_mm: 3000, detection_zone_y_mm: 1500, contact_window_x_mm: 150, contact_window_y_mm: 100, evse_id: "DE9ACDP0001".into(), coupling_type: 1, pantograph_move_ms: 1500, pantograph_fault: PantographFault::None, world: None, paired_evid: String::new() }
     }
 }
 
