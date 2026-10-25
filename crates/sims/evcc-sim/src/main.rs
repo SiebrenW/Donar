@@ -166,12 +166,14 @@ fn run(interface: &str, settings: &Settings, control: Option<&str>) -> io::Resul
     if settings.slac && settings.slac_only {
         return Ok(true);
     }
-    let mut outcome = attempt(ifindex, settings, None, settings.pause_after, &live)?;
+    // A bus: the approach to the pantograph starts now and goes on while the discovery waits for the charger's PPD to read the EVID.
+    let driver = settings.acdp.as_ref().map(evcc_sim::Driver::start).transpose()?;
+    let mut outcome = attempt(ifindex, settings, None, settings.pause_after, &live, &driver)?;
     // A paused session is resumed on a new connection (V2G20-2073); the data link stays up.
     while let (Outcome::Ended(EndReason::Paused(resume)), Some(ms)) = (outcome, settings.resume_after_ms) {
         eprintln!("paused; resuming session {:02x?} in {ms} ms", resume.session_id);
         std::thread::sleep(std::time::Duration::from_millis(ms.into()));
-        outcome = attempt(ifindex, settings, Some(resume), None, &live)?;
+        outcome = attempt(ifindex, settings, Some(resume), None, &live, &driver)?;
     }
     if live.is_some() {
         // Time for the control socket to deliver the last state.
@@ -181,18 +183,22 @@ fn run(interface: &str, settings: &Settings, control: Option<&str>) -> io::Resul
 }
 
 /// One connection: SDP, TCP, TLS if wanted, and a session on it.
-fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session::Resume>, pause_after: Option<u32>, live: &Option<std::sync::Arc<EvLive>>) -> io::Result<Outcome> {
+fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session::Resume>, pause_after: Option<u32>, live: &Option<std::sync::Arc<EvLive>>, driver: &Option<std::sync::Arc<evcc_sim::Driver>>) -> io::Result<Outcome> {
     let security = if settings.tls.is_some() {
         Security::Tls
     } else {
         Security::NoTls
     };
     let socket = sdp::socket()?;
-    let found = sdp::discover(
-        &socket,
-        sdp::multicast_destination(ifindex),
-        evcc_core::sdp::Config::new(security),
-    )?;
+    // An ACDP vehicle discovers wirelessly (ISO 15118-8): its EVID, with the PPD on the infrastructure and the in line contacts of
+    // EN 50696 Annex A.3 (V2G20-4003, 4100).
+    let mut sdp_config = evcc_core::sdp::Config::new(security);
+    if let Some(acdp) = &settings.acdp {
+        use v2gtp::sdp::{EvId, EvseId, coupling, p2ps};
+        let evid = EvId::new(&acdp.evid).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "acdp.evid: at most 20 letters and digits"))?;
+        sdp_config.wireless = Some(evcc_core::sdp::Wireless { p2ps_ppd: [p2ps::PPD_ON_INFRASTRUCTURE, 0], coupling_type: coupling::PANTOGRAPH_IN_LINE, evid, evse_id: EvseId::EMPTY });
+    }
+    let found = sdp::discover(&socket, sdp::multicast_destination(ifindex), sdp_config)?;
     let SdpOutcome::Found(response) = found else {
         return Err(io::Error::new(io::ErrorKind::NotFound, "sdp: no charger found"));
     };
@@ -224,7 +230,7 @@ fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session:
     let outcome = match &settings.tls {
         None => {
             let mut stream = tcp;
-            run_car_pilot(&mut stream, false, config, behaviour, log, live.clone(), settings.limits, contract, pilot)?
+            run_car_pilot(&mut stream, false, config, behaviour, log, live.clone(), settings.limits, contract, pilot, driver.clone())?
         }
         Some(t) => {
             let (chain, key, trust) = (
@@ -252,7 +258,7 @@ fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session:
                 stream.ssl().version_str(),
                 stream.ssl().current_cipher().map_or("?", |c| c.name())
             );
-            run_car_pilot(&mut stream, true, config, behaviour, log, live.clone(), settings.limits, contract, pilot)?
+            run_car_pilot(&mut stream, true, config, behaviour, log, live.clone(), settings.limits, contract, pilot, driver.clone())?
         }
     };
     eprintln!("session: {outcome:?}");

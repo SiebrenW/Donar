@@ -14,11 +14,13 @@ use iso15118_20::common_types::RationalNumber;
 
 use evcc_linux::{Outcome, Transport};
 
+mod driver;
 mod live;
 mod settings;
 
+pub use driver::Driver;
 pub use live::{Action, EvLive, Phase};
-pub use settings::{CertificateChecks, Connector, Contract, Din, Iso2, Iso2Mode, Limits, LogLevel, Protocol, Settings, SlacValidation, Tls, TlsVersions};
+pub use settings::{Acdp, ApproachPoint, CertificateChecks, Connector, Contract, Din, Iso2, Iso2Mode, Limits, LogLevel, Protocol, Settings, SlacValidation, Tls, TlsVersions};
 
 pub struct SimulatedEv {
     connector: DcConnector,
@@ -29,17 +31,25 @@ pub struct SimulatedEv {
     reads: Cell<u32>,
     /// Set by the host when the contactors are open: the inlet voltage then drops to zero.
     open: Rc<Cell<bool>>,
+    /// ACDP: the driver who positions and immobilizes the vehicle.
+    driver: Option<Arc<Driver>>,
 }
 
 impl SimulatedEv {
     pub fn new(open: Rc<Cell<bool>>, connector: DcConnector) -> Self {
-        Self { connector, mac: Din::default().mac_address, limits: Limits::default(), live: None, contract: None, reads: Cell::new(0), open }
+        Self { connector, mac: Din::default().mac_address, limits: Limits::default(), live: None, contract: None, reads: Cell::new(0), open, driver: None }
     }
 
     /// A car whose limits are `limits` and whose measurements the test platform sees and sets.
     pub fn with_live(mut self, live: Arc<EvLive>) -> Self {
         self.limits = live.limits();
         self.live = Some(live);
+        self
+    }
+
+    /// A bus with a driver (ACDP).
+    pub fn with_driver(mut self, driver: Arc<Driver>) -> Self {
+        self.driver = Some(driver);
         self
     }
 
@@ -86,6 +96,15 @@ impl Ev for SimulatedEv {
     }
     fn evcc_mac(&self) -> [u8; 6] {
         self.mac
+    }
+    fn evid(&self) -> &str {
+        self.driver.as_ref().map_or("ZZ00000", |d| d.evid())
+    }
+    fn acdp_positioning_support(&self) -> bool {
+        self.driver.as_ref().is_some_and(|d| d.positioning_support())
+    }
+    fn immobilized(&self) -> bool {
+        self.driver.as_ref().is_none_or(|d| d.immobilized())
     }
     fn schedule_request(&self) -> ScheduleRequest {
         let l = &self.limits();
@@ -292,7 +311,7 @@ pub fn run_car_live(
     limits: Limits,
     contract: Option<Arc<dyn evcc_core::ev::Contract>>,
 ) -> io::Result<Outcome> {
-    run_car_pilot(stream, secured, config, behaviour, log, live, limits, contract, None)
+    run_car_pilot(stream, secured, config, behaviour, log, live, limits, contract, None, None)
 }
 
 /// The simulated car's end of the control pilot: the cable it shares with the charger, and a fault of its own.
@@ -317,6 +336,7 @@ pub fn run_car_pilot(
     limits: Limits,
     contract: Option<Arc<dyn evcc_core::ev::Contract>>,
     pilot: Option<PilotHost>,
+    driver: Option<Arc<Driver>>,
 ) -> io::Result<Outcome> {
     let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
     let open = Rc::new(Cell::new(false));
@@ -330,6 +350,9 @@ pub fn run_car_pilot(
     }
     if let Some(contract) = contract {
         car = car.with_contract(contract);
+    }
+    if let Some(driver) = &driver {
+        car = car.with_driver(driver.clone());
     }
     let buffers = Buffers { rx: &mut rx, tx: &mut tx, arena: &mut arena };
     let (mut loops, mut renegotiated, mut rescheduled) = (0, false, false);
@@ -395,6 +418,13 @@ pub fn run_car_pilot(
             None
         }
         Notice::ScheduleRenegotiated => behaviour.stop_when_rescheduled.then_some(Event::StopRequested),
+        // The charger's PPD says where the bus is: the driver goes by it when the charger guides.
+        Notice::AcdpPosition(p) => {
+            if let Some(driver) = &driver {
+                driver.guidance(p.evse_positioning_support, p.in_charge_position);
+            }
+            None
+        }
         Notice::ChargeLoop(status) => {
             let reached = live.as_ref().is_some_and(|l| l.charge_loop(status));
             on_loop(reached)

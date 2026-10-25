@@ -69,6 +69,11 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
     // right to capture) the run goes on without one.
     let mut capture = start_capture(&sb, &evcc);
     let mut evcc_settings = scenario.evcc_settings();
+    // ACDP: where the vehicle is, shared by the vehicle and the charger's pairing and positioning device.
+    let acdp_world = sb.artifacts().join("acdp-world").display().to_string();
+    if let Some(acdp) = evcc_settings.acdp.as_mut() {
+        acdp.world.get_or_insert(acdp_world.clone());
+    }
     evcc_settings.control_pilot_file = evcc_settings.control_pilot_file.map(|p| sb.artifacts().join(p).display().to_string());
     let mut secc_args: Vec<String> = Vec::new();
     // Plug & Charge: a contract chain and key for the vehicle, and its root for the charger.
@@ -98,6 +103,9 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
         }
         Kind::EvseSim => {
             let mut settings = scenario.secc_settings();
+            if let Some(acdp) = settings.session.acdp.as_mut() {
+                acdp.world.get_or_insert(acdp_world.clone());
+            }
             // The control pilot between the two simulators: a directory both read and write.
             let wire = sb.artifacts().join("control-pilot").display().to_string();
             let wire = settings.control_pilot_wire.get_or_insert(wire).clone();

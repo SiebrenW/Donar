@@ -255,6 +255,24 @@ pub trait Ev {
     /// `SessionSetupRes` and keeps the stamps increasing (V2G20-1537), so a clock that is only
     /// approximately right, or even a plain counter, works.
     fn now_micros(&self) -> u64;
+    /// ACDP (and WPT): the EVID of the wireless SDP request, a temporary identifier of the vehicle that the charger's pairing and
+    /// positioning device reads in the vehicle's proximity (at most 20 letters and digits; ISO 15118-20 Table 25). The
+    /// default is what a vehicle without one sends (V2G20-2281).
+    fn evid(&self) -> &str {
+        "ZZ00000"
+    }
+    /// ACDP: whether the vehicle can be guided into position by the charger (`EVPositioningSupport`); without, it positions
+    /// itself (the driver with visual aids, sensors).
+    fn acdp_positioning_support(&self) -> bool {
+        false
+    }
+    /// ACDP: whether the vehicle is positioned and immobilized (brake applied, drive locked) and asks the pantograph to
+    /// come down. The session keeps asking the charger with `EVMobilityStatus` mobilized until this is true. The default is
+    /// true: a host that has nothing to wait for. The host decides when the vehicle is in position, from the guidance of
+    /// [`crate::session::Notice::AcdpPosition`] or by its own means.
+    fn immobilized(&self) -> bool {
+        true
+    }
     /// The MAC address of the EVCC: the EVCCID of DIN SPEC 70121 (six octets).
     fn evcc_mac(&self) -> [u8; 6] {
         [0; 6]

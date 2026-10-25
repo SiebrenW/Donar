@@ -96,6 +96,10 @@ pub struct Config {
     pub control_pilot: bool,
     /// `MobilityNeedsMode` 2 was selected ([`Config::mobility_needs_by_secc`]).
     pub mobility_needs_by_secc: bool,
+    /// ACDP: end the session with `SessionStopReq` as soon as the positioning is finished and the vehicle is immobilized,
+    /// a test of the positioning alone (like `slac_only` for SLAC). Without it the session goes on with the
+    /// authorization.
+    pub positioning_only: bool,
 }
 
 impl Config {
@@ -110,7 +114,7 @@ impl Config {
 
     /// Whether the session is a BPT one.
     pub fn bpt(&self) -> bool {
-        matches!(self.energy_service, SERVICE_ID_DC_BPT | SERVICE_ID_AC_BPT)
+        matches!(self.energy_service, SERVICE_ID_DC_BPT | SERVICE_ID_AC_BPT | SERVICE_ID_DC_ACDP_BPT)
     }
 
     /// Whether the session is an AC one (no cable check, pre-charge, contactors or welding
@@ -177,7 +181,32 @@ impl Config {
         mobility_needs_by_secc: false,
         follow_go_to_pause: true,
         control_pilot: false,
+        positioning_only: false,
     };
+
+    /// ISO 15118-20 ACDP (a pantograph on the infrastructure, wireless communication), version 1.0, schema id 3: the
+    /// service `DC_ACDP`. The positioning (`ACDP_VehiclePositioning`) follows the `SessionSetupRes`.
+    pub const ACDP_20: Config = Config {
+        offer: AppProtocol {
+            protocol_namespace: "urn:iso:std:iso:15118:-20:ACDP",
+            version_number_major: 1,
+            version_number_minor: 0,
+            schema_id: 3,
+            priority: 1,
+        },
+        energy_service: SERVICE_ID_DC_ACDP,
+        ..Config::DC_20
+    };
+
+    /// Whether the session is an ACDP one (positioning before the authorization, `ACDP_Connect` before the cable check).
+    pub fn acdp(&self) -> bool {
+        matches!(self.energy_service, SERVICE_ID_DC_ACDP | SERVICE_ID_DC_ACDP_BPT)
+    }
+
+    /// The same session ending after the positioning ([`Config::positioning_only`]).
+    pub const fn positioning_only(self) -> Config {
+        Config { positioning_only: true, ..self }
+    }
 
     /// The same session in Scheduled control mode (ISO 15118-20:2022 Table 205: `ControlMode` 1
     /// with the mobility needs from the EVCC).
@@ -212,6 +241,10 @@ pub(crate) fn pow10(exp: i8) -> f32 {
 pub const SERVICE_ID_DC: u16 = 2;
 /// Service id of DC bidirectional power transfer (Table 204).
 pub const SERVICE_ID_DC_BPT: u16 = 6;
+/// Service id of DC energy transfer with ACDP (Table 204).
+pub const SERVICE_ID_DC_ACDP: u16 = 4;
+/// Service id of DC bidirectional power transfer with ACDP (Table 204).
+pub const SERVICE_ID_DC_ACDP_BPT: u16 = 7;
 /// Service id of AC energy transfer (Table 204).
 pub const SERVICE_ID_AC: u16 = 1;
 /// Service id of AC bidirectional power transfer (Table 204).

@@ -26,6 +26,8 @@ pub enum MsgKind {
     SupportedAppProtocolRes,
     SessionSetupReq,
     SessionSetupRes,
+    AcdpVehiclePositioningReq,
+    AcdpVehiclePositioningRes,
     AuthorizationSetupReq,
     AuthorizationSetupRes,
     AuthorizationReq,
@@ -107,6 +109,8 @@ pub enum Record<'a> {
     /// The schedule tuple the vehicle selected of those the charger offered (Scheduled mode), given the
     /// energy it needs and the seconds until it leaves.
     ScheduleSelected { tuple_id: u32, offered: usize, need_wh: u32, departure_s: u32 },
+    /// ACDP: the charger's answer to a positioning request.
+    VehiclePositioning { processing: Processing, evse_positioning_support: bool, x_deviation_mm: i16, y_deviation_mm: i16, window_x_mm: i16, window_y_mm: i16, in_charge_position: bool },
     /// The charger has no power and said so (`GoToPause`, V2G20-2121): the vehicle pauses the session.
     GoToPause,
     /// The charger provided mobility needs (`MobilityNeedsMode` 2); what it named, which the vehicle now uses.
@@ -158,6 +162,7 @@ impl Record<'_> {
             | Record::ScheduleSelected { .. }
             | Record::MobilityNeedsFromSecc { .. }
             | Record::GoToPause
+            | Record::VehiclePositioning { .. }
             | Record::MobilityNeedsIgnored { .. }
             | Record::ServiceSelected { .. } => Level::Info,
             Record::Response { code, .. } if !crate::session::is_ok(*code) => Level::Info,

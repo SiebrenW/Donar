@@ -44,7 +44,8 @@ impl Phase {
         use State::*;
         match state {
             Idle => Phase::Connecting,
-            AwaitSupportedAppProtocolRes | AwaitSessionSetupRes => Phase::Setup,
+            // The positioning of an ACDP vehicle is part of the setup, before the authorization.
+            AwaitSupportedAppProtocolRes | AwaitSessionSetupRes | AwaitVehiclePositioningRes => Phase::Setup,
             AwaitAuthorizationSetupRes | AwaitAuthorizationRes | AwaitContractAuthenticationRes | AwaitPaymentDetailsRes => Phase::Authorization,
             AwaitServiceDiscoveryRes | AwaitServiceDetailRes | AwaitServiceSelectionRes | AwaitServicePaymentSelectionRes => Phase::Service,
             AwaitChargeParameterDiscoveryRes | AwaitDutyCycle => Phase::ChargeParameters,

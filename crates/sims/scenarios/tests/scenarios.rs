@@ -32,7 +32,13 @@ fn every_scenario_file_loads() {
 
 /// The bring-up of a charging session starts with SLAC (ISO 15118-3): every simulator scenario runs it, unless it is listed
 /// here with the reason.
-const WITHOUT_SLAC: &[(&str, &str)] = &[("basic-charging", "the charger offers a nominal duty cycle: basic charging, no SLAC, no high level communication")];
+const WITHOUT_SLAC: &[(&str, &str)] = &[
+    ("basic-charging", "the charger offers a nominal duty cycle: basic charging, no SLAC, no high level communication"),
+    ("acdp-positioning-rfid", "ACDP: the link is WLAN (ISO 15118-8), there is no PLC"),
+    ("acdp-positioning-optical", "ACDP: the link is WLAN (ISO 15118-8), there is no PLC"),
+    ("acdp-positioning-unguided", "ACDP: the link is WLAN (ISO 15118-8), there is no PLC"),
+    ("acdp-leaves-the-zone", "ACDP: the link is WLAN (ISO 15118-8), there is no PLC"),
+];
 
 #[test]
 fn every_simulator_scenario_runs_slac_unless_it_is_exempt() {
@@ -129,6 +135,10 @@ mod run {
         dc_mobility_needs_evse => "dc-mobility-needs-evse",
         dc_slac => "dc-slac",
         basic_charging => "basic-charging",
+        acdp_positioning_rfid => "acdp-positioning-rfid",
+        acdp_positioning_optical => "acdp-positioning-optical",
+        acdp_positioning_unguided => "acdp-positioning-unguided",
+        acdp_leaves_the_zone => "acdp-leaves-the-zone",
         slac_too_far => "slac-too-far",
         slac_ac_restarts => "slac-ac-restarts",
         dc_tls_slac => "dc-tls-slac",

@@ -53,14 +53,19 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                 return self.end(EndReason::UnexpectedMessage);
             }
         }
-        let msg = AuthorizationSetupReq { header: self.header() };
-        let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
-        let mut step = self.send_then(State::AwaitAuthorizationSetupRes, MsgKind::AuthorizationSetupReq, framed);
+        // ACDP: the vehicle is positioned first (8.3.4.7.5).
+        let mut step = if self.config.acdp() { self.send_vehicle_positioning_req(tx) } else { self.send_authorization_setup_req(tx) };
         step.notice = Some(Notice::SessionSetUp { session_id: self.session_id });
         if step.end.is_none() {
             step.timers = step.timers.with(TimerCmd::Cancel(Timer::Setup));
         }
         step
+    }
+
+    pub(super) fn send_authorization_setup_req(&mut self, tx: &mut [u8]) -> Step {
+        let msg = AuthorizationSetupReq { header: self.header() };
+        let framed = frame(tx, PayloadType::MAINSTREAM, |out| msg.encode(out));
+        self.send_then(State::AwaitAuthorizationSetupRes, MsgKind::AuthorizationSetupReq, framed)
     }
 
     pub(super) fn on_authorization_setup_res(&mut self, res: AuthorizationSetupRes<'_>, tx: &mut [u8]) -> Step {

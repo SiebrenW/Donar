@@ -34,8 +34,8 @@ pub fn socket() -> io::Result<UdpSocket> {
 /// `config` (request interval, number of requests). Blocking.
 pub fn discover(socket: &UdpSocket, destination: SocketAddr, config: Config) -> io::Result<Outcome> {
     let mut client = Client::new(config);
-    let mut tx = [0u8; 16];
-    let mut rx = [0u8; 64];
+    let mut tx = [0u8; 80];
+    let mut rx = [0u8; 128];
     let mut deadline: Option<Instant> = None;
     let mut event = Event::Start;
     loop {

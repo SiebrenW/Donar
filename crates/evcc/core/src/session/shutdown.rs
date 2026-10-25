@@ -70,6 +70,14 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         self.send_session_stop_req(tx)
     }
 
+    /// Ends the session with `SessionStopReq(Terminate)` where no power was ever on (the positioning of an ACDP session
+    /// that is to go no further); the answer ends it as `Completed`.
+    pub(super) fn stop_session(&mut self, tx: &mut [u8]) -> Step {
+        self.stop_kind = StopKind::Terminate;
+        self.termination_code = None;
+        self.send_session_stop_req(tx)
+    }
+
     fn send_session_stop_req(&mut self, tx: &mut [u8]) -> Step {
         self.pilot.set_stopping(true);
         let msg = common::SessionStopReq {

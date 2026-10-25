@@ -1,0 +1,22 @@
+name = "acdp-positioning-rfid"
+description = "ACDP, the positioning with the basic RFID PPD (ISO 15118-20 8.3.4.7, Annex E): the bus drives up to the pantograph while the wireless SDP answers Ongoing until the reader on the pantograph reads the EVID on the roof. The reader cannot position (EVSEPositioningSupport false), so the driver judges the position itself and brakes; the charger answers Finished to the immobilized request and the session stops there (positioning_only)."
+timeout_s = 40
+# The link is WLAN (ISO 15118-8): no SLAC and no control pilot before the pantograph is down.
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session.acdp]
+ppd = "rfid"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+poll_interval_ms = 50
+[evcc.settings.acdp]
+positioning_support = false
+positioning_only = true
+
+[expect]
+secc_exit = 0
+evcc_log = ["VehiclePositioning", "evse_positioning_support: false", "session: Ended(Completed)"]
+secc_log = ["sdp: the PPD reads BUS42: paired", "positioning:", "session: Stopped"]

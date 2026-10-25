@@ -1,0 +1,21 @@
+name = "acdp-positioning-unguided"
+description = "ACDP, case 3 of 8.3.4.7.5.1: the vehicle supports positioning, the charger (a basic RFID PPD) does not. The vehicle asks for guidance (EVPositioningSupport true), the charger says it gives none (EVSEPositioningSupport false) and only that the marker is read, so the driver positions by its own judgement and brakes."
+timeout_s = 40
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session.acdp]
+ppd = "rfid"
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+poll_interval_ms = 50
+[evcc.settings.acdp]
+positioning_support = true
+positioning_only = true
+
+[expect]
+secc_exit = 0
+evcc_log = ["evse_positioning_support: false", "session: Ended(Completed)"]
+secc_log = ["sdp: the PPD reads BUS42: paired", "positioning support true", "session: Stopped"]

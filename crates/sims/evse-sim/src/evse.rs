@@ -18,6 +18,7 @@ use crate::secc_iso2::SimIso2;
 
 const DC_NAMESPACE: &str = "urn:iso:std:iso:15118:-20:DC";
 const AC_NAMESPACE: &str = "urn:iso:std:iso:15118:-20:AC";
+const ACDP_NAMESPACE: &str = "urn:iso:std:iso:15118:-20:ACDP";
 const DIN_NAMESPACE: &str = "urn:din:70121:2012:MsgDef";
 const ISO2_NAMESPACE: &str = "urn:iso:15118:2:2013:MsgDef";
 
@@ -26,6 +27,8 @@ const ISO2_NAMESPACE: &str = "urn:iso:15118:2:2013:MsgDef";
 pub enum State {
     AwaitSupportedAppProtocolReq,
     AwaitSessionSetupReq,
+    /// ACDP: the vehicle is positioned before it is authorized.
+    AwaitVehiclePositioningReq,
     AwaitAuthorizationSetupReq,
     AwaitAuthorizationReq,
     AwaitServiceDiscoveryReq,
@@ -215,6 +218,7 @@ impl From<evse_core::State> for State {
         match s {
             C::AwaitSupportedAppProtocolReq => State::AwaitSupportedAppProtocolReq,
             C::AwaitSessionSetupReq => State::AwaitSessionSetupReq,
+            C::AwaitVehiclePositioningReq => State::AwaitVehiclePositioningReq,
             C::AwaitAuthorizationSetupReq => State::AwaitAuthorizationSetupReq,
             C::AwaitAuthorizationReq => State::AwaitAuthorizationReq,
             C::AwaitServiceDiscoveryReq => State::AwaitServiceDiscoveryReq,
@@ -405,11 +409,11 @@ impl Evse {
             .iter()
             .filter(|p| self.speaks(speaks, p))
             .min_by_key(|p| p.priority);
-        pick.is_some_and(|p| p.protocol_namespace == DC_NAMESPACE || p.protocol_namespace == AC_NAMESPACE)
+        pick.is_some_and(|p| matches!(p.protocol_namespace, DC_NAMESPACE | AC_NAMESPACE | ACDP_NAMESPACE))
     }
 
     fn speaks(&self, speaks: impl Fn(Protocol) -> bool, p: &app_protocol::AppProtocol<'_>) -> bool {
-        (speaks(Protocol::Iso20) && (p.protocol_namespace == DC_NAMESPACE || p.protocol_namespace == AC_NAMESPACE) && p.version_number_major == 1)
+        (speaks(Protocol::Iso20) && (p.protocol_namespace == DC_NAMESPACE || p.protocol_namespace == AC_NAMESPACE || (p.protocol_namespace == ACDP_NAMESPACE && self.config.acdp.is_some())) && p.version_number_major == 1)
             || (speaks(Protocol::Din) && p.protocol_namespace == DIN_NAMESPACE && p.version_number_major == 2)
             || (speaks(Protocol::Iso2) && p.protocol_namespace == ISO2_NAMESPACE && p.version_number_major == 2)
     }
