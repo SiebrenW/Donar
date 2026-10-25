@@ -1749,10 +1749,28 @@ fn acdp_up_to_schedule_exchange<'a>(rig: &'a mut Rig, config: Config) -> (Sess<'
 }
 
 fn connect_res(processing: Processing, mechanical: iso15118_20::acdp::MechanicalChargingDeviceStatus, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> std::vec::Vec<u8> {
+    connect_res_code(ResponseCode::Ok, processing, mechanical, electrical)
+}
+
+fn disconnect_res_code(code: ResponseCode) -> std::vec::Vec<u8> {
     framed(PayloadType::ACDP_MAINSTREAM, |out| {
         iso15118_20::acdp::AcdpConnectRes {
             header: hdr(),
-            response_code: ResponseCode::Ok,
+            response_code: code,
+            evse_processing: Processing::Finished,
+            evse_electrical_charging_device_status: iso15118_20::acdp::ElectricalChargingDeviceStatus::StateA,
+            evse_mechanical_charging_device_status: iso15118_20::acdp::MechanicalChargingDeviceStatus::Moving,
+        }
+        .encode_as_acdp_disconnect_res(out)
+        .unwrap()
+    })
+}
+
+fn connect_res_code(code: ResponseCode, processing: Processing, mechanical: iso15118_20::acdp::MechanicalChargingDeviceStatus, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> std::vec::Vec<u8> {
+    framed(PayloadType::ACDP_MAINSTREAM, |out| {
+        iso15118_20::acdp::AcdpConnectRes {
+            header: hdr(),
+            response_code: code,
             evse_processing: processing,
             evse_electrical_charging_device_status: electrical,
             evse_mechanical_charging_device_status: mechanical,
@@ -1878,4 +1896,64 @@ fn a_dc_session_has_no_status_stream() {
     assert!(!step.timers.iter().any(|c| matches!(c, TimerCmd::Arm { timer: Timer::Status, .. })));
     assert_eq!(s.handle(Event::TimerExpired(Timer::Status)), Step::default());
     assert_eq!(s.handle(Event::AcdpStatusChanged), Step::default());
+}
+
+#[test]
+fn a_failing_answer_before_the_pantograph_moves_stops_the_session_but_does_not_end_it() {
+    // V2G20-4025, 4031: the communication goes on for the last message pair.
+    let mut rig = Rig::new();
+    let (mut s, step) = acdp_up_to_positioning(&mut rig, Config::ACDP_20);
+    assert!(step.send.is_some());
+    let step = deliver(&mut s, &positioning_res(ResponseCode::Failed, Processing::Finished, false));
+    assert_eq!(step.end, None);
+    assert_eq!(s.state(), State::AwaitSessionStopRes);
+    assert_eq!(sent(&s, &step).0, PayloadType::MAINSTREAM, "the SessionStopReq");
+    let step = deliver(&mut s, &session_stop_res(ResponseCode::Ok));
+    assert_eq!(step.end, Some(EndReason::Rejected(ResponseCode::Failed)), "the reason is the failure, not Completed");
+}
+
+#[test]
+fn a_failure_with_the_pantograph_down_opens_the_contactors_disconnects_and_then_stops() {
+    use iso15118_20::acdp::{ElectricalChargingDeviceStatus as E, MechanicalChargingDeviceStatus as M};
+    // V2G20-4039 ... 4044: the pantograph is disconnected first; a disconnect that fails goes to the session stop.
+    let mut rig = Rig::new();
+    let (mut s, _) = acdp_up_to_schedule_exchange(&mut rig, Config::ACDP_20);
+    let step = deliver(&mut s, &connect_res_code(ResponseCode::Failed, Processing::Finished, M::Moving, E::StateA));
+    assert_eq!(step.end, None);
+    assert_eq!(step.notice, Some(Notice::OpenContactors));
+    assert_eq!(s.state(), State::AwaitContactorsOpened);
+    let step = s.handle(Event::ContactorsOpened);
+    assert_eq!(s.state(), State::AwaitDisconnectRes);
+    assert_eq!(sent(&s, &step).0, PayloadType::ACDP_MAINSTREAM, "the ACDP_DisconnectReq");
+    // V2G20-4044: the disconnect fails, the session stop follows.
+    let step = deliver(&mut s, &disconnect_res_code(ResponseCode::Failed));
+    assert_eq!(step.end, None);
+    assert_eq!(s.state(), State::AwaitSessionStopRes);
+    let step = deliver(&mut s, &session_stop_res(ResponseCode::Ok));
+    assert_eq!(step.end, Some(EndReason::Rejected(ResponseCode::Failed)));
+}
+
+#[test]
+fn a_pilot_emergency_with_the_pantograph_down_disconnects_before_the_session_ends() {
+    use iso15118_20::acdp::{ElectricalChargingDeviceStatus as E, MechanicalChargingDeviceStatus as M};
+    use control_pilot::{Pwm, Reading, State as Cp};
+    // V2G20-4027: the pilot leaves C for B; the vehicle sends ACDP_DisconnectReq (after its contactors), no end at once.
+    let mut rig = Rig::new();
+    let (mut s, _) = acdp_up_to_schedule_exchange(&mut rig, Config { control_pilot: true, ..Config::ACDP_20 });
+    deliver(&mut s, &connect_res(Processing::Finished, M::EndPosition, E::StateB));
+    assert_eq!(s.state(), State::AwaitControlPilotC);
+    s.handle(Event::Pilot(Reading { state: Cp::C, pwm: Pwm::Duty(5) }));
+    assert_eq!(s.state(), State::AwaitCableCheckRes);
+    let step = s.handle(Event::Pilot(Reading { state: Cp::B, pwm: Pwm::Duty(5) }));
+    assert_eq!(step.end, None);
+    assert_eq!(step.notice, Some(Notice::OpenContactors));
+    let step = s.handle(Event::ContactorsOpened);
+    assert_eq!(s.state(), State::AwaitDisconnectRes);
+    assert!(step.send.is_some());
+    // A further pilot change on the way out is no new emergency.
+    assert_eq!(s.handle(Event::Pilot(Reading { state: Cp::E, pwm: Pwm::Off })).end, None);
+    deliver(&mut s, &disconnect_res_code(ResponseCode::Ok));
+    let _ = (M::Home, E::StateA);
+    let step = deliver(&mut s, &session_stop_res(ResponseCode::Ok));
+    assert!(matches!(step.end, Some(EndReason::Emergency(_))), "{:?}", step.end);
 }

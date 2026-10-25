@@ -11,13 +11,14 @@ use super::types::*;
 use super::{Machine, frame};
 use crate::ev::Ev;
 use crate::log::{LogSink, MsgKind, Record};
-use crate::{Timer, TimerCmd};
+use crate::{Timer, TimerCmd, Timers};
 
 impl<E: Ev, L: LogSink> Machine<E, L> {
     /// `ACDP_ConnectReq` (V2G20-4050): the first one after the schedule exchange and every repeat while the charger says `Ongoing`.
     pub(super) fn send_acdp_connect_req(&mut self, tx: &mut [u8]) -> Step {
         let msg = AcdpConnectReq { header: self.header(), ev_electrical_charging_device_status: self.ev.acdp_electrical_status() };
         let framed = frame(tx, PayloadType::ACDP_MAINSTREAM, |out| msg.encode(out));
+        self.pantograph_engaged = true;
         if self.state == State::AwaitConnectRes {
             self.sent(MsgKind::AcdpConnectReq, framed)
         } else {
@@ -58,7 +59,8 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
                     self.send_cable_check_req(tx)
                 };
                 if step.end.is_none() {
-                    step.notice = Some(Notice::AcdpConnection(connection));
+                    // The notice slot holds one: the pilot change the host has to carry out comes first.
+                    step.notice.get_or_insert(Notice::AcdpConnection(connection));
                     step.timers = step.timers.with(TimerCmd::Cancel(Timer::Poll));
                 }
                 step
@@ -81,6 +83,7 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
             Processing::Finished => {
                 self.ongoing_armed = false;
                 self.poll_pending = false;
+                self.pantograph_engaged = false;
                 let mut step = self.send_session_stop_req(tx);
                 if step.end.is_none() {
                     step.notice = Some(Notice::AcdpConnection(connection));
@@ -98,5 +101,38 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         };
         self.log.record(&Record::Pantograph { processing: res.evse_processing, electrical: connection.electrical, mechanical: connection.mechanical });
         connection
+    }
+
+    /// A failing answer or an emergency in an ACDP session (V2G20-4026 to 4044): the communication goes on until the pantograph is
+    /// home. With the pantograph possibly down the contactors are opened, then `ACDP_DisconnectReq` follows, then the session stop; before
+    /// it a `SessionStopReq` ends the session. A failing `ACDP_DisconnectRes` goes straight to the session stop (V2G20-4044). The
+    /// session ends with `reason` in the end.
+    pub(super) fn acdp_wind_down(&mut self, reason: EndReason, tx: &mut [u8]) -> Step {
+        match self.state {
+            // Answers of a stop already under way: nothing to add.
+            State::AwaitContactorsOpened | State::AwaitSessionStopRes | State::Ended => return Step::default(),
+            _ => {}
+        }
+        self.pending_end.get_or_insert(reason);
+        self.stop_kind = StopKind::Terminate;
+        self.termination_code = Some(reason.termination_code());
+        self.ongoing_armed = false;
+        self.poll_pending = false;
+        self.stop_requested = false;
+        self.pilot.set_stopping(true);
+        let mut step = if self.pantograph_engaged && self.state != State::AwaitDisconnectRes {
+            self.goto(State::AwaitContactorsOpened);
+            Step {
+                timers: Timers::one(TimerCmd::Cancel(Timer::Response)).with(self.arm_sequence()),
+                notice: Some(Notice::OpenContactors),
+                ..Step::default()
+            }
+        } else {
+            self.send_session_stop_req(tx)
+        };
+        if step.end.is_none() {
+            step.timers = step.timers.with(TimerCmd::Cancel(Timer::Poll));
+        }
+        step
     }
 }

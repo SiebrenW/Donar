@@ -86,6 +86,8 @@ struct Machine<S> {
     ac_namespace: bool,
     /// The vehicle offered the ACDP schema: it is positioned after the session setup.
     acdp_namespace: bool,
+    /// ACDP: the pantograph is down (from the connect `Finished` until the disconnect is).
+    pantograph_down: bool,
     session_id: [u8; 8],
     challenge: [u8; 16],
     service: u16,
@@ -117,6 +119,7 @@ impl<S: Secc> Session<S> {
                 secured: false,
                 ac_namespace: false,
                 acdp_namespace: false,
+                pantograph_down: false,
                 session_id: [0; 8],
                 challenge: [0; 16],
                 service: 0,
@@ -166,6 +169,16 @@ impl<S: Secc> Session<S> {
     /// What the control pilot is expected to do now (the host arms its own monitor with it).
     pub fn pilot_guard(&self) -> control_pilot::Guard {
         self.m.pilot.guard(self.m.guard_active())
+    }
+
+    /// An ACDP charger has an emergency of its own (a fault, the E-stop): the host has switched the power off and put the pilot
+    /// where it belongs; the machine goes on to the disconnect of the pantograph. Without a pantograph down nothing changes.
+    pub fn emergency_shutdown(&mut self) -> bool {
+        let down = self.m.acdp() && self.m.pantograph_down;
+        if down {
+            self.m.acdp_emergency_shutdown();
+        }
+        down
     }
 
     fn handle_event(&mut self, event: Event, buffers: &mut Buffers<'_>) -> Step {
@@ -305,6 +318,13 @@ impl<S: Secc> Machine<S> {
         if matches!(self.state, State::Stopped | State::Paused | State::Closed) {
             return Step::default();
         }
+        // ACDP (V2G20-4027, NOTE 3 of 8.6.4.5.2.1): the C/D to B of an emergency shuts the charging down, but the communication stays
+        // open for the disconnect of the pantograph.
+        if verdict == Verdict::Emergency && self.acdp() && self.pantograph_down {
+            self.secc.note(format_args!("control pilot {reading:?}: an emergency shutdown, the communication stays open for the disconnect"));
+            self.acdp_emergency_shutdown();
+            return Step::default();
+        }
         let how = match verdict {
             Verdict::Fine | Verdict::SupplyStopped => return Step::default(),
             Verdict::Fault => Ended::PilotFault(reading),
@@ -314,6 +334,14 @@ impl<S: Secc> Machine<S> {
         self.secc.session_ended(how);
         self.state = State::Closed;
         Step { close: true, ..Step::default() }
+    }
+
+    /// The charger shuts down the charging of an ACDP session at once (the vehicle's emergency, or its own): the host ramps down,
+    /// opens its contactors and raises the pantograph; the vehicle is expected to disconnect and stop.
+    fn acdp_emergency_shutdown(&mut self) {
+        self.secc.acdp_emergency();
+        self.pilot.set_stopping();
+        self.goto(State::AwaitDisconnectReq);
     }
 
     fn unknown_session(&self, session: [u8; 8]) -> bool {
@@ -618,8 +646,17 @@ impl<S: Secc> Machine<S> {
 
     /// A response to a message of the main stream.
     fn main_reply(&mut self, out: &mut [u8], payload_type: PayloadType, encode: impl FnOnce(&mut [u8]) -> Result<usize, EncodeError>, close: bool) -> Reply {
-        let r = reply(frame(out, payload_type, encode), close);
-        if close {
+        // ACDP (V2G20-4025, 4026): after a failing answer the communication goes on until the last message pair of the exception
+        // handling: the vehicle disconnects the pantograph (if it is down) and stops the session.
+        let wind_down = close
+            && self.acdp_namespace
+            && !matches!(self.state, State::AwaitSupportedAppProtocolReq | State::AwaitSessionSetupReq | State::AwaitSessionStopReq | State::Closed);
+        let r = reply(frame(out, payload_type, encode), close && !wind_down);
+        if wind_down {
+            self.secc.note(format_args!("a failing answer in an ACDP session: the communication stays open for the disconnect and the session stop"));
+            self.pilot.set_stopping();
+            self.goto(if self.pantograph_down && self.state != State::AwaitDisconnectReq { State::AwaitDisconnectReq } else { State::AwaitSessionStopReq });
+        } else if close {
             self.goto(State::Closed);
         }
         r
@@ -642,7 +679,8 @@ impl<S: Secc> Machine<S> {
         let main = PayloadType::MAINSTREAM;
         let renegotiation = req.charging_session == ChargingSession::ServiceRenegotiation;
         // V2G20-920 to 922: after the DC stop the pilot is B before the session stop is answered OK.
-        let after_stop = self.state == State::AwaitSessionStopReq && !self.ac() && !self.no_power;
+        // (Not in ACDP: the pilot runs through the pantograph's contacts, and the pantograph is home when the session stops.)
+        let after_stop = self.state == State::AwaitSessionStopReq && !self.ac() && !self.acdp() && !self.no_power;
         self.pilot.set_stopping();
         let mut code = if self.unknown_session(req.header.session_id) {
             ResponseCode::FailedUnknownSession
@@ -1227,6 +1265,7 @@ impl<S: Secc> Machine<S> {
             return self.main_reply(out, PayloadType::ACDP_MAINSTREAM, |o| if connect { res.encode(o) } else { res.encode_as_acdp_disconnect_res(o) }, true);
         }
         if processing == Processing::Finished {
+            self.pantograph_down = connect;
             self.goto(if connect { State::AwaitCableCheckReq } else { State::AwaitSessionStopReq });
         }
         reply(frame(out, PayloadType::ACDP_MAINSTREAM, |o| if connect { res.encode(o) } else { res.encode_as_acdp_disconnect_res(o) }), false)

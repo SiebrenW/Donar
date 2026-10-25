@@ -90,6 +90,8 @@ struct Announced {
 pub(crate) struct SimSecc {
     /// ACDP: the pantograph model, made when the first request for it arrives.
     pantograph: Option<crate::pantograph::Pantograph>,
+    /// ACDP: an emergency shutdown happened (the status says so).
+    emergency: bool,
     /// ACDP: the last status the log told of.
     last_status_line: Option<String>,
     pub(crate) config: Config,
@@ -164,6 +166,7 @@ impl SimSecc {
             acdp_bpt_sets: Vec::new(),
             pantograph: None,
             last_status_line: None,
+            emergency: false,
             ac_sets: Vec::new(),
             tuples: Vec::new(),
             service: 0,
@@ -535,6 +538,8 @@ impl Secc for SimSecc {
             mechanical,
             // Nothing to monitor while the pantograph is up.
             isolation: if mechanical == M::EndPosition { IsolationStatus::Safe } else { IsolationStatus::Invalid },
+            ready_to_charge: !self.emergency,
+            emergency_shutdown: self.emergency,
             in_charge_position: ppd.is_some_and(|p| p.in_charge_position),
             association: ppd.is_some_and(|p| p.association),
             ..evse_core::secc::AcdpSystemStatus::HEALTHY
@@ -550,6 +555,12 @@ impl Secc for SimSecc {
 
     fn acdp_connect(&mut self, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> evse_core::secc::AcdpConnection {
         self.pantograph_to(iso15118_20::acdp::MechanicalChargingDeviceStatus::EndPosition, "connect", electrical)
+    }
+
+    fn acdp_emergency(&mut self) {
+        // The power is off at once; the pantograph goes up, and the status says why.
+        self.emergency = true;
+        self.pantograph_to(iso15118_20::acdp::MechanicalChargingDeviceStatus::Home, "emergency", iso15118_20::acdp::ElectricalChargingDeviceStatus::StateB);
     }
 
     fn acdp_disconnect(&mut self, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> evse_core::secc::AcdpConnection {

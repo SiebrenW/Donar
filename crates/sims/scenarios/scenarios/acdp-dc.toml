@@ -16,6 +16,7 @@ poll_interval_ms = 50
 charge_loop_interval_ms = 10
 [evcc.settings.acdp]
 positioning_support = true
+status_interval_ms = 150
 
 [expect]
 secc_exit = 0

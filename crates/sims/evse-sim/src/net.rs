@@ -70,6 +70,7 @@ pub fn serve_wired<T: evcc_linux::Transport>(stream: &mut T, config: crate::Conf
         live.set_state(evse.state());
     }
     let mut source = wire.source();
+    let mut emergency_kept = false;
     let mut buf = [0u8; 2048];
     // Writes what the machine answered; true when the session is over. A vehicle that is gone (its connection reset) ends the
     // session like a close does.
@@ -140,9 +141,19 @@ pub fn serve_wired<T: evcc_linux::Transport>(stream: &mut T, config: crate::Conf
                     return gone(stream, &mut evse, &mut source, live);
                 }
                 if evse.pilot_emergency_due() {
-                    eprintln!("[evse] an emergency of its own: the oscillator goes off, the connection is dropped");
                     wire.set_evse(control_pilot::Pwm::Off)?;
-                    return Ok(State::Closed);
+                    // An ACDP charger keeps the connection for the disconnect of the pantograph (V2G20-4026), once.
+                    if !emergency_kept && evse.acdp_own_emergency() {
+                        emergency_kept = true;
+                        eprintln!("[evse] an emergency of its own: the oscillator goes off, the pantograph goes up, the connection stays");
+                        let outputs = Vec::new();
+                        let _ = emit(stream, &mut evse, outputs, live)?;
+                        continue;
+                    }
+                    if !emergency_kept {
+                        eprintln!("[evse] an emergency of its own: the oscillator goes off, the connection is dropped");
+                        return Ok(State::Closed);
+                    }
                 }
             }
             Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,

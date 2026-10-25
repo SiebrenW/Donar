@@ -94,6 +94,10 @@ trait Pump {
     fn set_config(&mut self, config: Config);
     /// The host measured a change of the control pilot: the bytes to send (none) and whether the session ended.
     fn pilot(&mut self, reading: control_pilot::Reading, mem: &mut Mem) -> (usize, bool);
+    /// An ACDP charger has an emergency of its own: true when the machine goes on with the disconnect (the connection stays).
+    fn own_emergency(&mut self) -> bool {
+        false
+    }
     /// Charge loop requests seen so far.
     fn loops(&self) -> u32;
     /// What the host is to watch on the control pilot now.
@@ -122,6 +126,9 @@ impl Pump for evse_core::Session<SimSecc> {
         let mut buffers = evse_core::Buffers { rx: &mut mem.rx, tx: &mut mem.tx, arena: &mut mem.arena, scratch: &mut mem.scratch };
         let step = self.handle(evse_core::Event::Pilot(reading), &mut buffers);
         (step.send, step.close)
+    }
+    fn own_emergency(&mut self) -> bool {
+        self.emergency_shutdown()
     }
     fn loops(&self) -> u32 {
         self.secc().loops_seen()
@@ -311,6 +318,14 @@ impl Evse {
         let sent = run.mem.tx[..len].to_vec();
         self.note_guard();
         if close || len > 0 { vec![Output { send: (!sent.is_empty()).then_some(sent), close }] } else { Vec::new() }
+    }
+
+    /// The charger has an emergency of its own (`pilot_emergency_after_loops` reached) in an ACDP session: true when the connection
+    /// stays open for the disconnect of the pantograph, false when the session is simply dropped.
+    pub fn acdp_own_emergency(&mut self) -> bool {
+        let kept = self.run.as_mut().is_some_and(|run| run.pump.own_emergency());
+        self.note_guard();
+        kept
     }
 
     /// What the host is to watch on the control pilot now.

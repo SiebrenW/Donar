@@ -224,7 +224,7 @@ fn attempt(ifindex: u32, settings: &Settings, resume: Option<evcc_core::session:
     let behaviour = Behaviour { connector: settings.connector.into(), stop_after: settings.stop_after(), renegotiate_after: settings.renegotiate_after, renegotiate_schedule_after: settings.renegotiate_schedule_after, stop_when_rescheduled: settings.stop_when_rescheduled, pause_after };
     // The control pilot: the cable shared with the simulated charger.
     let pilot = match &settings.control_pilot_wire {
-        Some(dir) => Some(PilotHost { wire: evcc_linux::pilot::Wire::new(dir)?, emergency_after: settings.pilot_emergency_after }),
+        Some(dir) => Some(PilotHost { wire: contacts(evcc_linux::pilot::Wire::new(dir)?, settings)?, emergency_after: settings.pilot_emergency_after }),
         None => None,
     };
     let outcome = match &settings.tls {
@@ -312,7 +312,7 @@ fn slac_with(socket: &evcc_linux::slac::PacketSocket, settings: &Settings, modem
     // With the wire the simulated car watches the cable like a real one and SLAC waits for the charger's 5 %; without it
     // (a bench with a veth cable) there is no pilot and it begins at once.
     let wire = match &settings.control_pilot_wire {
-        Some(dir) => Some(evcc_linux::pilot::Wire::new(dir)?.source()),
+        Some(dir) => Some(contacts(evcc_linux::pilot::Wire::new(dir)?, settings)?.source()),
         None => None,
     };
     let config = evcc_core::slac::Config { pilot_gate: wire.is_some(), ..settings.slac_config() };
@@ -333,4 +333,12 @@ fn run_slac(_interface: &str, _settings: &Settings) -> io::Result<evcc_core::sla
         io::ErrorKind::Unsupported,
         "SLAC needs Linux",
     ))
+}
+
+/// An ACDP vehicle has a pilot only through the pantograph's contacts: the wire reads the charger's world.
+fn contacts(wire: evcc_linux::pilot::Wire, settings: &Settings) -> io::Result<evcc_linux::pilot::Wire> {
+    match settings.acdp.as_ref().and_then(|a| a.world.as_ref()) {
+        Some(dir) => Ok(wire.through_contacts(evcc_linux::acdp::World::new(dir)?)),
+        None => Ok(wire),
+    }
 }

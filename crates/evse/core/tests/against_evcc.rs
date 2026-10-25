@@ -1035,7 +1035,8 @@ fn a_vehicle_the_ppd_loses_is_answered_with_an_association_error() {
     let secc = TestCharger { lose_association_at: Some(2), ..TestCharger::default() };
     let (end, charger, state) = run_with(secc, config(Config::ACDP_20), acdp_ev(), 0);
     assert_eq!(end, EndReason::Rejected(ResponseCode::FailedAssociationError));
-    assert_eq!(state, State::Closed);
+    // V2G20-4025, 4031: the connection stays open for the session stop.
+    assert_eq!(state, State::Stopped);
     assert_eq!(charger.positioning.len(), 2);
 }
 

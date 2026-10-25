@@ -173,7 +173,10 @@ fn run(args: &Args) -> io::Result<bool> {
     // The control pilot: the oscillator is on (5 %) from the start, until a session ends in an emergency of the charger.
     let wire = match &settings.control_pilot_wire {
         Some(dir) => {
-            let wire = evcc_linux::pilot::Wire::new(dir)?;
+            let mut wire = evcc_linux::pilot::Wire::new(dir)?;
+            if let Some(world) = settings.session.acdp.as_ref().and_then(|a| a.world.as_ref()) {
+                wire = wire.through_contacts(evcc_linux::acdp::World::new(world)?);
+            }
             wire.set_evse(control_pilot::Pwm::Duty(settings.nominal_duty_percent.unwrap_or(5)))?;
             if let Some(live) = &live {
                 live.set_wire(wire.clone());
