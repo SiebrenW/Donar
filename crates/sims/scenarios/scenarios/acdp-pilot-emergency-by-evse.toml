@@ -1,0 +1,28 @@
+name = "acdp-pilot-emergency-by-evse"
+description = "ACDP: after two charge loop requests the charger has an emergency of its own (IEC 61851-23 CC.3.4.3, scenario 2): its CP oscillator goes off and the pantograph goes up, the connection stays. The vehicle sees the oscillator off through the contacts while it holds state C, opens its contactors and disconnects, then stops the session, which ends as an emergency."
+timeout_s = 60
+# The link is WLAN (ISO 15118-8): no SLAC; the control pilot exists only through the pantograph's contacts.
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session]
+pilot_emergency_after_loops = 2
+
+[secc.settings.session.acdp]
+ppd = "optical"
+pantograph_move_ms = 600
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+stop_after = 0
+poll_interval_ms = 50
+charge_loop_interval_ms = 10
+[evcc.settings.acdp]
+positioning_support = true
+status_interval_ms = 150
+
+[expect]
+evcc_exit = 1
+evcc_log = ["session: Ended(Emergency(Reading { state: C, pwm: Off"]
+secc_log = ["an emergency of its own", "pantograph emergency", "pantograph disconnect", "session: Stopped"]

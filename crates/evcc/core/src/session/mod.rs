@@ -78,6 +78,12 @@ struct Machine<E, L> {
     poll_pending: bool,
     /// ACDP: the last positioning request said the vehicle is immobilized.
     positioning_immobilized: bool,
+    /// ACDP: a failure or an emergency came up that the session is wound down for (V2G20-4026 ff.): the end is announced, the
+    /// communication goes on until the pantograph is home. The reason is what the session ends with.
+    acdp_fault: Option<EndReason>,
+    /// ACDP: the pantograph may be down (from the first `ACDP_ConnectReq` until the disconnect is `Finished`): a failure then needs the
+    /// disconnect before the session stop (V2G20-4039 to 4044).
+    pantograph_engaged: bool,
     /// ACDP: the status stream runs (from the `SessionSetupRes` until the session ends).
     status_active: bool,
     /// The last `DC_PreChargeReq` carried `EVProcessing = Finished`.
@@ -167,6 +173,8 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 poll_pending: false,
                 positioning_immobilized: false,
                 status_active: false,
+                acdp_fault: None,
+                pantograph_engaged: false,
                 precharge_finishing: false,
                 welding_finishing: false,
                 stop_requested: false,
@@ -304,7 +312,8 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                     return Step::default();
                 }
                 // V2G20-919: the pilot goes to B when the contactors are open, then welding detection.
-                if m.config.control_pilot {
+                // (Already there after an emergency of the vehicle's own: the host has set it, and no further change will come.)
+                if m.config.control_pilot && m.pilot.last().is_none_or(|r| r.state != control_pilot::State::B) {
                     return m.change_control_pilot(types::ControlPilot::B, State::AwaitControlPilotB);
                 }
                 let step = m.after_contactors_open(tx);
@@ -345,7 +354,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                 }
             }
             Event::Pilot(reading) => {
-                let step = m.on_pilot(reading);
+                let step = m.on_pilot(reading, tx);
                 if m.awaited_pilot_seen() { m.pilot_arrived(tx) } else { step }
             }
             Event::ConnectionClosed => match m.pending_end {
@@ -376,6 +385,9 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
                         arena.reset();
                         m.log.record(&Record::RxPayload { payload_type: frame.payload_type.0, payload: frame.payload });
                         step = m.on_frame(frame.payload_type, frame.payload, arena, tx);
+                        if let Some(reason) = m.acdp_fault.take() {
+                            step = m.acdp_wind_down(reason, tx);
+                        }
                         let consumed = frame.consumed;
                         rx.copy_within(consumed..*rx_len, 0);
                         *rx_len -= consumed;
@@ -498,11 +510,20 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
 
     /// A change of the control pilot (IEC 61851-23 CC.3.4.3, CC.4.3; V2G-DC-655, 656): an emergency or a lost
     /// connection ends the session at once and sends nothing; the loss of an AC supply is an orderly stop.
-    fn on_pilot(&mut self, reading: control_pilot::Reading) -> Step {
+    fn on_pilot(&mut self, reading: control_pilot::Reading, tx: &mut [u8]) -> Step {
         use control_pilot::Verdict;
         let verdict = self.pilot.reading(reading);
         if matches!(self.state, State::Idle | State::Ended) {
             return Step::default();
+        }
+        // ACDP (V2G20-4027, 4028): the vehicle's own emergency (the host has set the pilot to B) and a pilot that goes to E or F do
+        // not end the session at once: the pantograph is disconnected first. Before it is down there is no pilot to speak of.
+        if self.config.acdp() && self.pantograph_engaged && matches!(verdict, Verdict::Fault | Verdict::Emergency) {
+            if self.pending_end.is_some() {
+                return Step::default();
+            }
+            let reason = if verdict == Verdict::Fault { EndReason::PilotFault(reading) } else { EndReason::Emergency(reading) };
+            return self.acdp_wind_down(reason, tx);
         }
         match verdict {
             Verdict::Fine => Step::default(),
@@ -684,7 +705,15 @@ impl<E: Ev, L: LogSink> Machine<E, L> {
         self.log.record(&Record::MsgRx { msg });
         self.log.record(&Record::Response { msg, code });
         self.check_response_code(msg, code);
-        if is_ok(code) || Some(code) == also_ok { None } else { Some(self.end(EndReason::Rejected(code))) }
+        if is_ok(code) || Some(code) == also_ok {
+            None
+        } else if self.config.acdp() && !matches!(msg, MsgKind::SessionSetupRes | MsgKind::SessionStopRes) {
+            // V2G20-4025: the communication goes on until the last message pair of the exception handling; the frame handler sees to it.
+            self.acdp_fault = Some(EndReason::Rejected(code));
+            Some(Step::default())
+        } else {
+            Some(self.end(EndReason::Rejected(code)))
+        }
     }
     /// Notes a response code the message may not carry.
     fn check_response_code(&mut self, msg: MsgKind, code: ResponseCode) {

@@ -252,6 +252,11 @@ pub trait Secc {
         AcdpSystemStatus::HEALTHY
     }
 
+    /// ACDP: an emergency shutdown (the vehicle's CP went from C/D to B, or the charger has one of its own): ramp down the current, open
+    /// the DC contactors and raise the pantograph (NOTE 2, 3 of 8.6.4.5.2.1). The disconnect and the session stop follow on the
+    /// open connection.
+    fn acdp_emergency(&mut self) {}
+
     // ---- the service flow
 
     /// The service selection of a session paused with this id, if it can be resumed (V2G20-2623:

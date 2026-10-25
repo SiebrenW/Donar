@@ -66,6 +66,8 @@ impl Oscillator {
 #[derive(Debug, Clone)]
 pub struct Wire {
     dir: PathBuf,
+    /// ACDP: the pilot runs through the pantograph's contacts, so there is a reading only while the pantograph is down.
+    contacts: Option<crate::acdp::World>,
 }
 
 impl Wire {
@@ -73,7 +75,14 @@ impl Wire {
     pub fn new(dir: impl Into<PathBuf>) -> io::Result<Wire> {
         let dir = dir.into();
         fs::create_dir_all(&dir)?;
-        Ok(Wire { dir })
+        Ok(Wire { dir, contacts: None })
+    }
+
+    /// The pilot of an ACDP vehicle exists only while the pantograph is at its end position (ISO 15118-20 8.3.4.7): before and after
+    /// that the wire gives no reading, as the cable of a plug-in vehicle would not before it is plugged in.
+    pub fn through_contacts(mut self, world: crate::acdp::World) -> Wire {
+        self.contacts = Some(world);
+        self
     }
 
     pub fn dir(&self) -> &Path {
@@ -105,6 +114,9 @@ impl Wire {
 
     /// What either side measures now, if both are there.
     pub fn reading(&self) -> Option<Reading> {
+        if self.contacts.as_ref().is_some_and(|w| w.pantograph().as_deref() != Some("EndPosition")) {
+            return None;
+        }
         let ev = fs::read(self.dir.join("ev")).ok()?;
         let evse = fs::read(self.dir.join("evse")).ok()?;
         let state = match *ev.first()? {
@@ -180,6 +192,22 @@ impl PilotSource for WireSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wire_through_the_contacts_reads_only_with_the_pantograph_down() {
+        let dir = std::env::temp_dir().join(format!("wire-contacts-{}", std::process::id()));
+        let world = crate::acdp::World::new(dir.join("world")).unwrap();
+        let wire = Wire::new(dir.join("wire")).unwrap().through_contacts(world.clone());
+        wire.set_ev(State::B).unwrap();
+        wire.set_evse(Pwm::Duty(5)).unwrap();
+        assert_eq!(wire.reading(), None, "no pantograph state yet");
+        world.set_pantograph("Moving").unwrap();
+        assert_eq!(wire.reading(), None);
+        world.set_pantograph("EndPosition").unwrap();
+        assert_eq!(wire.reading(), Some(Reading::CONNECTED));
+        world.set_pantograph("Home").unwrap();
+        assert_eq!(wire.reading(), None);
+    }
 
     #[test]
     fn a_wire_gives_a_reading_once_both_sides_wrote_and_reports_changes_once() {

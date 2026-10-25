@@ -1,0 +1,27 @@
+name = "acdp-cable-check-failed"
+description = "ACDP error handling (ISO 15118-20 8.6.4.5.2.1): the cable check fails with the pantograph down. The vehicle does not end the session (V2G20-4025): it opens its contactors, sends ACDP_Disconnect until the pantograph is home (V2G20-4040) and then the SessionStop; the session ends with the failure as its reason."
+timeout_s = 60
+# The link is WLAN (ISO 15118-8): no SLAC; the control pilot exists only through the pantograph's contacts.
+
+[secc]
+kind = "evse-sim"
+[secc.settings.session]
+cable_check_code = "FAILED"
+
+[secc.settings.session.acdp]
+ppd = "optical"
+pantograph_move_ms = 600
+
+[evcc]
+kind = "evcc-sim"
+[evcc.settings]
+poll_interval_ms = 50
+charge_loop_interval_ms = 10
+[evcc.settings.acdp]
+positioning_support = true
+status_interval_ms = 150
+
+[expect]
+evcc_exit = 1
+evcc_log = ["Response { msg: DcCableCheckRes, code: Failed }", "AwaitContactorsOpened", "mechanical: Home", "session: Ended(Rejected(Failed))"]
+secc_log = ["pantograph disconnect", "session: Stopped"]

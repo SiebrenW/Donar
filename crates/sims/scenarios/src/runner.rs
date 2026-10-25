@@ -107,12 +107,10 @@ pub fn run_with(scenario: &Scenario, options: Options) -> io::Result<Report> {
                 acdp.world.get_or_insert(acdp_world.clone());
             }
             // The control pilot between the two simulators: a directory both read and write.
-            // (An ACDP vehicle has a pilot only through the pantograph's contacts; that is not modelled by a wire yet.)
-            if settings.session.acdp.is_none() {
-                let wire = sb.artifacts().join("control-pilot").display().to_string();
-                let wire = settings.control_pilot_wire.get_or_insert(wire).clone();
-                evcc_settings.control_pilot_wire.get_or_insert(wire);
-            }
+            // (An ACDP vehicle has a pilot only through the pantograph's contacts: the wire reads the world for it.)
+            let wire = sb.artifacts().join("control-pilot").display().to_string();
+            let wire = settings.control_pilot_wire.get_or_insert(wire).clone();
+            evcc_settings.control_pilot_wire.get_or_insert(wire);
             settings.control_pilot_file = settings.control_pilot_file.map(|p| sb.artifacts().join(p).display().to_string());
             let config = sb.write_artifact("secc.toml", toml::to_string(&settings).map_err(io::Error::other)?.as_bytes())?;
             secc_args.extend(["--config".into(), config.display().to_string()]);
