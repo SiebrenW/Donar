@@ -27,6 +27,7 @@ strict = []
 v2gtp = { path = "../../codec/v2gtp" }
 homeplug = { path = "../../codec/homeplug", optional = true }
 iso15118-20 = { path = "../../codec/iso15118-20" }
+xmldsig = { path = "../../codec/xmldsig" }
 din70121 = { path = "../../codec/din70121", optional = true }
 iso15118-2 = { path = "../../codec/iso15118-2", optional = true }
 app-protocol = { path = "../../codec/app-protocol" }

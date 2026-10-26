@@ -11,6 +11,7 @@ alloc = []
 
 [dependencies]
 exi = { path = "../exi" }
+xmldsig = { path = "../xmldsig" }
 
 [[bench]]
 name = "codec"

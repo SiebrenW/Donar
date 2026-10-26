@@ -67,6 +67,8 @@ impl Dump<'_, '_> {
                     } else {
                         let child = match &a.ty {
                             AltTy::Foreign | AltTy::External(_) => "XMLDSIG".to_string(),
+                            // The message signature stays opaque, as in EXIficient's dump.
+                            AltTy::Complex(c) if c.ns == crate::xsd::XMLDSIG && c.local == "SignatureType" => "XMLDSIG".to_string(),
                             AltTy::Scalar(sc) => format!("S{}", self.scalar_start(sc)),
                             AltTy::Complex(c) => format!("S{}", self.state(&c.clone(), Pos::START)),
                         };

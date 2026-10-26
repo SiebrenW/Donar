@@ -53,11 +53,23 @@ pub const ISO20: Group = Group {
     name: "iso15118-20",
     dir: "iso15118-20",
     files: &["V2G_CI_CommonTypes.xsd", "V2G_CI_CommonMessages.xsd", "V2G_CI_DC.xsd", "V2G_CI_AC.xsd", "V2G_CI_ACDP.xsd", "V2G_CI_WPT.xsd", "V2G_CI_AC_DER_IEC.xsd", "V2G_CI_AC_DER_SAE.xsd", "xmldsig-core-schema.xsd"],
-    modules: &[(NS_COMMON_TYPES, "common_types"), (NS_COMMON, "common"), (NS_DC, "dc"), (NS_AC, "ac"), (NS_ACDP, "acdp"), (NS_WPT, "wpt"), (NS_AC_DER_IEC, "ac_der_iec"), (NS_AC_DER_SAE, "ac_der_sae"), (xsd::XMLDSIG, "xmldsig")],
+    modules: &[(NS_COMMON_TYPES, "common_types"), (NS_COMMON, "common"), (NS_DC, "dc"), (NS_AC, "ac"), (NS_ACDP, "acdp"), (NS_WPT, "wpt"), (NS_AC_DER_IEC, "ac_der_iec"), (NS_AC_DER_SAE, "ac_der_sae")],
     fragment: &["V2G_CI_CommonMessages.xsd", "V2G_CI_CommonTypes.xsd", "xmldsig-core-schema.xsd"],
     document: None,
     value_table: false,
     reenter: &[(NS_AC_DER_IEC, NS_AC), (NS_AC_DER_SAE, NS_AC)],
+};
+
+/// The xmldsig types of the profile, a crate of their own that the other groups refer to.
+pub const XMLDSIG: Group = Group {
+    name: "xmldsig",
+    dir: "iso15118-20",
+    files: &["xmldsig-core-schema.xsd"],
+    modules: &[(xsd::XMLDSIG, "xmldsig")],
+    fragment: &["xmldsig-core-schema.xsd"],
+    document: None,
+    value_table: false,
+    reenter: &[],
 };
 
 pub const APP_PROTOCOL: Group =
@@ -72,7 +84,7 @@ pub const DIN70121: Group = Group {
     name: "din70121",
     dir: "din-spec",
     files: &["V2G_CI_MsgDataTypes.xsd", "V2G_CI_MsgBody.xsd", "V2G_CI_MsgDef.xsd", "V2G_CI_MsgHeader.xsd", "xmldsig-core-schema.xsd"],
-    modules: &[(NS_DIN_TYPES, "types"), (NS_DIN_BODY, "body"), (NS_DIN_DEF, "def"), (NS_DIN_HEADER, "header"), (xsd::XMLDSIG, "xmldsig")],
+    modules: &[(NS_DIN_TYPES, "types"), (NS_DIN_BODY, "body"), (NS_DIN_DEF, "def"), (NS_DIN_HEADER, "header")],
     fragment: &[],
     document: Some((NS_DIN_DEF, "V2G_Message")),
     value_table: false,
@@ -88,14 +100,14 @@ pub const ISO2: Group = Group {
     name: "iso15118-2",
     dir: "iso15118-2",
     files: &["V2G_CI_MsgDataTypes.xsd", "V2G_CI_MsgBody.xsd", "V2G_CI_MsgDef.xsd", "V2G_CI_MsgHeader.xsd", "xmldsig-core-schema.xsd"],
-    modules: &[(NS_ISO2_TYPES, "types"), (NS_ISO2_BODY, "body"), (NS_ISO2_DEF, "def"), (NS_ISO2_HEADER, "header"), (xsd::XMLDSIG, "xmldsig")],
+    modules: &[(NS_ISO2_TYPES, "types"), (NS_ISO2_BODY, "body"), (NS_ISO2_DEF, "def"), (NS_ISO2_HEADER, "header")],
     fragment: &["V2G_CI_MsgDef.xsd", "V2G_CI_MsgHeader.xsd", "V2G_CI_MsgBody.xsd", "V2G_CI_MsgDataTypes.xsd", "xmldsig-core-schema.xsd"],
     document: Some((NS_ISO2_DEF, "V2G_Message")),
     value_table: false,
     reenter: &[],
 };
 
-pub const GROUPS: &[&Group] = &[&ISO20, &APP_PROTOCOL, &DIN70121, &ISO2];
+pub const GROUPS: &[&Group] = &[&XMLDSIG, &ISO20, &APP_PROTOCOL, &DIN70121, &ISO2];
 
 pub fn group(name: &str) -> Result<&'static Group, String> {
     GROUPS.iter().copied().find(|g| g.name == name).ok_or_else(|| format!("unknown group {name}"))
@@ -120,8 +132,7 @@ pub fn generate(group: &Group, schema_dir: &Path, out_dir: &Path) -> Result<(), 
     }
     if !group.fragment.is_empty() {
         let table = fragment::table(schema_dir, group.fragment)?;
-        let dsig = fragment::table(schema_dir, &["xmldsig-core-schema.xsd"])?;
-        std::fs::write(out_dir.join("fragment.rs"), fragment::emit(&table, &dsig)).map_err(|e| e.to_string())?;
+        std::fs::write(out_dir.join("fragment.rs"), fragment::emit(&table)).map_err(|e| e.to_string())?;
         modrs.push_str("pub mod fragment;\n");
     }
     std::fs::write(out_dir.join("mod.rs"), modrs).map_err(|e| e.to_string())?;
@@ -131,7 +142,13 @@ pub fn generate(group: &Group, schema_dir: &Path, out_dir: &Path) -> Result<(), 
 /// The canonical grammar dump of one root element (see [`dump`]).
 pub fn dump_grammar(group: &Group, schema_dir: &Path, ns: &str, root: &str) -> Result<String, String> {
     let world = World::load(schema_dir, group.files)?;
-    let model = model::Model::new(&world, group.modules, group.reenter)?;
+    // The xmldsig types the messages use (the root certificate's issuer and serial) are part of the grammar tree here,
+    // although they are the types of another crate.
+    let mut modules = group.modules.to_vec();
+    if world.schemas.contains_key(xsd::XMLDSIG) && !modules.iter().any(|(n, _)| *n == xsd::XMLDSIG) {
+        modules.push((xsd::XMLDSIG, "xmldsig"));
+    }
+    let model = model::Model::new(&world, &modules, group.reenter)?;
     let mut roots: Vec<QName> = world.global_elements(ns).iter().map(|e| e.name.clone()).collect();
     roots.sort_by(|a, b| (&a.local, &a.ns).cmp(&(&b.local, &b.ns)));
     // A message of an extended namespace is an element of that namespace, in the grammar of this one.

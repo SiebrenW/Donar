@@ -51,7 +51,8 @@ fn every_vector_round_trips() {
 #[test]
 fn signed_fragments() {
     use iso15118_2::body::AuthorizationReq;
-    use iso15118_2::signature::{self, Reference, SignedInfo, encode_fragment, signed_info_fragment};
+    use iso15118_2::signature::{self, encode_fragment};
+    use xmldsig::{CanonicalizationMethod, DigestMethod, Reference, SignatureMethod, SignedInfo, Transform, Transforms};
     let challenge: [u8; 16] = std::array::from_fn(|i| i as u8);
     let req = AuthorizationReq { id: Some("ID1"), gen_challenge: Some(challenge) };
     let mut out = [0u8; 256];
@@ -59,9 +60,15 @@ fn signed_fragments() {
     assert_eq!(&out[..n], &vector("fragment_iso2_authorization_req")[..]);
 
     let digest: Vec<u8> = (0..32).collect();
-    let reference = Reference { id: None, uri: Some("#ID1"), transform_algorithm: Some(signature::CANONICAL_EXI), digest_algorithm: signature::DIGEST_SHA256, digest_value: &digest };
-    let info = SignedInfo { id: None, canonicalization_algorithm: signature::CANONICAL_EXI, signature_algorithm: signature::ECDSA_SHA256, reference: &[reference] };
+    let transform = [Transform { algorithm: signature::CANONICAL_EXI }];
+    let reference = Reference { id: None, uri: Some("#ID1"), transforms: Some(Transforms { transform: &transform }), digest_method: DigestMethod { algorithm: signature::DIGEST_SHA256 }, digest_value: &digest };
+    let info = SignedInfo {
+        id: None,
+        canonicalization_method: CanonicalizationMethod { algorithm: signature::CANONICAL_EXI },
+        signature_method: SignatureMethod { algorithm: signature::ECDSA_SHA256 },
+        reference: &[reference],
+    };
     let mut out = [0u8; 512];
-    let n = signed_info_fragment(&info, &mut out).unwrap();
+    let n = info.encode_fragment(&mut out).unwrap();
     assert_eq!(&out[..n], &vector("fragment_iso2_signed_info")[..]);
 }

@@ -143,7 +143,7 @@ The core is a pure `no_std` state machine driven by events (received bytes, time
   - Schema-informed, bit-packed, default fidelity, no options in the header. `valuePartitionCapacity` is 0 for every protocol (found through the Python partner failing on a repeated string).
   - The document root holds every global element of the schema and its imports, sorted by local name; DIN and ISO 15118-2 use a `V2G_Message` document root. Event code width is `ceil(log2(n + 1))`; finite `maxOccurs` is unrolled; integers with a range of at most 4096 values are n-bit offsets.
   - Empty string elements are coded as the second-level `EE` of the first state; `xs:integer` is of any size.
-  - Message signatures are hand-written (`signature` modules) over EXI *fragments*; the start event is chosen among all element declarations of the schema (-20: the xmldsig schema as entry point for `SignedInfo`, V2G20-1449; -2: two grammars, J.2 and J.4).
+  - The message signature types are generated into the `xmldsig` crate (the profile of what the standards use; wildcards, `KeyInfo`, `Object`, `XPath`, `HMACOutputLength` and the reference `Type` are not modelled and refused when decoding); the `signature` modules of the standards hold the algorithms and sign EXI *fragments*; the start event is chosen among all element declarations of the schema (-20: the xmldsig schema as entry point for `SignedInfo`, V2G20-1449; -2: two grammars, J.2 and J.4).
 - The `-20` payload types double as grammar selectors: `0x8001` SAP, `0x8002` mainstream, `0x8003` AC, `0x8004` DC, `0x8005` ACDP, `0x8006` WPT; `0x8103` is the ACDP system status side stream; `0x8101` schedule renegotiation and `0x8102` metering confirmation are side streams.
 
 ### Timing (ISO 15118-20 Table 215 and others)

@@ -3,7 +3,8 @@
 use app_protocol::{self, SupportedAppProtocolReq};
 use iso15118_2::def::V2gMessage;
 use iso15118_2::header::MessageHeader;
-use iso15118_2::signature::{CANONICAL_EXI, Reference, Signature, SignatureValue, SignedInfo, encode_fragment};
+use iso15118_2::signature::{CANONICAL_EXI, encode_fragment};
+use xmldsig::{CanonicalizationMethod, DigestMethod, Reference, Signature, SignatureMethod, SignatureValue, SignedInfo, Transform, Transforms};
 use iso15118_2::body::{Body, *};
 use iso15118_2::types::*;
 use v2gtp::PayloadType;
@@ -376,15 +377,21 @@ pub(super) fn frame_signed_receipt(contract: &dyn crate::ev::Contract, session_i
     let length = encode_fragment(scratch, iso15118_2::signature::fragment::METERING_RECEIPT_REQ, |e| request.encode_content(e)).map_err(|_| ())?;
     let mut digest = [0u8; MAX_DIGEST_LEN];
     let digest_len = contract.digest(&scratch[..length], &mut digest).ok_or(())?;
+    let transform = [Transform { algorithm: CANONICAL_EXI }];
     let references = [Reference {
         id: None,
         uri: Some(RECEIPT_URI),
-        transform_algorithm: Some(CANONICAL_EXI),
-        digest_algorithm: contract.digest_algorithm(),
+        transforms: Some(Transforms { transform: &transform }),
+        digest_method: DigestMethod { algorithm: contract.digest_algorithm() },
         digest_value: &digest[..digest_len],
     }];
-    let info = SignedInfo { id: None, canonicalization_algorithm: CANONICAL_EXI, signature_algorithm: contract.signature_algorithm(), reference: &references };
-    let length = iso15118_2::signature::signed_info_fragment(&info, scratch).map_err(|_| ())?;
+    let info = SignedInfo {
+        id: None,
+        canonicalization_method: CanonicalizationMethod { algorithm: CANONICAL_EXI },
+        signature_method: SignatureMethod { algorithm: contract.signature_algorithm() },
+        reference: &references,
+    };
+    let length = info.encode_fragment(scratch).map_err(|_| ())?;
     let mut value = [0u8; MAX_SIGNATURE_LEN];
     let value_len = contract.sign(&scratch[..length], &mut value).ok_or(())?;
     let message = V2gMessage {
@@ -414,15 +421,21 @@ fn frame_signed_authorization(contract: &dyn crate::ev::Contract, challenge: [u8
     let length = encode_fragment(scratch, iso15118_2::signature::fragment::AUTHORIZATION_REQ, |e| request.encode_content(e)).map_err(|_| ())?;
     let mut digest = [0u8; MAX_DIGEST_LEN];
     let digest_len = contract.digest(&scratch[..length], &mut digest).ok_or(())?;
+    let transform = [Transform { algorithm: CANONICAL_EXI }];
     let references = [Reference {
         id: None,
         uri: Some(AUTHORIZATION_URI),
-        transform_algorithm: Some(CANONICAL_EXI),
-        digest_algorithm: contract.digest_algorithm(),
+        transforms: Some(Transforms { transform: &transform }),
+        digest_method: DigestMethod { algorithm: contract.digest_algorithm() },
         digest_value: &digest[..digest_len],
     }];
-    let info = SignedInfo { id: None, canonicalization_algorithm: CANONICAL_EXI, signature_algorithm: contract.signature_algorithm(), reference: &references };
-    let length = iso15118_2::signature::signed_info_fragment(&info, scratch).map_err(|_| ())?;
+    let info = SignedInfo {
+        id: None,
+        canonicalization_method: CanonicalizationMethod { algorithm: CANONICAL_EXI },
+        signature_method: SignatureMethod { algorithm: contract.signature_algorithm() },
+        reference: &references,
+    };
+    let length = info.encode_fragment(scratch).map_err(|_| ())?;
     let mut value = [0u8; MAX_SIGNATURE_LEN];
     let value_len = contract.sign(&scratch[..length], &mut value).ok_or(())?;
     let message = V2gMessage {

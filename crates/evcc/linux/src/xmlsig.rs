@@ -15,9 +15,8 @@
 
 use std::fmt;
 
-use iso15118_20::signature::{
-    CANONICAL_EXI, DIGEST_SHA512, DIGEST_SHAKE256, ECDSA_SHA512, ED448, Reference, Signature, SignatureValue, SignedInfo,
-};
+use iso15118_20::signature::{CANONICAL_EXI, DIGEST_SHA512, DIGEST_SHAKE256, ECDSA_SHA512, ED448};
+use xmldsig::{CanonicalizationMethod, DigestMethod, Reference, Signature, SignatureMethod, SignatureValue, SignedInfo, Transform, Transforms};
 use openssl::bn::BigNum;
 use openssl::ec::EcKey;
 use openssl::ecdsa::EcdsaSig;
@@ -68,15 +67,6 @@ impl Suite {
             Suite::EcdsaP521 => DIGEST_SHA512,
             Suite::Ed448 => DIGEST_SHAKE256,
             Suite::EcdsaP256 => iso15118_2::signature::DIGEST_SHA256,
-        }
-    }
-
-    /// The octets a signature value is computed over: the `SignedInfo` as a fragment of the
-    /// schema of the standard the suite belongs to.
-    pub fn signed_info_fragment(self, info: &SignedInfo<'_>, out: &mut [u8]) -> Result<usize, exi::EncodeError> {
-        match self {
-            Suite::EcdsaP256 => iso15118_2::signature::signed_info_fragment(info, out),
-            _ => info.encode_fragment(out),
         }
     }
 
@@ -153,14 +143,15 @@ pub struct OwnedSignature {
 impl OwnedSignature {
     /// Calls `f` with the signature as the codec's structure, e.g. to put it into a header.
     pub fn with_signature<R>(&self, f: impl FnOnce(&Signature<'_>) -> R) -> R {
+        let transform = [Transform { algorithm: CANONICAL_EXI }];
         let references: Vec<Reference<'_>> = self
             .references
             .iter()
             .map(|(uri, digest)| Reference {
                 id: None,
                 uri: Some(uri),
-                transform_algorithm: Some(CANONICAL_EXI),
-                digest_algorithm: self.suite.digest_algorithm(),
+                transforms: Some(Transforms { transform: &transform }),
+                digest_method: DigestMethod { algorithm: self.suite.digest_algorithm() },
                 digest_value: digest,
             })
             .collect();
@@ -168,8 +159,8 @@ impl OwnedSignature {
             id: None,
             signed_info: SignedInfo {
                 id: None,
-                canonicalization_algorithm: CANONICAL_EXI,
-                signature_algorithm: self.suite.signature_algorithm(),
+                canonicalization_method: CanonicalizationMethod { algorithm: CANONICAL_EXI },
+                signature_method: SignatureMethod { algorithm: self.suite.signature_algorithm() },
                 reference: &references,
             },
             signature_value: SignatureValue { id: None, value: &self.value },
@@ -178,9 +169,9 @@ impl OwnedSignature {
     }
 }
 
-fn fragment_of(suite: Suite, info: &SignedInfo<'_>) -> Result<Vec<u8>, Error> {
+fn fragment_of(info: &SignedInfo<'_>) -> Result<Vec<u8>, Error> {
     let mut buf = vec![0u8; 4096];
-    let n = suite.signed_info_fragment(info, &mut buf)?;
+    let n = info.encode_fragment(&mut buf)?;
     buf.truncate(n);
     Ok(buf)
 }
@@ -193,7 +184,7 @@ pub fn sign(key: &PKeyRef<Private>, fragments: &[(&str, &[u8])]) -> Result<Owned
         .map(|(uri, fragment)| Ok((uri.to_string(), suite.digest(fragment)?)))
         .collect::<Result<Vec<_>, ErrorStack>>()?;
     let mut owned = OwnedSignature { suite, references, value: Vec::new() };
-    let to_sign = owned.with_signature(|s| fragment_of(suite, &s.signed_info))?;
+    let to_sign = owned.with_signature(|s| fragment_of(&s.signed_info))?;
     owned.value = sign_value(key, suite, &to_sign)?;
     Ok(owned)
 }
@@ -221,20 +212,21 @@ pub fn sign_value(key: &PKeyRef<Private>, suite: Suite, signed: &[u8]) -> Result
 pub fn verify(key: &PKeyRef<Public>, signature: &Signature<'_>, fragments: &[(&str, &[u8])]) -> Result<(), Error> {
     let suite = Suite::of_key(key).ok_or(Error::UnsupportedKey)?;
     let info = &signature.signed_info;
-    if info.canonicalization_algorithm != CANONICAL_EXI {
+    if info.canonicalization_method.algorithm != CANONICAL_EXI {
         return Err(Error::Algorithm("the canonicalization method is not canonical EXI"));
     }
-    if info.signature_algorithm != suite.signature_algorithm() {
+    if info.signature_method.algorithm != suite.signature_algorithm() {
         return Err(Error::Algorithm("the signature method does not match the key"));
     }
     // Every referenced fragment is digested and compared; every fragment must be referenced.
     let mut used = vec![false; fragments.len()];
     for reference in info.reference {
         let uri = reference.uri.unwrap_or_default();
-        if reference.digest_algorithm != suite.digest_algorithm() {
+        if reference.digest_method.algorithm != suite.digest_algorithm() {
             return Err(Error::Algorithm("the digest method does not match the key"));
         }
-        if reference.transform_algorithm.is_some_and(|t| t != CANONICAL_EXI) {
+        // V2G20-766, V2G20-767: the one transform is canonical EXI.
+        if reference.transforms.is_some_and(|t| t.transform.len() != 1 || t.transform[0].algorithm != CANONICAL_EXI) {
             return Err(Error::Algorithm("the transform is not canonical EXI"));
         }
         let i = fragments
@@ -249,7 +241,7 @@ pub fn verify(key: &PKeyRef<Public>, signature: &Signature<'_>, fragments: &[(&s
     if let Some(i) = used.iter().position(|u| !u) {
         return Err(Error::Reference(fragments[i].0.to_string()));
     }
-    let signed = fragment_of(suite, info)?;
+    let signed = fragment_of(info)?;
     let value = signature.signature_value.value;
     let ok = match suite {
         Suite::EcdsaP521 => {

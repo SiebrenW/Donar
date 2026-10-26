@@ -1,0 +1,10 @@
+[package]
+name = "xmldsig"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "The XML signature (xmldsig) types of the ISO 15118 message headers and their schema-informed EXI codec"
+
+[dependencies]
+exi = { path = "../exi" }

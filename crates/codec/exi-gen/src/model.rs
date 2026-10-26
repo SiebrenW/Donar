@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::names;
-use crate::xsd::{self, ComplexDef, ElemParticle, Particle, QName, World, XMLDSIG, XS};
+use crate::xsd::{self, ComplexDef, ElemParticle, Particle, QName, World, XMLDSIG, XMLDSIG_MODELLED, XMLDSIG_UNUSED, XS};
 
 /// EXI representation of an integer type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,18 +44,20 @@ impl Scalar {
     }
 }
 
-/// Where the hand-written message signature lives.
-pub const SIGNATURE_PATH: &str = "crate::signature::Signature";
+/// The crate that holds the xmldsig types (the namespace is a module of its own group, and every other group refers to
+/// it by path).
+pub const XMLDSIG_CRATE: &str = "xmldsig";
 
 #[derive(Debug, Clone)]
 pub enum AltTy {
     Scalar(Scalar),
     Complex(QName),
-    /// A type from a schema this generator does not model (xmldsig).
+    /// Something that is not modelled: a wildcard, an xmldsig type or element outside the profile. It cannot be
+    /// encoded and is refused when decoding.
     Foreign,
-    /// A hand-written type with `encode_content` and `decode_content` like a generated one
-    /// (the message signature, `iso15118_20::signature::Signature`), by path.
-    External(&'static str),
+    /// A type of the crate of another group (xmldsig), by path, with `encode_content` and `decode_content` like a
+    /// generated one.
+    External(String),
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +90,8 @@ pub struct Slot {
 #[derive(Debug, Clone)]
 pub struct Complex {
     pub qname: QName,
+    /// Character data may come between the elements; the layout counts the generic character production.
+    pub mixed: bool,
     pub slots: Vec<Slot>,
     pub is_abstract: bool,
 }
@@ -237,7 +241,9 @@ impl<'w> Model<'w> {
     }
 
     fn alt_for(&self, name: QName, ty: &QName, is_abstract: bool) -> Result<Alt, String> {
-        let ty = if ty.ns == XMLDSIG && self.world.complex(ty).is_none() {
+        let ty = if ty.ns == XMLDSIG && !self.modules.contains_key(XMLDSIG) {
+            self.xmldsig_external(&ty.local)
+        } else if ty.ns == XMLDSIG && self.world.complex(ty).is_none() && self.world.simple(ty).is_none() {
             AltTy::Foreign
         } else if self.is_simple(ty) {
             AltTy::Scalar(self.scalar(ty)?)
@@ -247,6 +253,11 @@ impl<'w> Model<'w> {
             return Err(format!("unknown type {}:{}", ty.ns, ty.local));
         };
         Ok(Alt { name, ty, is_abstract })
+    }
+
+    /// A reference from another group to an xmldsig type: the generated type of the xmldsig crate if it is modelled.
+    fn xmldsig_external(&self, ty: &str) -> AltTy {
+        if XMLDSIG_MODELLED.contains(&ty) { AltTy::External(format!("{XMLDSIG_CRATE}::{}", names::type_name(ty))) } else { AltTy::Foreign }
     }
 
     /// The members of a substitution group headed by `head`, sorted by local name (the
@@ -271,24 +282,30 @@ impl<'w> Model<'w> {
 
     fn element_alt(&self, name: &QName) -> Result<Alt, String> {
         let decl = self.world.element(name).ok_or_else(|| format!("unknown element {}:{}", name.ns, name.local))?;
-        if name.ns == XMLDSIG {
-            let ty = match name.local.as_str() {
-                "Signature" => AltTy::External(SIGNATURE_PATH),
-                _ => AltTy::Foreign,
-            };
-            return Ok(Alt { name: name.clone(), ty, is_abstract: false });
+        if name.ns == XMLDSIG && XMLDSIG_UNUSED.contains(&name.local.as_str()) {
+            return Ok(Alt { name: name.clone(), ty: AltTy::Foreign, is_abstract: false });
         }
-        let ty = decl.ty.as_ref().ok_or_else(|| format!("element {} has no type", name.local))?;
+        let Some(ty) = decl.ty.as_ref() else {
+            // An xmldsig element that is not modelled has no type here.
+            return if name.ns == XMLDSIG { Ok(Alt { name: name.clone(), ty: AltTy::Foreign, is_abstract: false }) } else { Err(format!("element {} has no type", name.local)) };
+        };
         let abstract_type = self.world.complex(ty).is_some_and(|c| c.is_abstract);
         self.alt_for(name.clone(), ty, decl.is_abstract || abstract_type)
     }
 
     fn slot_for_elem(&self, p: &ElemParticle, schema: &xsd::Schema) -> Result<Slot, String> {
+        if p.wildcard {
+            let alt = Alt { name: p.name.clone(), ty: AltTy::Foreign, is_abstract: false };
+            return Ok(Slot { min: p.min, max: p.max, kind: SlotKind::Single, alts: vec![alt], head: None });
+        }
         if p.is_ref {
             let group = self.group(&p.name);
             let alts = group.iter().map(|n| self.element_alt(n)).collect::<Result<Vec<_>, _>>()?;
             let kind = if alts.len() > 1 { SlotKind::Subst } else { SlotKind::Single };
             return Ok(Slot { min: p.min, max: p.max, kind, alts, head: Some(p.name.clone()) });
+        }
+        if schema.target_ns == XMLDSIG && XMLDSIG_UNUSED.contains(&p.name.local.as_str()) {
+            return Ok(Slot { min: p.min, max: p.max, kind: SlotKind::Single, alts: vec![Alt { name: p.name.clone(), ty: AltTy::Foreign, is_abstract: false }], head: None });
         }
         let ty = p.ty.as_ref().ok_or("local element without a type")?;
         let abstract_type = self.world.complex(ty).is_some_and(|c| c.is_abstract);
@@ -349,7 +366,11 @@ impl<'w> Model<'w> {
         attrs.sort_by(|a, b| (&a.0.local, &a.0.ns).cmp(&(&b.0.local, &b.0.ns)));
         let mut slots = Vec::new();
         for (qn, a) in &attrs {
-            let alt = self.alt_for(qn.clone(), &a.ty, false).map_err(ctx)?;
+            let alt = if q.ns == XMLDSIG && XMLDSIG_UNUSED.contains(&a.name.as_str()) {
+                Alt { name: qn.clone(), ty: AltTy::Foreign, is_abstract: false }
+            } else {
+                self.alt_for(qn.clone(), &a.ty, false).map_err(ctx)?
+            };
             slots.push(Slot { min: u32::from(a.required), max: 1, kind: SlotKind::Attr, alts: vec![alt], head: None });
         }
         // The text of a simple content type comes after the attributes: the `CH` production is a
@@ -360,7 +381,12 @@ impl<'w> Model<'w> {
         }
         self.collect_slots(&def, &source.ns, &mut slots).map_err(ctx)?;
         // `collect_slots` walked the base chain too; attributes are handled above only.
-        self.complex.insert(q.clone(), Complex { qname: q.clone(), slots, is_abstract: def.is_abstract });
+        // The layout counts the character production of mixed content after the end event only, which is right
+        // where the element can always end.
+        if def.mixed && slots.iter().any(|s| s.kind != SlotKind::Attr && s.min > 0) {
+            return Err(ctx("mixed content with a mandatory element is not supported".into()));
+        }
+        self.complex.insert(q.clone(), Complex { qname: q.clone(), mixed: def.mixed, slots, is_abstract: def.is_abstract });
         Ok(())
     }
 

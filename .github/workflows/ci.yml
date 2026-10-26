@@ -58,7 +58,7 @@ jobs:
       - run: >
           cargo build --locked --target thumbv7em-none-eabihf
           -p evcc-core -p evse-core -p control-pilot -p v2gtp -p homeplug
-          -p exi -p app-protocol -p iso15118-20 -p iso15118-2 -p din70121
+          -p exi -p xmldsig -p app-protocol -p iso15118-20 -p iso15118-2 -p din70121
       # The feature combinations people build (`cargo xtask features` lists them), here for the bare-metal target and, below, on the host.
       - run: cargo xtask features --target thumbv7em-none-eabihf
       - run: cargo xtask features

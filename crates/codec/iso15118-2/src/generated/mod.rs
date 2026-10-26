@@ -4,4 +4,3 @@ pub mod def;
 pub mod fragment;
 pub mod header;
 pub mod types;
-pub mod xmldsig;

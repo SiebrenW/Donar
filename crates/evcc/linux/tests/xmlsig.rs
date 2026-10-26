@@ -31,7 +31,7 @@ fn chain_fragment(chain: &SignedCertificateChain<'_>) -> Vec<u8> {
 }
 
 /// Signs, sends the signature in the header of a message, decodes it and hands it to `check`.
-fn through_the_codec<R>(owned: &xmlsig::OwnedSignature, check: impl FnOnce(&signature::Signature<'_>) -> R) -> R {
+fn through_the_codec<R>(owned: &xmlsig::OwnedSignature, check: impl FnOnce(&xmldsig::Signature<'_>) -> R) -> R {
     owned.with_signature(|signature| {
         let mut header = MessageHeader::new([1, 2, 3, 4, 5, 6, 7, 8], 1_700_000_000);
         header.signature = Some(*signature);
@@ -54,7 +54,7 @@ fn an_ecdsa_signature_survives_the_header_and_verifies() {
     owned.with_signature(|s| {
         assert_eq!(s.signature_value.value.len(), 132);
         assert_eq!(s.signed_info.reference[0].digest_value.len(), 64);
-        assert_eq!(s.signed_info.signature_algorithm, signature::ECDSA_SHA512);
+        assert_eq!(s.signed_info.signature_method.algorithm, signature::ECDSA_SHA512);
     });
     through_the_codec(&owned, |s| xmlsig::verify(&public(&key), s, &[("#id1", &fragment)])).unwrap();
 }
@@ -66,8 +66,8 @@ fn an_ed448_signature_survives_the_header_and_verifies() {
     let owned = xmlsig::sign(&key, &[("#id1", &fragment)]).unwrap();
     owned.with_signature(|s| {
         assert_eq!(s.signature_value.value.len(), 114);
-        assert_eq!(s.signed_info.signature_algorithm, signature::ED448);
-        assert_eq!(s.signed_info.reference[0].digest_algorithm, signature::DIGEST_SHAKE256);
+        assert_eq!(s.signed_info.signature_method.algorithm, signature::ED448);
+        assert_eq!(s.signed_info.reference[0].digest_method.algorithm, signature::DIGEST_SHAKE256);
         // Amd 1 V2G20-3012: the SHAKE256 digest is 114 octets.
         assert_eq!(s.signed_info.reference[0].digest_value.len(), 114);
     });
@@ -104,7 +104,7 @@ fn a_changed_fragment_a_changed_value_or_the_wrong_key_fail() {
         let r = owned.with_signature(|s| {
             let mut value = s.signature_value.value.to_vec();
             value[10] ^= 1;
-            let forged = signature::Signature { signature_value: signature::SignatureValue { id: None, value: &value }, ..*s };
+            let forged = xmldsig::Signature { signature_value: xmldsig::SignatureValue { id: None, value: &value }, ..*s };
             xmlsig::verify(&pk, &forged, &[("#id1", &fragment)])
         });
         assert!(r.is_err() && !matches!(r, Err(Error::Reference(_) | Error::Digest(_))), "{r:?}");

@@ -8,9 +8,26 @@ use std::path::Path;
 
 pub const XS: &str = "http://www.w3.org/2001/XMLSchema";
 pub const XMLDSIG: &str = "http://www.w3.org/2000/09/xmldsig#";
-/// The xmldsig types the ISO 15118-20 messages use outside the (unsupported) message signature:
-/// the issuer and serial number of a root certificate (`RootCertificateID`).
-pub const XMLDSIG_MODELLED: &[&str] = &["X509IssuerSerialType"];
+/// The xmldsig types that are modelled (the profile of ISO 15118-20 8.3.3 and ISO 15118-2 8.2.3: a signature with
+/// `SignedInfo` and `SignatureValue`, the root certificate's issuer and serial number); the others are skipped when
+/// reading the schema and stand for `Foreign` where a modelled type refers to them.
+pub const XMLDSIG_MODELLED: &[&str] = &[
+    "SignatureType",
+    "SignedInfoType",
+    "CanonicalizationMethodType",
+    "SignatureMethodType",
+    "ReferenceType",
+    "TransformsType",
+    "TransformType",
+    "DigestMethodType",
+    "DigestValueType",
+    "SignatureValueType",
+    "X509IssuerSerialType",
+];
+/// Elements and attributes of the modelled types that the profile does not use (`KeyInfo`, `Object`, the HMAC output
+/// length, `XPath` transforms and the `Type` of a reference): they keep their event codes but cannot be encoded, and
+/// are refused when decoding.
+pub const XMLDSIG_UNUSED: &[&str] = &["KeyInfo", "Object", "HMACOutputLength", "XPath", "Type"];
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct QName {
@@ -48,6 +65,8 @@ pub struct ElemParticle {
     /// The type of a local element; `None` for a `ref` (the global declaration decides).
     pub ty: Option<QName>,
     pub is_ref: bool,
+    /// `xs:any`: elements of other schemas, never modelled (an alternative that cannot be encoded).
+    pub wildcard: bool,
     pub min: u32,
     pub max: u32,
 }
@@ -69,6 +88,8 @@ pub struct ComplexDef {
     pub simple_content: bool,
     /// The type of the text of a `simpleContent` extension.
     pub simple_base: Option<QName>,
+    /// `mixed="true"`: character data between the elements.
+    pub mixed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -198,7 +219,7 @@ fn parse_schema(file: &str, text: &str) -> Result<Schema, String> {
     for node in children(root) {
         match tag(node) {
             "import" => schema.imports.push(node.attribute("namespace").unwrap_or("").to_string()),
-            "simpleType" if foreign => {}
+            "simpleType" if foreign && !node.attribute("name").is_some_and(|n| XMLDSIG_MODELLED.contains(&n)) => {}
             "complexType" if foreign && !node.attribute("name").is_some_and(|n| XMLDSIG_MODELLED.contains(&n)) => {}
             "simpleType" => {
                 let name = node.attribute("name").ok_or("anonymous global simpleType")?.to_string();
@@ -267,7 +288,7 @@ fn parse_simple(node: roxmltree::Node, target_ns: &str) -> Result<SimpleDef, Str
 }
 
 fn parse_complex(node: roxmltree::Node, target_ns: &str) -> Result<ComplexDef, String> {
-    let mut def = ComplexDef { is_abstract: node.attribute("abstract") == Some("true"), ..Default::default() };
+    let mut def = ComplexDef { is_abstract: node.attribute("abstract") == Some("true"), mixed: node.attribute("mixed") == Some("true"), ..Default::default() };
     parse_content(node, target_ns, &mut def)?;
     Ok(def)
 }
@@ -323,8 +344,11 @@ thread_local! {
 
 fn parse_elem(p: roxmltree::Node, target_ns: &str) -> Result<ElemParticle, String> {
     let (min, max) = (attr_u32(p, "minOccurs", 1)?, attr_u32(p, "maxOccurs", 1)?);
+    if tag(p) == "any" {
+        return Ok(ElemParticle { name: QName::new("", "*"), ty: None, is_ref: false, wildcard: true, min, max });
+    }
     if let Some(r) = p.attribute("ref") {
-        return Ok(ElemParticle { name: qname(p, r, target_ns)?, ty: None, is_ref: true, min, max });
+        return Ok(ElemParticle { name: qname(p, r, target_ns)?, ty: None, is_ref: true, wildcard: false, min, max });
     }
     let name = p.attribute("name").ok_or("element without name or ref")?;
     if p.attribute("type").is_none() {
@@ -337,20 +361,20 @@ fn parse_elem(p: roxmltree::Node, target_ns: &str) -> Result<ElemParticle, Strin
             v.push((tname.clone(), def));
             tname
         });
-        return Ok(ElemParticle { name: QName::new(target_ns, name), ty: Some(QName::new(target_ns, &tname)), is_ref: false, min, max });
+        return Ok(ElemParticle { name: QName::new(target_ns, name), ty: Some(QName::new(target_ns, &tname)), is_ref: false, wildcard: false, min, max });
     }
     let ty = p.attribute("type").unwrap();
-    Ok(ElemParticle { name: QName::new(target_ns, name), ty: Some(qname(p, ty, target_ns)?), is_ref: false, min, max })
+    Ok(ElemParticle { name: QName::new(target_ns, name), ty: Some(qname(p, ty, target_ns)?), is_ref: false, wildcard: false, min, max })
 }
 
 fn parse_particle(p: roxmltree::Node, target_ns: &str) -> Result<Particle, String> {
     match tag(p) {
-        "element" => Ok(Particle::Element(parse_elem(p, target_ns)?)),
+        "element" | "any" => Ok(Particle::Element(parse_elem(p, target_ns)?)),
         "choice" => {
             let mut items = Vec::new();
             for c in children(p) {
                 match tag(c) {
-                    "element" => items.push(parse_elem(c, target_ns)?),
+                    "element" | "any" => items.push(parse_elem(c, target_ns)?),
                     "annotation" => {}
                     other => return Err(format!("unsupported <{other}> inside choice")),
                 }
