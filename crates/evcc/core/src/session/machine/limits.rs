@@ -145,7 +145,7 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
         for (requirement, item, sent, offered, is_maximum) in checks {
             let broken = if is_maximum { value(sent) > value(offered) } else { value(sent) < value(offered) };
             if broken {
-                self.log.record(&Record::Violation { requirement, item, value: sent, limit: offered });
+                self.log.record(&Record::Violation { requirement, item, value: sent.into(), limit: offered.into() });
             }
         }
     }

@@ -14,20 +14,14 @@ use iso15118_20::ResponseMessage;
 use iso15118_20::ac;
 use iso15118_20::acdp;
 use iso15118_20::common::{
-    self, Authorization, ChargingSession, MeteringConfirmationReq, ParameterSet, PnCAReqAuthorizationMode, PowerDeliveryReq, SelectedService,
+    self, Authorization, MeteringConfirmationReq, ParameterSet, PnCAReqAuthorizationMode, PowerDeliveryReq, SelectedService,
     Service, ServiceSelectionReq,
 };
 use iso15118_20::common_types::{EvseStatus, MessageHeader, MeterInfo, RationalNumber, Receipt, ResponseCode};
 use iso15118_20::dc;
 use v2gtp::PayloadType;
 
-/// The answer of a step that may take several rounds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Progress<T> {
-    /// Not yet: the machine answers `Ongoing` and the vehicle asks again.
-    Ongoing,
-    Done(T),
-}
+pub use crate::common::{Action, Ended, Progress, Stop};
 
 /// What an `ACDP_VehiclePositioningReq` says (Table 81).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,17 +98,6 @@ pub struct AcdpConnection {
     pub mechanical: acdp::MechanicalChargingDeviceStatus,
 }
 
-/// What the machine does with a request before looking at it (for faults and tests).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Action {
-    #[default]
-    Pass,
-    /// Do not answer.
-    Silent,
-    /// Close the connection without answering.
-    Close,
-}
-
 /// What an `AuthorizationReq` asks to be checked.
 pub enum Authorize<'a, 'r> {
     /// External identification means: the host knows whether the user has authorized.
@@ -163,23 +146,6 @@ pub struct AcLoopAnswer {
     pub target_frequency: Option<RationalNumber>,
     pub control_mode: ac::ClResControlModeChoice,
     pub status: Option<EvseStatus>,
-}
-
-/// How a session ended its service flow, for [`Secc::session_ended`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Ended {
-    Stopped(ChargingSession),
-    /// The connection went away.
-    Lost,
-    /// The vehicle sent nothing for `V2G_SECC_Sequence_Timeout` (60 s). For DIN SPEC 70121 the charger then carries out an
-    /// EVSE-initiated emergency shutdown as IEC 61851-23 has it (V2G-DC-366: the oscillator off, the current down) and closes the
-    /// connection, which is the host's part; ISO 15118-2 and -20 only stop the session (V2G2-537, and the sequence timer of ISO 15118-20 8.6).
-    SequenceTimeout,
-    /// The control pilot said emergency (the vehicle left state C/D, IEC 61851-23 CC.4.3): the session ended
-    /// without a word. The host turns the oscillator off, brings the current down and opens its contactors.
-    Emergency(control_pilot::Reading),
-    /// The control pilot is in state E, F or A, or invalid: the vehicle or the cable is gone.
-    PilotFault(control_pilot::Reading),
 }
 
 /// What every ISO 15118-20 charger has, whatever it delivers: identity, clock, what it offers, authorization, the schedule, the power

@@ -9,8 +9,8 @@ description = "Sans-IO EVSE (SECC) side of ISO 15118-20: the charger's session m
 [features]
 # The same as `evcc-core`: what is compiled in; additive; `strict` rejects the combinations that cannot exist.
 default = ["iso20", "iso2", "din", "slac", "ac", "dc"]
-iso20 = []
-iso2 = ["plug", "dep:iso15118-2"]
+iso20 = ["dep:iso15118-20", "dep:xmldsig"]
+iso2 = ["plug", "dep:iso15118-2", "dep:xmldsig"]
 din = ["plug", "dc", "dep:din70121"]
 ac = []
 dc = []
@@ -23,8 +23,8 @@ strict = []
 [dependencies]
 homeplug = { path = "../../codec/homeplug", optional = true }
 v2gtp = { path = "../../codec/v2gtp" }
-iso15118-20 = { path = "../../codec/iso15118-20" }
-xmldsig = { path = "../../codec/xmldsig" }
+iso15118-20 = { path = "../../codec/iso15118-20", optional = true }
+xmldsig = { path = "../../codec/xmldsig", optional = true }
 app-protocol = { path = "../../codec/app-protocol" }
 exi = { path = "../../codec/exi" }
 control-pilot = { path = "../../pilot" }

@@ -2,9 +2,8 @@
 
 use crate::{Timer, Timers};
 use exi::DecodeError;
-use iso15118_20::common_types::ResponseCode;
-use iso15118_20::ac;
-use iso15118_20::dc;
+#[cfg(feature = "iso20")]
+use iso15118_20::{ac, dc, common_types::ResponseCode};
 
 /// Host-provided memory. Nothing is allocated by the core.
 pub struct Buffers<'a> {
@@ -122,6 +121,7 @@ pub enum EndReason {
     /// None of the EVSE's parameter sets for the service matches `Config::parameter_filter`.
     NoCompatibleParameterSet,
     /// The EVSE answered with a failing response code.
+    #[cfg(feature = "iso20")]
     Rejected(ResponseCode),
     Timeout,
     /// Bad V2GTP framing, or a frame larger than the RX buffer.
@@ -235,16 +235,20 @@ pub enum Notice {
     AcdpPosition(AcdpPosition),
     /// ACDP: the charger's answer to `ACDP_ConnectReq` or `ACDP_DisconnectReq`: where the pantograph is, and the control pilot state the
     /// charger sees. `finished` ends the movement; the cable check (or the session stop) follows.
+    #[cfg(feature = "iso20")]
     AcdpConnection(AcdpConnection),
     /// ACDP: the charger's answer to `ACDP_SystemStatusReq`, once a second or so, from the session setup to the stop.
+    #[cfg(feature = "iso20")]
     AcdpSystemStatus(AcdpSystemStatus),
     /// Authorization finished successfully.
     Authorized,
     /// The EVSE accepted the service selection.
     ServiceSelected { service_id: u16, parameter_set_id: u16 },
     /// The EVSE's DC limits, from `DC_ChargeParameterDiscoveryRes`.
+    #[cfg(feature = "iso20")]
     ChargeParametersDiscovered(dc::DcCpdResEnergyTransferModeChoice),
     /// The EVSE's AC limits, from `AC_ChargeParameterDiscoveryRes`.
+    #[cfg(feature = "iso20")]
     AcChargeParametersDiscovered(ac::AcCpdResEnergyTransferModeChoice),
     /// What the EVSE reported in the latest `AC_ChargeLoopRes`: the power the on-board charger
     /// is to draw (or feed back, negative).
@@ -300,6 +304,7 @@ pub struct AcdpPosition {
 }
 
 /// What the charger says about the charging point in `ACDP_SystemStatusRes` (Table 88).
+#[cfg(feature = "iso20")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcdpSystemStatus {
     pub mechanical: iso15118_20::acdp::MechanicalChargingDeviceStatus,
@@ -318,6 +323,7 @@ pub struct AcdpSystemStatus {
 }
 
 /// The state of the pantograph in an answer to `ACDP_ConnectReq` or `ACDP_DisconnectReq` (Tables 84, 86).
+#[cfg(feature = "iso20")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcdpConnection {
     pub finished: bool,

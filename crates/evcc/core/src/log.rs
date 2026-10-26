@@ -4,8 +4,10 @@
 //! synchronously.
 
 use exi::DecodeError;
+#[cfg(feature = "iso20")]
 use iso15118_20::common::{Authorization, ParameterSet, Service};
-use iso15118_20::common_types::{Processing, RationalNumber, ResponseCode};
+#[cfg(feature = "iso20")]
+use iso15118_20::common_types::{Processing, ResponseCode};
 
 use crate::session::{EndReason, State};
 
@@ -99,25 +101,32 @@ pub enum Record<'a> {
     MsgTx { msg: MsgKind },
     MsgRx { msg: MsgKind },
     /// A response code from the EVSE.
+    #[cfg(feature = "iso20")]
     Response { msg: MsgKind, code: ResponseCode },
     SessionSetUp { session_id: [u8; 8], evse_id: &'a str },
     /// A paused session was resumed (`OK_OldSessionJoined`).
     SessionResumed { session_id: [u8; 8] },
     /// The `EVSEProcessing` value of an `AuthorizationRes`.
+    #[cfg(feature = "iso20")]
     EvseProcessing { processing: Processing },
     /// The charger broke a rule of the standard with a value in a response (the requirement is
     /// the one it breaks, `item` the element, `value` what was sent and `limit` what it may be).
-    Violation { requirement: &'static str, item: &'static str, value: RationalNumber, limit: RationalNumber },
+    #[cfg(feature = "iso20")]
+    Violation { requirement: &'static str, item: &'static str, value: crate::Rational, limit: crate::Rational },
     /// The charger answered with a response code that the message may not carry (Tables 224, 226).
+    #[cfg(feature = "iso20")]
     ResponseCodeNotAllowed { msg: MsgKind, code: ResponseCode },
     /// The authorization service the vehicle selected.
+    #[cfg(feature = "iso20")]
     AuthorizationSelected { service: Authorization },
     /// The schedule tuple the vehicle selected of those the charger offered (Scheduled mode), given the
     /// energy it needs and the seconds until it leaves.
     ScheduleSelected { tuple_id: u32, offered: usize, need_wh: u32, departure_s: u32 },
     /// ACDP: the charger's answer to a connect or disconnect request.
+    #[cfg(feature = "iso20")]
     Pantograph { processing: Processing, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus, mechanical: iso15118_20::acdp::MechanicalChargingDeviceStatus },
     /// ACDP: the charger's answer to a positioning request.
+    #[cfg(feature = "iso20")]
     VehiclePositioning { processing: Processing, evse_positioning_support: bool, x_deviation_mm: i16, y_deviation_mm: i16, window_x_mm: i16, window_y_mm: i16, in_charge_position: bool },
     /// The charger has no power and said so (`GoToPause`, V2G20-2121): the vehicle pauses the session.
     GoToPause,
@@ -132,11 +141,14 @@ pub enum Record<'a> {
     Ignored { state: State, payload_type: u16 },
     DecodeFailed { state: State, error: DecodeError },
     /// The charger offers no authorization service the vehicle can use.
+    #[cfg(feature = "iso20")]
     NoAuthorization { wanted: Authorization, offered: &'a [Authorization] },
     /// The charger does not offer the energy transfer service the vehicle wants.
+    #[cfg(feature = "iso20")]
     NoService { wanted: u16, offered: &'a [Service] },
     /// None of the offered parameter sets has the vehicle's inlet (`connector`, the value of
     /// the `Connector` parameter) and every `(name, value)` of the vehicle's filter.
+    #[cfg(feature = "iso20")]
     NoParameterSet { connector: i32, filter: &'static [(&'static str, i32)], offered: &'a [ParameterSet<'a>] },
     Ended { reason: EndReason },
     /// What the host is to watch on the control pilot changed.
@@ -172,14 +184,13 @@ impl Record<'_> {
             | Record::StateChange { .. }
             | Record::SessionSetUp { .. }
             | Record::SessionResumed { .. }
-            | Record::AuthorizationSelected { .. }
             | Record::ScheduleSelected { .. }
             | Record::MobilityNeedsFromSecc { .. }
             | Record::GoToPause
-            | Record::VehiclePositioning { .. }
-            | Record::Pantograph { .. }
             | Record::MobilityNeedsIgnored { .. }
             | Record::ServiceSelected { .. } => Level::Info,
+            #[cfg(feature = "iso20")]
+            Record::AuthorizationSelected { .. } | Record::VehiclePositioning { .. } | Record::Pantograph { .. } => Level::Info,
             #[cfg(feature = "iso20")]
             Record::Response { code, .. } if !crate::session::is_ok(*code) => Level::Info,
             #[cfg(feature = "iso2")]
@@ -196,12 +207,14 @@ impl Record<'_> {
             Record::DinNoEnergyService { .. } | Record::DinNoPayment { .. } => Level::Error,
             #[cfg(feature = "iso2")]
             Record::Iso2NoEnergyMode { .. } | Record::Iso2NoPayment { .. } => Level::Error,
-            Record::Response { .. } | Record::EvseProcessing { .. } | Record::MsgTx { .. } | Record::MsgRx { .. } => {
-                Level::Debug
-            }
+            #[cfg(feature = "iso20")]
+            Record::Response { .. } | Record::EvseProcessing { .. } => Level::Debug,
+            Record::MsgTx { .. } | Record::MsgRx { .. } => Level::Debug,
             Record::RxPayload { .. } => Level::Trace,
             Record::PilotGuard { .. } => Level::Debug,
-            Record::DecodeFailed { .. } | Record::Violation { .. } | Record::ResponseCodeNotAllowed { .. } | Record::NoAuthorization { .. } | Record::NoService { .. } | Record::NoParameterSet { .. } => Level::Error,
+            Record::DecodeFailed { .. } => Level::Error,
+            #[cfg(feature = "iso20")]
+            Record::Violation { .. } | Record::ResponseCodeNotAllowed { .. } | Record::NoAuthorization { .. } | Record::NoService { .. } | Record::NoParameterSet { .. } => Level::Error,
             Record::Ignored { .. } => Level::Info,
             Record::Ended { reason } => match reason {
                 EndReason::Completed => Level::Info,
@@ -224,6 +237,7 @@ impl LogSink for NoLog {
 
 impl MsgKind {
     /// The response message this is (the request kinds have none), for the response code tables.
+    #[cfg(feature = "iso20")]
     pub fn response_message(self) -> Option<iso15118_20::ResponseMessage> {
         use iso15118_20::ResponseMessage as M;
         Some(match self {

@@ -420,6 +420,7 @@ pub trait InvertedPantographEv: Ev {
     /// own, V2G20-4013), the immobilization the driver wants (false when the driver releases the hand brake), the radio's signal strength (dBm,
     /// `EVWLANStrength`), the pilot state, the state of charge, an error code and a timeout. The default builds it from the other
     /// methods of the ACDP part and says nothing about the radio, the charge and errors.
+    #[cfg(feature = "iso20")]
     fn acdp_technical_status(&self) -> iso15118_20::acdp::EvTechnicalStatus {
         use iso15118_20::acdp::{CpStatus, ElectricalChargingDeviceStatus as E};
         let immobilized = self.immobilized();
@@ -441,6 +442,7 @@ pub trait InvertedPantographEv: Ev {
     }
     /// ACDP: the control pilot state the vehicle sees through the pantograph's contacts, as `ACDP_Connect` and `ACDP_Disconnect` report it: A
     /// while the pantograph is up (no connection), B, C or D once it is down (Tables 83, 85). The default is A.
+    #[cfg(feature = "iso20")]
     fn acdp_electrical_status(&self) -> iso15118_20::acdp::ElectricalChargingDeviceStatus {
         iso15118_20::acdp::ElectricalChargingDeviceStatus::StateA
     }
@@ -662,9 +664,11 @@ impl<E: InvertedPantographEv> Caps<E> {
     pub fn immobilized(&self) -> bool {
         self.0.immobilized()
     }
+    #[cfg(feature = "iso20")]
     pub fn acdp_technical_status(&self) -> iso15118_20::acdp::EvTechnicalStatus {
         self.0.acdp_technical_status()
     }
+    #[cfg(feature = "iso20")]
     pub fn acdp_electrical_status(&self) -> iso15118_20::acdp::ElectricalChargingDeviceStatus {
         self.0.acdp_electrical_status()
     }
@@ -681,6 +685,7 @@ impl<E> Caps<E> {
     pub fn immobilized(&self) -> bool {
         true
     }
+    #[cfg(feature = "iso20")]
     pub fn acdp_technical_status(&self) -> iso15118_20::acdp::EvTechnicalStatus {
         iso15118_20::acdp::EvTechnicalStatus {
             ev_ready_to_charge: true,
@@ -693,6 +698,7 @@ impl<E> Caps<E> {
             ev_timeout: Some(false),
         }
     }
+    #[cfg(feature = "iso20")]
     pub fn acdp_electrical_status(&self) -> iso15118_20::acdp::ElectricalChargingDeviceStatus {
         iso15118_20::acdp::ElectricalChargingDeviceStatus::StateA
     }

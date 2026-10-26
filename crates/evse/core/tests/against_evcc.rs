@@ -882,7 +882,7 @@ fn a_session_stop_is_taken_wherever_the_power_is_not_on() {
         assert_eq!(code, Some(ResponseCode::Ok), "{state:?}");
         assert!(close, "{state:?}");
         assert_eq!(now, State::Stopped, "{state:?}");
-        assert_eq!(ended, Some(evse_core::secc::Ended::Stopped(Terminate)), "{state:?}");
+        assert_eq!(ended, Some(evse_core::secc::Ended::Stopped(evse_core::common::Stop::Terminate)), "{state:?}");
     }
 }
 

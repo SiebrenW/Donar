@@ -12,7 +12,7 @@ use iso15118_2::header::MessageHeader;
 use iso15118_2::types::{self as t, PhysicalValue, UnitSymbol};
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
-use crate::secc::{Action, Ended, Progress};
+use crate::common::{Action, Ended, Progress, Stop};
 use crate::SEQUENCE_TIMEOUT_MS;
 use crate::{Event, Step, Timer, TimerCmd};
 
@@ -621,7 +621,7 @@ impl<S: Iso2Evse> Machine<S> {
                 self.pilot.set_stopping();
                 let pause = req.charging_session == t::ChargingSession::Pause;
                 self.state = if pause { State::Paused } else { State::Stopped };
-                self.secc.session_ended(Ended::Stopped(if pause { iso15118_20::common::ChargingSession::Pause } else { iso15118_20::common::ChargingSession::Terminate }));
+                self.secc.session_ended(Ended::Stopped(if pause { Stop::Pause } else { Stop::Terminate }));
                 return self.send("SessionStopRes", code, B::SessionStopRes(SessionStopRes { response_code: code }), true, out);
             }
         }

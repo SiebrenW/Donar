@@ -10,7 +10,7 @@ use evse_core::secc::{AcLoopAnswer, Action, MobilityNeeds, Authorize, DcLoopAnsw
 use iso15118_20::ResponseMessage;
 use iso15118_20::ac;
 use iso15118_20::common::{
-    self, AbsolutePriceSchedule, Authorization, ChargingSchedule, ChargingSession, EvpptControlModeChoice, MeteringConfirmationReq, Parameter, ParameterChoice, ParameterSet, PowerDeliveryReq,
+    self, AbsolutePriceSchedule, Authorization, ChargingSchedule, EvpptControlModeChoice, MeteringConfirmationReq, Parameter, ParameterChoice, ParameterSet, PowerDeliveryReq,
     PowerSchedule, PowerScheduleEntry, PowerScheduleEntryList, PriceRule, PriceRuleStack, PriceRuleStackList, ScheduleChoice, ScheduleTuple, SelectedService, Service, ServiceSelectionReq,
 };
 use iso15118_20::common_types::{DetailedCost, EvseNotification, EvseStatus, MeterInfo, RationalNumber, Receipt, ResponseCode};
@@ -720,7 +720,7 @@ impl Secc for SimSecc {
         code
     }
     fn session_ended(&mut self, how: Ended) {
-        if how == Ended::Stopped(ChargingSession::ServiceRenegotiation) {
+        if how == Ended::Stopped(evse_core::common::Stop::ServiceRenegotiation) {
             // The connection and the authorization stay; the service flow starts over.
             (self.cable_reqs_seen, self.precharge_reqs_seen, self.loops_seen) = (0, 0, 0);
             self.standby = None;

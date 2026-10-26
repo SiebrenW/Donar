@@ -9,8 +9,8 @@ publish = false
 # What is compiled in. Features are additive; with `strict` the combinations that cannot exist (one machine drives one connector) are errors.
 default = ["iso20", "iso2", "din", "slac", "ac", "dc"]
 # Protocols: ISO 15118-20 (a plug or the pantograph), ISO 15118-2 (a plug), DIN SPEC 70121 (DC through a plug).
-iso20 = []
-iso2 = ["plug", "dep:iso15118-2"]
+iso20 = ["dep:iso15118-20", "dep:xmldsig"]
+iso2 = ["plug", "dep:iso15118-2", "dep:xmldsig"]
 din = ["plug", "dc", "dep:din70121"]
 # Energy: what the vehicle's or the charger's hardware delivers.
 ac = []
@@ -26,8 +26,8 @@ strict = []
 [dependencies]
 v2gtp = { path = "../../codec/v2gtp" }
 homeplug = { path = "../../codec/homeplug", optional = true }
-iso15118-20 = { path = "../../codec/iso15118-20" }
-xmldsig = { path = "../../codec/xmldsig" }
+iso15118-20 = { path = "../../codec/iso15118-20", optional = true }
+xmldsig = { path = "../../codec/xmldsig", optional = true }
 din70121 = { path = "../../codec/din70121", optional = true }
 iso15118-2 = { path = "../../codec/iso15118-2", optional = true }
 app-protocol = { path = "../../codec/app-protocol" }

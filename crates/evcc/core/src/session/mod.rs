@@ -2,7 +2,9 @@
 //! the `iso20` feature, the ISO 15118-20 session machine.
 
 mod types;
-pub use types::{AcChargeLoopStatus, AcdpConnection, AcdpPosition, AcdpSystemStatus, Buffers, ChargeLoopStatus, MeterReading, ControlPilot, EndReason, Event, Notice, Resume, State, Step};
+#[cfg(feature = "iso20")]
+pub use types::{AcdpConnection, AcdpSystemStatus};
+pub use types::{AcChargeLoopStatus, AcdpPosition, Buffers, ChargeLoopStatus, MeterReading, ControlPilot, EndReason, Event, Notice, Resume, State, Step};
 
 #[cfg(feature = "iso20")]
 mod machine;
