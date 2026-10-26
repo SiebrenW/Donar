@@ -4,7 +4,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use evcc_core::ev::{DcConnector, DcLimits, Ev, ScheduleRequest};
+use evcc_core::ev::{DcConnector, DcLimits, AcEv, AcPlugEv, DcEv, DcPlugEv, Ev, InvertedPantographEv, ScheduleRequest};
 use evcc_core::log::{Level, LogSink, MsgKind, Record};
 use evcc_core::session::*;
 use evcc_core::{Timer, TimerCmd, Timers};
@@ -62,6 +62,24 @@ impl Ev for TestEv {
     fn evcc_id(&self) -> &str {
         "WMIV1234567890ABCDEX"
     }
+    fn schedule_request(&self) -> ScheduleRequest {
+        ScheduleRequest {
+            departure_time: 3600,
+            minimum_soc: None,
+            target_soc: Some(80),
+            target_energy: rn(3, 40),
+            maximum_energy: rn(3, 60),
+            minimum_energy: rn(0, 0),
+        }
+    }
+    fn now_micros(&self) -> u64 {
+        let t = self.0.get();
+        self.0.set(t + 1);
+        t
+    }
+}
+
+impl DcEv for TestEv {
     fn dc_limits(&self) -> DcLimits {
         DcLimits {
             maximum_charge_power: rn(3, 100),
@@ -83,19 +101,19 @@ impl Ev for TestEv {
     fn inlet_voltage(&self) -> RationalNumber {
         rn(0, INLET.with(Cell::get))
     }
-    fn schedule_request(&self) -> ScheduleRequest {
-        ScheduleRequest {
-            departure_time: 3600,
-            minimum_soc: None,
-            target_soc: Some(80),
-            target_energy: rn(3, 40),
-            maximum_energy: rn(3, 60),
-            minimum_energy: rn(0, 0),
-        }
-    }
+}
+
+impl DcPlugEv for TestEv {
     fn dc_connector(&self) -> DcConnector {
         DcConnector::Core
     }
+}
+
+impl AcEv for TestEv {}
+
+impl AcPlugEv for TestEv {}
+
+impl InvertedPantographEv for TestEv {
     fn evid(&self) -> &str {
         "BUS42"
     }
@@ -104,11 +122,6 @@ impl Ev for TestEv {
     }
     fn immobilized(&self) -> bool {
         IMMOBILIZED.with(Cell::get)
-    }
-    fn now_micros(&self) -> u64 {
-        let t = self.0.get();
-        self.0.set(t + 1);
-        t
     }
 }
 

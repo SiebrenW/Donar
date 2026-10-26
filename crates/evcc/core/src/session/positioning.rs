@@ -4,7 +4,7 @@
 //! The vehicle asks with `ACDP_VehiclePositioningReq` (mobilized, with or without positioning support of its own) and the
 //! charger answers `Ongoing` with where its pairing and positioning device sees the vehicle, for as long as the vehicle
 //! is not immobilized (V2G20-4047). The host gets each answer as [`Notice::AcdpPosition`], moves the vehicle (the driver,
-//! the parking system) and tells the session it is positioned and immobilized through [`Ev::immobilized`]; the next request
+//! the parking system) and tells the session it is positioned and immobilized through [`crate::ev::InvertedPantographEv::immobilized`]; the next request
 //! says so (V2G20-4048) and the charger answers `Finished` (V2G20-4049). Three cases of positioning support (8.3.4.7.5.1)
 //! differ only in what the charger puts into the answers and in what the host does with them.
 
@@ -14,11 +14,11 @@ use v2gtp::PayloadType;
 
 use super::types::*;
 use super::{Machine, frame, is_ok};
-use crate::ev::Ev;
+use crate::ev::Iso20Vehicle;
 use crate::log::{LogSink, MsgKind, Record};
 use crate::{Timer, TimerCmd};
 
-impl<E: Ev, L: LogSink> Machine<E, L> {
+impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
     /// `ACDP_VehiclePositioningReq`: the first one after `SessionSetupRes` and every repeat while the charger says `Ongoing`.
     pub(super) fn send_vehicle_positioning_req(&mut self, tx: &mut [u8]) -> Step {
         let immobilized = self.ev.immobilized();

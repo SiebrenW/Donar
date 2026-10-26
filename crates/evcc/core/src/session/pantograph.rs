@@ -9,11 +9,11 @@ use v2gtp::PayloadType;
 
 use super::types::*;
 use super::{Machine, frame};
-use crate::ev::Ev;
+use crate::ev::Iso20Vehicle;
 use crate::log::{LogSink, MsgKind, Record};
 use crate::{Timer, TimerCmd, Timers};
 
-impl<E: Ev, L: LogSink> Machine<E, L> {
+impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
     /// `ACDP_ConnectReq` (V2G20-4050): the first one after the schedule exchange and every repeat while the charger says `Ongoing`.
     pub(super) fn send_acdp_connect_req(&mut self, tx: &mut [u8]) -> Step {
         let msg = AcdpConnectReq { header: self.header(), ev_electrical_charging_device_status: self.ev.acdp_electrical_status() };

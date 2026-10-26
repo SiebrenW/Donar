@@ -226,7 +226,7 @@ pub enum Notice {
     SessionSetUp { session_id: [u8; 8] },
     /// ACDP: the charger's answer to a positioning request: where the pantograph's pairing and positioning device sees
     /// the vehicle. Guide the driver (or the parking system) with it; the vehicle is positioned when the host says so
-    /// ([`crate::ev::Ev::immobilized`]), not when this says it is in position.
+    /// ([`crate::ev::InvertedPantographEv::immobilized`]), not when this says it is in position.
     AcdpPosition(AcdpPosition),
     /// ACDP: the charger's answer to `ACDP_ConnectReq` or `ACDP_DisconnectReq`: where the pantograph is, and the control pilot state the
     /// charger sees. `finished` ends the movement; the cable check (or the session stop) follows.

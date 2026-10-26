@@ -8,11 +8,11 @@ use v2gtp::PayloadType;
 use super::{Machine, frame};
 use super::config::*;
 use super::types::*;
-use crate::ev::Ev;
+use crate::ev::Iso20Vehicle;
 use crate::log::{LogSink, MsgKind};
 use crate::{Timer, TimerCmd, Timers};
 
-impl<E: Ev, L: LogSink> Machine<E, L> {
+impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
     pub(super) fn on_power_delivery_stop_res(&mut self, res: PowerDeliveryRes, tx: &mut [u8]) -> Step {
         if let Some(end) = self.received(MsgKind::PowerDeliveryRes, res.response_code) {
             return end;

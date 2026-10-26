@@ -6,7 +6,7 @@ use app_protocol::AppProtocol;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// DC through the extended pins of a combined or CHAdeMO-style inlet; the vehicle's own
-    /// [`crate::ev::Ev::dc_connector`] decides between `DC_core`, `DC_extended` and `DC_combo_core`
+    /// [`crate::ev::DcPlugEv::dc_connector`] decides between `DC_core`, `DC_extended` and `DC_combo_core`
     /// if this is `Dc`.
     Dc,
     AcSinglePhase,

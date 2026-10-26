@@ -7,7 +7,7 @@ use iso15118_20::common_types::RationalNumber;
 
 use super::convert::{number, physical, rational};
 use super::Machine;
-use crate::ev::Ev;
+use crate::ev::Iso2Vehicle;
 use crate::log::{LogSink, MsgKind};
 use crate::session::{ChargeLoopStatus, ControlPilot, EndReason, Notice, State, Step};
 use crate::{Timer, TimerCmd, Timers};
@@ -29,7 +29,7 @@ fn lower(a: RationalNumber, b: RationalNumber) -> RationalNumber {
     if n(b) < n(a) { b } else { a }
 }
 
-impl<E: Ev, L: LogSink> Machine<E, L> {
+impl<E: Iso2Vehicle, L: LogSink> Machine<E, L> {
     pub(super) fn ev_status(&self, soc: i8) -> DcEvStatus {
         DcEvStatus { ev_ready: true, ev_error_code: DcEvErrorCode::NoError, evresssoc: soc }
     }

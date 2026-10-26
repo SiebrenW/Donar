@@ -12,11 +12,11 @@ use v2gtp::PayloadType;
 use super::frame;
 use super::types::*;
 use super::Machine;
-use crate::ev::Ev;
+use crate::ev::Iso20Vehicle;
 use crate::log::{LogSink, MsgKind, Record};
 use crate::{Timer, TimerCmd, Timers};
 
-impl<E: Ev, L: LogSink> Machine<E, L> {
+impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
     /// Appends an `ACDP_SystemStatusReq` to the frames `step` already holds (a step may carry several, back to back in `tx`).
     pub(super) fn append_status(&mut self, mut step: Step, tx: &mut [u8]) -> Step {
         if step.end.is_some() {

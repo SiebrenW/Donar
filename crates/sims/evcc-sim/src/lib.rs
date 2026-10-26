@@ -7,7 +7,7 @@ use std::io;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use evcc_core::ev::{DcConnector, DcLimits, Ev, ScheduleRequest};
+use evcc_core::ev::{DcConnector, DcLimits, AcEv, AcPlugEv, DcEv, DcPlugEv, Ev, InvertedPantographEv, ScheduleRequest};
 use evcc_core::log::LogSink;
 use evcc_core::session::{Buffers, Config, Event, Notice, Session};
 use iso15118_20::common_types::RationalNumber;
@@ -97,38 +97,6 @@ impl Ev for SimulatedEv {
     fn evcc_mac(&self) -> [u8; 6] {
         self.mac
     }
-    fn evid(&self) -> &str {
-        self.driver.as_ref().map_or("ZZ00000", |d| d.evid())
-    }
-    fn acdp_positioning_support(&self) -> bool {
-        self.driver.as_ref().is_some_and(|d| d.positioning_support())
-    }
-    fn immobilized(&self) -> bool {
-        self.driver.as_ref().is_none_or(|d| d.immobilized())
-    }
-    fn acdp_technical_status(&self) -> iso15118_20::acdp::EvTechnicalStatus {
-        use iso15118_20::acdp::{CpStatus, ElectricalChargingDeviceStatus as E};
-        let immobilized = self.immobilized();
-        iso15118_20::acdp::EvTechnicalStatus {
-            ev_ready_to_charge: true,
-            ev_immobilization_request: immobilized,
-            ev_immobilized: Some(immobilized),
-            evwlan_strength: self.driver.as_ref().map(|d| RationalNumber { exponent: 0, value: d.wlan_dbm() }),
-            evcp_status: Some(match self.acdp_electrical_status() {
-                E::StateA => CpStatus::StateA,
-                E::StateB => CpStatus::StateB,
-                E::StateC => CpStatus::StateC,
-                E::StateD => CpStatus::StateD,
-            }),
-            evsoc: None,
-            ev_error_code: None,
-            ev_timeout: Some(false),
-        }
-    }
-    fn acdp_electrical_status(&self) -> iso15118_20::acdp::ElectricalChargingDeviceStatus {
-        use iso15118_20::acdp::ElectricalChargingDeviceStatus as E;
-        if self.driver.as_ref().is_some_and(|d| d.pantograph_down()) { E::StateB } else { E::StateA }
-    }
     fn schedule_request(&self) -> ScheduleRequest {
         let l = &self.limits();
         // With a battery model the energy requests follow the state of charge: what is needed
@@ -158,37 +126,6 @@ impl Ev for SimulatedEv {
             maximum_energy: maximum,
             minimum_energy: minimum,
         }
-    }
-    fn dc_discharge_limits(&self) -> evcc_core::ev::DischargeLimits {
-        let l = &self.limits();
-        evcc_core::ev::DischargeLimits {
-            maximum_discharge_power: rn(l.max_discharge_power_w),
-            minimum_discharge_power: rn(l.min_discharge_power_w),
-            maximum_discharge_current: rn(l.max_discharge_current_a),
-            minimum_discharge_current: rn(l.min_discharge_current_a),
-        }
-    }
-    fn dc_limits(&self) -> DcLimits {
-        let l = &self.limits();
-        DcLimits {
-            maximum_charge_power: rn(l.max_charge_power_w),
-            minimum_charge_power: rn(l.min_charge_power_w),
-            maximum_charge_current: rn(l.max_charge_current_a),
-            minimum_charge_current: rn(l.min_charge_current_a),
-            maximum_voltage: rn(l.max_voltage_v),
-            minimum_voltage: rn(l.min_voltage_v),
-            target_soc: Some(l.target_soc),
-        }
-    }
-    fn battery_voltage(&self) -> RationalNumber {
-        RationalNumber::from_f64(self.live.as_ref().map_or(400.0, |l| l.battery_voltage()))
-    }
-    /// The first reading is below the battery voltage, the later ones match it.
-    fn inlet_voltage(&self) -> RationalNumber {
-        let reads = self.reads.get();
-        self.reads.set(reads + 1);
-        let battery = self.live.as_ref().map_or(400.0, |l| l.battery_voltage());
-        RationalNumber::from_f64(if self.open.get() { 0.0 } else if reads == 0 { battery * 0.75 } else { battery })
     }
     fn contract(&self) -> Option<&dyn evcc_core::ev::Contract> {
         self.contract.as_deref()
@@ -220,12 +157,54 @@ impl Ev for SimulatedEv {
         // The fee in cents per kWh is a RationalNumber of euros.
         Some(evcc_core::ev::EnergyOffer::new("EUR").power(l.energy_offer_s.max(1), rn(watts)).price(l.energy_offer_s.max(1), RationalNumber { exponent: -2, value: l.energy_offer_fee_cents.min(i16::MAX as u32) as i16 }))
     }
+    fn now_micros(&self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_micros() as u64)
+    }
+}
+
+impl DcEv for SimulatedEv {
+    fn dc_discharge_limits(&self) -> evcc_core::ev::DischargeLimits {
+        let l = &self.limits();
+        evcc_core::ev::DischargeLimits {
+            maximum_discharge_power: rn(l.max_discharge_power_w),
+            minimum_discharge_power: rn(l.min_discharge_power_w),
+            maximum_discharge_current: rn(l.max_discharge_current_a),
+            minimum_discharge_current: rn(l.min_discharge_current_a),
+        }
+    }
+    fn dc_limits(&self) -> DcLimits {
+        let l = &self.limits();
+        DcLimits {
+            maximum_charge_power: rn(l.max_charge_power_w),
+            minimum_charge_power: rn(l.min_charge_power_w),
+            maximum_charge_current: rn(l.max_charge_current_a),
+            minimum_charge_current: rn(l.min_charge_current_a),
+            maximum_voltage: rn(l.max_voltage_v),
+            minimum_voltage: rn(l.min_voltage_v),
+            target_soc: Some(l.target_soc),
+        }
+    }
+    fn battery_voltage(&self) -> RationalNumber {
+        RationalNumber::from_f64(self.live.as_ref().map_or(400.0, |l| l.battery_voltage()))
+    }
+    /// The first reading is below the battery voltage, the later ones match it.
+    fn inlet_voltage(&self) -> RationalNumber {
+        let reads = self.reads.get();
+        self.reads.set(reads + 1);
+        let battery = self.live.as_ref().map_or(400.0, |l| l.battery_voltage());
+        RationalNumber::from_f64(if self.open.get() { 0.0 } else if reads == 0 { battery * 0.75 } else { battery })
+    }
+}
+
+impl DcPlugEv for SimulatedEv {
     fn dc_connector(&self) -> DcConnector {
         self.connector
     }
-    fn ac_connector(&self) -> evcc_core::ev::AcConnector {
-        if self.limits().ac_phases >= 3 { evcc_core::ev::AcConnector::ThreePhase } else { evcc_core::ev::AcConnector::SinglePhase }
-    }
+}
+
+impl AcEv for SimulatedEv {
     fn ac20_limits(&self) -> evcc_core::ev::AcPowerLimits {
         let l = &self.limits();
         evcc_core::ev::AcPowerLimits {
@@ -251,10 +230,46 @@ impl Ev for SimulatedEv {
             reactive: evcc_core::ev::Phases { l1: zero, l2: phase(1).map(|_| zero), l3: phase(2).map(|_| zero) },
         }
     }
-    fn now_micros(&self) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_micros() as u64)
+}
+
+impl AcPlugEv for SimulatedEv {
+    fn ac_connector(&self) -> evcc_core::ev::AcConnector {
+        if self.limits().ac_phases >= 3 { evcc_core::ev::AcConnector::ThreePhase } else { evcc_core::ev::AcConnector::SinglePhase }
+    }
+}
+
+impl InvertedPantographEv for SimulatedEv {
+    fn evid(&self) -> &str {
+        self.driver.as_ref().map_or("ZZ00000", |d| d.evid())
+    }
+    fn acdp_positioning_support(&self) -> bool {
+        self.driver.as_ref().is_some_and(|d| d.positioning_support())
+    }
+    fn immobilized(&self) -> bool {
+        self.driver.as_ref().is_none_or(|d| d.immobilized())
+    }
+    fn acdp_technical_status(&self) -> iso15118_20::acdp::EvTechnicalStatus {
+        use iso15118_20::acdp::{CpStatus, ElectricalChargingDeviceStatus as E};
+        let immobilized = self.immobilized();
+        iso15118_20::acdp::EvTechnicalStatus {
+            ev_ready_to_charge: true,
+            ev_immobilization_request: immobilized,
+            ev_immobilized: Some(immobilized),
+            evwlan_strength: self.driver.as_ref().map(|d| RationalNumber { exponent: 0, value: d.wlan_dbm() }),
+            evcp_status: Some(match self.acdp_electrical_status() {
+                E::StateA => CpStatus::StateA,
+                E::StateB => CpStatus::StateB,
+                E::StateC => CpStatus::StateC,
+                E::StateD => CpStatus::StateD,
+            }),
+            evsoc: None,
+            ev_error_code: None,
+            ev_timeout: Some(false),
+        }
+    }
+    fn acdp_electrical_status(&self) -> iso15118_20::acdp::ElectricalChargingDeviceStatus {
+        use iso15118_20::acdp::ElectricalChargingDeviceStatus as E;
+        if self.driver.as_ref().is_some_and(|d| d.pantograph_down()) { E::StateB } else { E::StateA }
     }
 }
 

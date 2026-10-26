@@ -1,7 +1,7 @@
 //! The charger machine against the vehicle machine of `evcc-core`, in memory: two implementations of
 //! the same standard written separately, meeting over byte buffers (no sockets, no timers).
 
-use evcc_core::ev::{DcConnector, DcLimits, Ev, ScheduleRequest};
+use evcc_core::ev::{Iso20Vehicle, DcConnector, DcLimits, AcEv, AcPlugEv, DcEv, DcPlugEv, Ev, InvertedPantographEv, ScheduleRequest};
 use evcc_core::log::NoLog;
 use evcc_core::session::{Buffers as EvBuffers, Config, EndReason, Event as EvEvent, Notice, Session as EvSession};
 use evse_core::secc::{AcLoopAnswer, AcdpPositioning, AcdpPositioningRequest, DcLoopAnswer, Progress, Secc};
@@ -32,9 +32,48 @@ impl Ev for TestEv {
         self.clock.set(self.clock.get() + 1);
         self.clock.get()
     }
+    fn schedule_request(&self) -> ScheduleRequest {
+        ScheduleRequest { departure_time: 3600, minimum_soc: None, target_soc: Some(80), target_energy: rn(3, 40), maximum_energy: rn(3, 60), minimum_energy: rn(0, 0) }
+    }
+    fn v2x_energy_range(&self) -> Option<evcc_core::ev::V2xEnergyRange> {
+        self.v2x.then(|| evcc_core::ev::V2xEnergyRange { maximum: rn(3, 5), minimum: rn(3, -3) })
+    }
+    fn energy_offer(&self) -> Option<evcc_core::ev::EnergyOffer> {
+        self.offer.then(|| evcc_core::ev::EnergyOffer::new("EUR").power(1800, rn(3, 3)).power(1800, rn(3, 1)).price(3600, rn(-2, 30)))
+    }
+}
+
+impl DcEv for TestEv {
+    fn dc_limits(&self) -> DcLimits {
+        DcLimits {
+            maximum_charge_power: rn(3, 100),
+            minimum_charge_power: rn(0, 100),
+            maximum_charge_current: rn(0, 200),
+            minimum_charge_current: rn(0, 1),
+            maximum_voltage: rn(0, 450),
+            minimum_voltage: rn(0, 200),
+            target_soc: Some(80),
+        }
+    }
+    fn battery_voltage(&self) -> RationalNumber {
+        rn(0, 400)
+    }
+    fn inlet_voltage(&self) -> RationalNumber {
+        rn(0, 400)
+    }
+}
+
+impl DcPlugEv for TestEv {
     fn dc_connector(&self) -> DcConnector {
         DcConnector::Core
     }
+}
+
+impl AcEv for TestEv {}
+
+impl AcPlugEv for TestEv {}
+
+impl InvertedPantographEv for TestEv {
     fn acdp_positioning_support(&self) -> bool {
         true
     }
@@ -58,32 +97,6 @@ impl Ev for TestEv {
             c.set(left.saturating_sub(1));
             left <= 1
         })
-    }
-    fn dc_limits(&self) -> DcLimits {
-        DcLimits {
-            maximum_charge_power: rn(3, 100),
-            minimum_charge_power: rn(0, 100),
-            maximum_charge_current: rn(0, 200),
-            minimum_charge_current: rn(0, 1),
-            maximum_voltage: rn(0, 450),
-            minimum_voltage: rn(0, 200),
-            target_soc: Some(80),
-        }
-    }
-    fn battery_voltage(&self) -> RationalNumber {
-        rn(0, 400)
-    }
-    fn inlet_voltage(&self) -> RationalNumber {
-        rn(0, 400)
-    }
-    fn schedule_request(&self) -> ScheduleRequest {
-        ScheduleRequest { departure_time: 3600, minimum_soc: None, target_soc: Some(80), target_energy: rn(3, 40), maximum_energy: rn(3, 60), minimum_energy: rn(0, 0) }
-    }
-    fn v2x_energy_range(&self) -> Option<evcc_core::ev::V2xEnergyRange> {
-        self.v2x.then(|| evcc_core::ev::V2xEnergyRange { maximum: rn(3, 5), minimum: rn(3, -3) })
-    }
-    fn energy_offer(&self) -> Option<evcc_core::ev::EnergyOffer> {
-        self.offer.then(|| evcc_core::ev::EnergyOffer::new("EUR").power(1800, rn(3, 3)).power(1800, rn(3, 1)).price(3600, rn(-2, 30)))
     }
 }
 
@@ -503,9 +516,15 @@ impl Ev for PnCEv {
     fn now_micros(&self) -> u64 {
         self.0.now_micros()
     }
-    fn dc_connector(&self) -> DcConnector {
-        self.0.dc_connector()
+    fn schedule_request(&self) -> ScheduleRequest {
+        self.0.schedule_request()
     }
+    fn contract(&self) -> Option<&dyn evcc_core::ev::Contract> {
+        Some(&self.1)
+    }
+}
+
+impl DcEv for PnCEv {
     fn dc_limits(&self) -> DcLimits {
         self.0.dc_limits()
     }
@@ -515,13 +534,19 @@ impl Ev for PnCEv {
     fn inlet_voltage(&self) -> RationalNumber {
         self.0.inlet_voltage()
     }
-    fn schedule_request(&self) -> ScheduleRequest {
-        self.0.schedule_request()
-    }
-    fn contract(&self) -> Option<&dyn evcc_core::ev::Contract> {
-        Some(&self.1)
+}
+
+impl DcPlugEv for PnCEv {
+    fn dc_connector(&self) -> DcConnector {
+        self.0.dc_connector()
     }
 }
+
+impl AcEv for PnCEv {}
+
+impl AcPlugEv for PnCEv {}
+
+impl InvertedPantographEv for PnCEv {}
 
 thread_local! {
     /// The control pilot guards the machines published, in order: the vehicle's and the charger's.
@@ -530,7 +555,7 @@ thread_local! {
 }
 
 /// The two machines and what passes between them.
-struct Rig<'a, E: Ev> {
+struct Rig<'a, E: Iso20Vehicle> {
     vehicle: EvSession<'a, E, NoLog>,
     charger: Session<TestCharger>,
     charger_buffers: Buffers<'a>,
@@ -556,7 +581,7 @@ struct PilotHost {
     inject: Option<(u32, control_pilot::Reading)>,
 }
 
-impl<E: Ev> Rig<'_, E> {
+impl<E: Iso20Vehicle> Rig<'_, E> {
     /// Carries out what a vehicle step asks for: frames to the charger, its answers back, the
     /// notices the host answers.
     fn process(&mut self, step: evcc_core::session::Step) {
@@ -647,11 +672,11 @@ impl<E: Ev> Rig<'_, E> {
 }
 
 /// Runs the vehicle against the charger until one of them is done; `stop_after` charge loop answers.
-fn run<E: Ev>(config: Config, ev: E, stop_after: u32) -> (EndReason, TestCharger, State) {
+fn run<E: Iso20Vehicle>(config: Config, ev: E, stop_after: u32) -> (EndReason, TestCharger, State) {
     run_with(TestCharger::default(), config, ev, stop_after)
 }
 
-fn run_with<E: Ev>(secc: TestCharger, config: Config, ev: E, stop_after: u32) -> (EndReason, TestCharger, State) {
+fn run_with<E: Iso20Vehicle>(secc: TestCharger, config: Config, ev: E, stop_after: u32) -> (EndReason, TestCharger, State) {
     let (mut rx, mut tx, mut arena) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768]);
     let vehicle = EvSession::new(config, ev, NoLog, EvBuffers { rx: &mut rx, tx: &mut tx, arena: &mut arena });
     let (mut srx, mut stx, mut sarena, mut sscratch) = (vec![0u8; 8192], vec![0u8; 8192], vec![0u8; 32768], vec![0u8; 8192]);

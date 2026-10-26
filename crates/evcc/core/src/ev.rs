@@ -246,6 +246,10 @@ pub trait Contract {
     fn sign(&self, data: &[u8], out: &mut [u8]) -> Option<usize>;
 }
 
+/// What every vehicle has, whatever it charges with or through: identity, clock, and what it asks of the schedule and shows to the
+/// driver. The rest of the vehicle is split by capability, so that a host implements only what its hardware does: [`DcEv`], [`AcEv`] and,
+/// per way of connecting, [`DcPlugEv`], [`AcPlugEv`] and [`InvertedPantographEv`]. The session machines ask for the combination they
+/// need ([`Iso20Vehicle`], [`Iso2Vehicle`], [`DinVehicle`]).
 pub trait Ev {
     /// EVCCID sent in `SessionSetupReq` (at most 255 characters, usually the MAC address).
     fn evcc_id(&self) -> &str;
@@ -255,6 +259,138 @@ pub trait Ev {
     /// `SessionSetupRes` and keeps the stamps increasing (V2G20-1537), so a clock that is only
     /// approximately right, or even a plain counter, works.
     fn now_micros(&self) -> u64;
+    /// The MAC address of the EVCC: the EVCCID of DIN SPEC 70121 (six octets).
+    fn evcc_mac(&self) -> [u8; 6] {
+        [0; 6]
+    }
+    /// The vehicle's energy needs for the schedule exchange.
+    fn schedule_request(&self) -> ScheduleRequest;
+    /// The vehicle's contract certificate chain for Plug & Charge, if it has one. Used when
+    /// [`crate::session::Config::prefer_pnc`] is set and the charger offers PnC.
+    fn contract(&self) -> Option<&dyn Contract> {
+        None
+    }
+    /// The present state of charge in percent, reported in the charge loop (`DisplayParameters`)
+    /// when the vehicle knows it.
+    fn present_soc(&self) -> Option<u8> {
+        None
+    }
+    /// The range the vehicle prefers to cycle in with BPT; sent (in a BPT session) next to the energy requests, and the charger
+    /// may try to stay within it. Kept between the minimum and maximum energy request by the session (V2G20-2682).
+    fn v2x_energy_range(&self) -> Option<V2xEnergyRange> {
+        None
+    }
+    /// The other display parameters ([`Display`]), sent next to the present state of charge.
+    fn display(&self) -> Display {
+        Display::default()
+    }
+    /// The energy the vehicle offers in Scheduled control mode (`EVEnergyOffer`); `None` offers none.
+    fn energy_offer(&self) -> Option<EnergyOffer> {
+        None
+    }
+}
+
+/// A vehicle that charges with DC (a plug or a pantograph): its limits and the voltages the cable check and the pre-charge read.
+pub trait DcEv: Ev {
+    /// The vehicle's DC limits for this session. Static facts, so a plain call; live values
+    /// (present voltage, target current) will come through events once the charge loop exists.
+    fn dc_limits(&self) -> DcLimits;
+    /// The vehicle's discharge limits for BPT sessions ([`crate::session::Config::energy_service`]
+    /// `SERVICE_ID_DC_BPT`). The default is a small vehicle-to-load capability.
+    fn dc_discharge_limits(&self) -> DischargeLimits {
+        DischargeLimits {
+            maximum_discharge_power: RationalNumber { exponent: 3, value: 11 },
+            minimum_discharge_power: RationalNumber { exponent: 0, value: 100 },
+            maximum_discharge_current: RationalNumber { exponent: 0, value: 30 },
+            minimum_discharge_current: RationalNumber { exponent: 0, value: 1 },
+        }
+    }
+    // The limits above are the vehicle's *capabilities*, sent once in the charge parameter
+    // discovery. The ones below are what it can take *right now*, read before every charge loop
+    // request (`DC_ChargeLoopReq`, `AC_ChargeLoopReq`, `CurrentDemandReq`, `ChargingStatusReq`):
+    // they follow temperature, state of charge, battery derating. By default they are the
+    // capabilities. With `Config::enforce_cpd_limits` the session still keeps them inside the
+    // announced envelope (maximums no higher, minimums no lower).
+
+    /// DC limits for the next charge loop request.
+    fn dc_loop_limits(&self) -> DcLimits {
+        self.dc_limits()
+    }
+    /// Discharge limits (BPT) for the next charge loop request.
+    fn dc_discharge_loop_limits(&self) -> DischargeLimits {
+        self.dc_discharge_limits()
+    }
+    /// The voltage of the vehicle's battery system (read when the cable check is done and
+    /// during pre-charge).
+    fn battery_voltage(&self) -> RationalNumber;
+    /// The voltage the vehicle measures at its inlet (side B); during pre-charge it follows the
+    /// EVSE's output. Read each time a `DC_PreChargeRes` arrives.
+    fn inlet_voltage(&self) -> RationalNumber;
+}
+
+/// A vehicle with a DC plug (CCS, CHAdeMO-style inlets): which inlet it has.
+pub trait DcPlugEv: DcEv {
+    /// Which DC inlet the vehicle has; selects the matching `Connector` service parameter set.
+    fn dc_connector(&self) -> DcConnector;
+}
+
+/// A vehicle that charges with AC: its limits (ISO 15118-2 and ISO 15118-20) and the power its on-board charger draws.
+pub trait AcEv: Ev {
+    /// The vehicle's AC limits (ISO 15118-2 AC charging).
+    fn ac_limits(&self) -> AcLimits {
+        AcLimits {
+            energy_amount: RationalNumber { exponent: 3, value: 20 },
+            maximum_voltage: RationalNumber { exponent: 0, value: 400 },
+            maximum_current: RationalNumber { exponent: 0, value: 32 },
+            minimum_current: RationalNumber { exponent: 0, value: 6 },
+        }
+    }
+    /// The vehicle's AC power limits per phase (ISO 15118-20 AC), sent in
+    /// `AC_ChargeParameterDiscoveryReq` and held to in the charge loop.
+    fn ac20_limits(&self) -> AcPowerLimits {
+        let kw = |v| RationalNumber { exponent: 3, value: v };
+        AcPowerLimits { maximum_charge_power: Phases::three(kw(4)), minimum_charge_power: Phases::single(RationalNumber { exponent: 0, value: 1400 }) }
+    }
+    /// The vehicle's AC discharge limits for BPT sessions
+    /// ([`crate::session::SERVICE_ID_AC_BPT`]).
+    fn ac20_discharge_limits(&self) -> AcDischargePowerLimits {
+        AcDischargePowerLimits {
+            maximum_discharge_power: Phases::three(RationalNumber { exponent: 3, value: 4 }),
+            minimum_discharge_power: Phases::single(RationalNumber { exponent: 0, value: 500 }),
+        }
+    }
+    /// The power the on-board charger draws now, for the AC charge loop request. The default is
+    /// "nothing", for a host that does not measure.
+    fn ac_present_power(&self) -> AcPresentPower {
+        let zero = Phases::three(RationalNumber { exponent: 0, value: 0 });
+        AcPresentPower { active: zero, reactive: zero }
+    }
+    /// ISO 15118-20 AC power limits for the next charge loop request.
+    fn ac20_loop_limits(&self) -> AcPowerLimits {
+        self.ac20_limits()
+    }
+    /// ISO 15118-20 AC discharge limits for the next charge loop request.
+    fn ac20_discharge_loop_limits(&self) -> AcDischargePowerLimits {
+        self.ac20_discharge_limits()
+    }
+    /// ISO 15118-2 AC limits for the next charging status exchange.
+    fn ac_loop_limits(&self) -> AcLimits {
+        self.ac_limits()
+    }
+}
+
+/// A vehicle with an AC plug: which AC connection it has.
+pub trait AcPlugEv: AcEv {
+    /// Which AC connection the vehicle has (ISO 15118-20 AC); selects the `Connector` service
+    /// parameter set. A three-phase charger also serves a single-phase vehicle.
+    fn ac_connector(&self) -> AcConnector {
+        AcConnector::ThreePhase
+    }
+}
+
+/// A vehicle that charges through the inverted pantograph, the charger-mounted one that lowers onto the roof rails (ACDP of ISO 15118-20,
+/// OppCharge): its identity for the wireless pairing, how it is positioned and what it sees through the contacts. It has no AC and no plug.
+pub trait InvertedPantographEv: Ev {
     /// ACDP (and WPT): the EVID of the wireless SDP request, a temporary identifier of the vehicle that the charger's pairing and
     /// positioning device reads in the vehicle's proximity (at most 20 letters and digits; ISO 15118-20 Table 25). The
     /// default is what a vehicle without one sends (V2G20-2281).
@@ -301,115 +437,16 @@ pub trait Ev {
     fn acdp_electrical_status(&self) -> iso15118_20::acdp::ElectricalChargingDeviceStatus {
         iso15118_20::acdp::ElectricalChargingDeviceStatus::StateA
     }
-    /// The MAC address of the EVCC: the EVCCID of DIN SPEC 70121 (six octets).
-    fn evcc_mac(&self) -> [u8; 6] {
-        [0; 6]
-    }
-    /// Which DC inlet the vehicle has; selects the matching `Connector` service parameter set.
-    fn dc_connector(&self) -> DcConnector;
-    /// The vehicle's DC limits for this session. Static facts, so a plain call; live values
-    /// (present voltage, target current) will come through events once the charge loop exists.
-    fn dc_limits(&self) -> DcLimits;
-    /// The vehicle's discharge limits for BPT sessions ([`crate::session::Config::energy_service`]
-    /// `SERVICE_ID_DC_BPT`). The default is a small vehicle-to-load capability.
-    fn dc_discharge_limits(&self) -> DischargeLimits {
-        DischargeLimits {
-            maximum_discharge_power: RationalNumber { exponent: 3, value: 11 },
-            minimum_discharge_power: RationalNumber { exponent: 0, value: 100 },
-            maximum_discharge_current: RationalNumber { exponent: 0, value: 30 },
-            minimum_discharge_current: RationalNumber { exponent: 0, value: 1 },
-        }
-    }
-    /// The vehicle's AC limits (ISO 15118-2 AC charging).
-    fn ac_limits(&self) -> AcLimits {
-        AcLimits {
-            energy_amount: RationalNumber { exponent: 3, value: 20 },
-            maximum_voltage: RationalNumber { exponent: 0, value: 400 },
-            maximum_current: RationalNumber { exponent: 0, value: 32 },
-            minimum_current: RationalNumber { exponent: 0, value: 6 },
-        }
-    }
-    /// Which AC connection the vehicle has (ISO 15118-20 AC); selects the `Connector` service
-    /// parameter set. A three-phase charger also serves a single-phase vehicle.
-    fn ac_connector(&self) -> AcConnector {
-        AcConnector::ThreePhase
-    }
-    /// The vehicle's AC power limits per phase (ISO 15118-20 AC), sent in
-    /// `AC_ChargeParameterDiscoveryReq` and held to in the charge loop.
-    fn ac20_limits(&self) -> AcPowerLimits {
-        let kw = |v| RationalNumber { exponent: 3, value: v };
-        AcPowerLimits { maximum_charge_power: Phases::three(kw(4)), minimum_charge_power: Phases::single(RationalNumber { exponent: 0, value: 1400 }) }
-    }
-    /// The vehicle's AC discharge limits for BPT sessions
-    /// ([`crate::session::SERVICE_ID_AC_BPT`]).
-    fn ac20_discharge_limits(&self) -> AcDischargePowerLimits {
-        AcDischargePowerLimits {
-            maximum_discharge_power: Phases::three(RationalNumber { exponent: 3, value: 4 }),
-            minimum_discharge_power: Phases::single(RationalNumber { exponent: 0, value: 500 }),
-        }
-    }
-    /// The power the on-board charger draws now, for the AC charge loop request. The default is
-    /// "nothing", for a host that does not measure.
-    fn ac_present_power(&self) -> AcPresentPower {
-        let zero = Phases::three(RationalNumber { exponent: 0, value: 0 });
-        AcPresentPower { active: zero, reactive: zero }
-    }
-    // The limits above are the vehicle's *capabilities*, sent once in the charge parameter
-    // discovery. The ones below are what it can take *right now*, read before every charge loop
-    // request (`DC_ChargeLoopReq`, `AC_ChargeLoopReq`, `CurrentDemandReq`, `ChargingStatusReq`):
-    // they follow temperature, state of charge, battery derating. By default they are the
-    // capabilities. With `Config::enforce_cpd_limits` the session still keeps them inside the
-    // announced envelope (maximums no higher, minimums no lower).
-
-    /// DC limits for the next charge loop request.
-    fn dc_loop_limits(&self) -> DcLimits {
-        self.dc_limits()
-    }
-    /// Discharge limits (BPT) for the next charge loop request.
-    fn dc_discharge_loop_limits(&self) -> DischargeLimits {
-        self.dc_discharge_limits()
-    }
-    /// ISO 15118-20 AC power limits for the next charge loop request.
-    fn ac20_loop_limits(&self) -> AcPowerLimits {
-        self.ac20_limits()
-    }
-    /// ISO 15118-20 AC discharge limits for the next charge loop request.
-    fn ac20_discharge_loop_limits(&self) -> AcDischargePowerLimits {
-        self.ac20_discharge_limits()
-    }
-    /// ISO 15118-2 AC limits for the next charging status exchange.
-    fn ac_loop_limits(&self) -> AcLimits {
-        self.ac_limits()
-    }
-    /// The voltage of the vehicle's battery system (read when the cable check is done and
-    /// during pre-charge).
-    fn battery_voltage(&self) -> RationalNumber;
-    /// The voltage the vehicle measures at its inlet (side B); during pre-charge it follows the
-    /// EVSE's output. Read each time a `DC_PreChargeRes` arrives.
-    fn inlet_voltage(&self) -> RationalNumber;
-    /// The vehicle's energy needs for the schedule exchange.
-    fn schedule_request(&self) -> ScheduleRequest;
-    /// The vehicle's contract certificate chain for Plug & Charge, if it has one. Used when
-    /// [`crate::session::Config::prefer_pnc`] is set and the charger offers PnC.
-    fn contract(&self) -> Option<&dyn Contract> {
-        None
-    }
-    /// The present state of charge in percent, reported in the charge loop (`DisplayParameters`)
-    /// when the vehicle knows it.
-    fn present_soc(&self) -> Option<u8> {
-        None
-    }
-    /// The range the vehicle prefers to cycle in with BPT; sent (in a BPT session) next to the energy requests, and the charger
-    /// may try to stay within it. Kept between the minimum and maximum energy request by the session (V2G20-2682).
-    fn v2x_energy_range(&self) -> Option<V2xEnergyRange> {
-        None
-    }
-    /// The other display parameters ([`Display`]), sent next to the present state of charge.
-    fn display(&self) -> Display {
-        Display::default()
-    }
-    /// The energy the vehicle offers in Scheduled control mode (`EVEnergyOffer`); `None` offers none.
-    fn energy_offer(&self) -> Option<EnergyOffer> {
-        None
-    }
 }
+
+/// What the ISO 15118-20 machine needs of a vehicle: every capability it can run (DC and AC through a plug, DC through the pantograph).
+pub trait Iso20Vehicle: DcPlugEv + AcPlugEv + InvertedPantographEv {}
+impl<T: DcPlugEv + AcPlugEv + InvertedPantographEv> Iso20Vehicle for T {}
+
+/// What the ISO 15118-2 machine needs of a vehicle: DC and AC through a plug.
+pub trait Iso2Vehicle: DcPlugEv + AcPlugEv {}
+impl<T: DcPlugEv + AcPlugEv> Iso2Vehicle for T {}
+
+/// What the DIN SPEC 70121 machine needs of a vehicle: DC through a plug.
+pub trait DinVehicle: DcPlugEv {}
+impl<T: DcPlugEv> DinVehicle for T {}

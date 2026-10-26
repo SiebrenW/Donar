@@ -8,12 +8,12 @@ use iso15118_20::common_types::RationalNumber;
 use super::convert::{number, physical, pmax, rational};
 use super::setup::merge;
 use super::Machine;
-use crate::ev::Ev;
+use crate::ev::DinVehicle;
 use crate::log::{LogSink, MsgKind};
 use crate::session::{ChargeLoopStatus, ControlPilot, EndReason, Notice, State, Step};
 use crate::{Timer, TimerCmd, Timers};
 
-impl<E: Ev, L: LogSink> Machine<E, L> {
+impl<E: DinVehicle, L: LogSink> Machine<E, L> {
     /// The status of the vehicle in a request (9.5.3.2): ready, no error, the state of charge.
     pub(super) fn ev_status(&self, soc: i8) -> DcEvStatus {
         DcEvStatus { ev_ready: true, ev_cabin_conditioning: None, evress_conditioning: None, ev_error_code: DcEvErrorCode::NoError, evresssoc: soc }

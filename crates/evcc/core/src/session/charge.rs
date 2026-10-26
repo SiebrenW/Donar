@@ -9,7 +9,7 @@ use v2gtp::PayloadType;
 use super::{Machine, frame};
 use super::config::*;
 use super::types::*;
-use crate::ev::{AcDischargePowerLimits, AcPowerLimits, AcPresentPower, Ev, Phases};
+use crate::ev::{AcDischargePowerLimits, AcPowerLimits, AcPresentPower, Iso20Vehicle, Phases};
 use crate::log::{LogSink, MsgKind, Record};
 use crate::{Timer, TimerCmd, Timers};
 
@@ -18,7 +18,7 @@ fn reading(m: &common_types::MeterInfo<'_>) -> MeterReading {
     MeterReading { charged_wh: m.charged_energy_reading_wh, discharged_wh: m.bpt_discharged_energy_reading_wh, timestamp: m.meter_timestamp }
 }
 
-impl<E: Ev, L: LogSink> Machine<E, L> {
+impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
     pub(super) fn on_cable_check_res(&mut self, res: dc::DcCableCheckRes, tx: &mut [u8]) -> Step {
         if let Some(end) = self.received(MsgKind::DcCableCheckRes, res.response_code) {
             return end;
