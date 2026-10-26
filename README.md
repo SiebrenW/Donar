@@ -20,7 +20,7 @@ You write three things: the **vehicle** (`Ev` and its capability traits), the **
 
 | Trait | For | Required |
 |---|---|---|
-| `Ev` | every vehicle: identity, clock, schedule, contract, display | `evcc_id`, `now_micros`, `schedule_request` |
+| `Ev` | every vehicle: identity, clock, schedule, contract, display (physical values are `evcc_core::Rational`, `value * 10^exponent`, from and to `f32`/`f64`) | `evcc_id`, `now_micros`, `schedule_request` |
 | `DcEv` | DC charging, plug or pantograph: limits and voltages | `dc_limits`, `battery_voltage`, `inlet_voltage` |
 | `DcPlugEv` | a DC plug (CCS, CHAdeMO-style inlets) | `dc_connector` |
 | `AcEv` | AC charging (ISO 15118-2 and -20) | nothing (defaults) |

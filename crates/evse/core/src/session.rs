@@ -697,7 +697,7 @@ impl<S: Iso20Evse> Machine<S> {
         let header = self.header();
         let res = common::SessionStopRes { header, response_code: code };
         if is_ok(code) {
-            self.secc.session_ended(Ended::Stopped(req.charging_session));
+            self.secc.session_ended(Ended::Stopped(req.charging_session.into()));
             if renegotiation {
                 // The connection and the authorization stay; the service flow starts over.
                 self.standby = false;

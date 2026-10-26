@@ -13,7 +13,7 @@ use din70121::types::{self as t, PhysicalValue, UnitSymbol};
 use exi::Arena;
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
-use crate::secc::{Action, Ended, Progress};
+use crate::common::{Action, Ended, Progress, Stop};
 use crate::SEQUENCE_TIMEOUT_MS;
 use crate::{Event, Step, Timer, TimerCmd};
 
@@ -477,7 +477,7 @@ impl<S: DinSecc> Machine<S> {
                 };
                 self.pilot.set_stopping();
                 self.state = State::Stopped;
-                self.secc.session_ended(Ended::Stopped(iso15118_20::common::ChargingSession::Terminate));
+                self.secc.session_ended(Ended::Stopped(Stop::Terminate));
                 return self.send("SessionStopRes", code, B::SessionStopRes(SessionStopRes { response_code: code }), true, out);
             }
         }

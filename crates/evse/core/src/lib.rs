@@ -19,10 +19,12 @@
 //! 4. When the armed timer fires, send [`Event::TimerExpired`].
 #![no_std]
 
+pub mod common;
 #[cfg(feature = "din")]
 pub mod din;
 #[cfg(feature = "iso2")]
 pub mod iso2;
+#[cfg(feature = "iso20")]
 pub mod secc;
 #[cfg(feature = "iso20")]
 pub mod session;
