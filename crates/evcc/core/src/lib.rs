@@ -15,6 +15,8 @@ pub mod iso2;
 pub mod ev;
 pub mod log;
 pub mod machine;
+pub mod rational;
+pub use rational::Rational;
 pub mod sdp;
 #[cfg(feature = "slac")]
 pub mod slac;

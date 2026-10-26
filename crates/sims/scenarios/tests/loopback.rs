@@ -434,7 +434,7 @@ fn a_paused_session_is_resumed_on_a_new_connection_without_authorization_or_serv
     let (addr, server) = start_twice(evse_sim::Config::default());
     let resume = pause_first_session(addr);
     assert_eq!(resume.session_id, evse_sim::Config::default().session_id);
-    assert_eq!(resume.selected.service_id, 2);
+    assert_eq!(resume.service_id, 2);
     let (outcome, log) = run_with_resume(addr, Some(resume));
     assert_eq!(outcome, Outcome::Ended(EndReason::Completed));
     assert_eq!(log.count("SessionResumed"), 1);
@@ -561,14 +561,14 @@ fn a_vehicle_that_raises_its_limits_in_the_charge_loop_is_noted_and_may_be_faile
             self.1.set(calls + 1);
             let mut l = self.0.dc_limits();
             if calls > 0 {
-                l.maximum_charge_current = iso15118_20::common_types::RationalNumber::from_f64(250.0);
+                l.maximum_charge_current = evcc_core::Rational::from_f64(250.0);
             }
             l
         }
-        fn battery_voltage(&self) -> iso15118_20::common_types::RationalNumber {
+        fn battery_voltage(&self) -> evcc_core::Rational {
             self.0.battery_voltage()
         }
-        fn inlet_voltage(&self) -> iso15118_20::common_types::RationalNumber {
+        fn inlet_voltage(&self) -> evcc_core::Rational {
             self.0.inlet_voltage()
         }
     }

@@ -2,7 +2,6 @@
 
 use crate::{Timer, Timers};
 use exi::DecodeError;
-use iso15118_20::common::SelectedService;
 use iso15118_20::common_types::ResponseCode;
 use iso15118_20::ac;
 use iso15118_20::dc;
@@ -85,7 +84,9 @@ pub enum State {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Resume {
     pub session_id: [u8; 8],
-    pub selected: SelectedService,
+    /// The energy transfer service of the session (`SelectedService`): its id and its parameter set's.
+    pub service_id: u16,
+    pub parameter_set_id: u16,
     /// `ServiceRenegotiationSupported` of the first `ServiceDiscoveryRes` of the session.
     pub renegotiation_supported: Option<bool>,
 }
@@ -338,14 +339,14 @@ pub struct MeterReading {
 /// The EVSE's side of one charge loop exchange (Dynamic control mode).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChargeLoopStatus {
-    pub present_current: iso15118_20::common_types::RationalNumber,
-    pub present_voltage: iso15118_20::common_types::RationalNumber,
+    pub present_current: crate::rational::Rational,
+    pub present_voltage: crate::rational::Rational,
     pub power_limit_achieved: bool,
     pub current_limit_achieved: bool,
     pub voltage_limit_achieved: bool,
-    pub maximum_charge_power: iso15118_20::common_types::RationalNumber,
-    pub maximum_charge_current: iso15118_20::common_types::RationalNumber,
-    pub maximum_voltage: iso15118_20::common_types::RationalNumber,
+    pub maximum_charge_power: crate::rational::Rational,
+    pub maximum_charge_current: crate::rational::Rational,
+    pub maximum_voltage: crate::rational::Rational,
     /// The meter reading of this answer, if it had one.
     pub meter: Option<MeterReading>,
     /// The mobility needs this answer named, with `MobilityNeedsMode` 2 (and only what changed).
@@ -358,10 +359,10 @@ pub struct ChargeLoopStatus {
 pub struct AcChargeLoopStatus {
     pub target_active_power: crate::ev::Phases,
     /// Per line, `None` where the EVSE sent none.
-    pub target_reactive_power: [Option<iso15118_20::common_types::RationalNumber>; 3],
+    pub target_reactive_power: [Option<crate::rational::Rational>; 3],
     /// What the EVSE measures (`EVSEPresentActivePower`), per line.
-    pub present_active_power: [Option<iso15118_20::common_types::RationalNumber>; 3],
-    pub target_frequency: Option<iso15118_20::common_types::RationalNumber>,
+    pub present_active_power: [Option<crate::rational::Rational>; 3],
+    pub target_frequency: Option<crate::rational::Rational>,
     /// The target comes from the vehicle's own schedule (Scheduled mode, the charger named none): changes of it
     /// are held to the charger's power ramp limit (V2G20-1831); a target the charger names overrides the limit
     /// (V2G20-1832).

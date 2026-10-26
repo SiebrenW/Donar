@@ -234,8 +234,9 @@ impl Config {
     }
 }
 
-/// A `RationalNumber` (value * 10^exponent) in volts, for comparisons.
-pub(crate) fn rational_to_volts(r: iso15118_20::common_types::RationalNumber) -> f32 {
+/// A value (`value * 10^exponent`, the vehicle's `Rational` or the charger's `RationalNumber`) as a float, for comparisons.
+pub(crate) fn rational_to_volts(r: impl Into<crate::rational::Rational>) -> f32 {
+    let r = r.into();
     f32::from(r.value) * pow10(r.exponent)
 }
 

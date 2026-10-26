@@ -3,12 +3,12 @@
 
 use crate::ev::Phases;
 use iso15118_20::common::ScheduleTuple;
-use iso15118_20::common_types::RationalNumber;
+use crate::rational::Rational;
 
 /// How many entries are kept: `MaximumSupportingPoints` of the session (12 by default) at most.
 pub(super) const MAX_ENTRIES: usize = 16;
 
-const ZERO: RationalNumber = RationalNumber { exponent: 0, value: 0 };
+const ZERO: Rational = Rational { exponent: 0, value: 0 };
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Schedule {
@@ -29,7 +29,7 @@ impl Schedule {
         let mut s = Schedule::NONE;
         s.start = if power.time_anchor == 0 { now } else { power.time_anchor };
         for e in power.power_schedule_entries.power_schedule_entry.iter().take(MAX_ENTRIES) {
-            s.entries[s.len] = (e.duration, Phases { l1: e.power, l2: e.power_l2, l3: e.power_l3 });
+            s.entries[s.len] = (e.duration, Phases { l1: e.power.into(), l2: e.power_l2.map(Into::into), l3: e.power_l3.map(Into::into) });
             s.len += 1;
         }
         s
@@ -78,8 +78,8 @@ impl Schedule {
 mod tests {
     use super::*;
 
-    fn rn(value: i16) -> RationalNumber {
-        RationalNumber { exponent: 3, value }
+    fn rn(value: i16) -> Rational {
+        Rational { exponent: 3, value }
     }
 
     fn schedule(start: u64) -> Schedule {

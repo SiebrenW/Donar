@@ -150,7 +150,7 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
         let (low, high) = (value(r.minimum_energy), value(r.maximum_energy));
         let minimum = if value(range.minimum) < low { r.minimum_energy } else if value(range.minimum) > high { r.maximum_energy } else { range.minimum };
         let maximum = if value(range.maximum) > high { r.maximum_energy } else if value(range.maximum) < value(minimum) { minimum } else { range.maximum };
-        (Some(maximum), Some(minimum))
+        (Some(maximum.into()), Some(minimum.into()))
     }
 
     /// The mobility needs an answer named. With `MobilityNeedsMode` 2 they replace the vehicle's; the
@@ -198,16 +198,19 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
         let offer = self.ev.energy_offer().filter(|o| !o.power_entries().is_empty() && !o.prices().is_empty());
         let zero = RationalNumber { exponent: 0, value: 0 };
         let price = |i: usize| offer.as_ref().and_then(|o| o.prices().get(i));
-        let rules: [EvPriceRule; EnergyOffer::CAPACITY] = core::array::from_fn(|i| EvPriceRule { energy_fee: price(i).map_or(zero, |p| p.energy_fee), power_range_start: zero });
+        let entries: [EvPowerScheduleEntry; EnergyOffer::CAPACITY] = core::array::from_fn(|i| {
+            offer.as_ref().and_then(|o| o.power_entries().get(i)).map_or(EvPowerScheduleEntry { duration: 0, power: zero }, |p| EvPowerScheduleEntry { duration: p.duration, power: p.power.into() })
+        });
+        let rules: [EvPriceRule; EnergyOffer::CAPACITY] = core::array::from_fn(|i| EvPriceRule { energy_fee: price(i).map_or(zero, |p| p.energy_fee.into()), power_range_start: zero });
         let stacks: [EvPriceRuleStack<'_>; EnergyOffer::CAPACITY] = core::array::from_fn(|i| EvPriceRuleStack { duration: price(i).map_or(0, |p| p.duration), ev_price_rule: &rules[i..=i] });
         let mode = if self.config.scheduled {
             common::SeReqControlModeChoice::Scheduled(common::ScheduledSeReqControlMode {
                 departure_time: Some(r.departure_time),
-                ev_target_energy_request: Some(r.target_energy),
-                ev_maximum_energy_request: Some(r.maximum_energy),
-                ev_minimum_energy_request: Some(r.minimum_energy),
+                ev_target_energy_request: Some(r.target_energy.into()),
+                ev_maximum_energy_request: Some(r.maximum_energy.into()),
+                ev_minimum_energy_request: Some(r.minimum_energy.into()),
                 ev_energy_offer: offer.as_ref().map(|o| EvEnergyOffer {
-                    ev_power_schedule: EvPowerSchedule { time_anchor: anchor, ev_power_schedule_entries: EvPowerScheduleEntryList { ev_power_schedule_entry: o.power_entries() } },
+                    ev_power_schedule: EvPowerSchedule { time_anchor: anchor, ev_power_schedule_entries: EvPowerScheduleEntryList { ev_power_schedule_entry: &entries[..o.power_entries().len()] } },
                     ev_absolute_price_schedule: EvAbsolutePriceSchedule {
                         time_anchor: anchor,
                         currency: o.currency,
@@ -221,9 +224,9 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
                 departure_time: r.departure_time,
                 minimum_soc: r.minimum_soc.map(|v| v as i8),
                 target_soc: r.target_soc.map(|v| v as i8),
-                ev_target_energy_request: r.target_energy,
-                ev_maximum_energy_request: r.maximum_energy,
-                ev_minimum_energy_request: r.minimum_energy,
+                ev_target_energy_request: r.target_energy.into(),
+                ev_maximum_energy_request: r.maximum_energy.into(),
+                ev_minimum_energy_request: r.minimum_energy.into(),
                 ev_maximum_v2x_energy_request: v2x.0,
                 ev_minimum_v2x_energy_request: v2x.1,
             })

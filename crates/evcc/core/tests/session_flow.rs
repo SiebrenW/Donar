@@ -67,9 +67,9 @@ impl Ev for TestEv {
             departure_time: 3600,
             minimum_soc: None,
             target_soc: Some(80),
-            target_energy: rn(3, 40),
-            maximum_energy: rn(3, 60),
-            minimum_energy: rn(0, 0),
+            target_energy: rn(3, 40).into(),
+            maximum_energy: rn(3, 60).into(),
+            minimum_energy: rn(0, 0).into(),
         }
     }
     fn now_micros(&self) -> u64 {
@@ -82,24 +82,24 @@ impl Ev for TestEv {
 impl DcEv for TestEv {
     fn dc_limits(&self) -> DcLimits {
         DcLimits {
-            maximum_charge_power: rn(3, 100),
-            minimum_charge_power: rn(0, 100),
-            maximum_charge_current: rn(0, 200),
-            minimum_charge_current: rn(0, 1),
-            maximum_voltage: rn(0, 450),
-            minimum_voltage: rn(0, 200),
+            maximum_charge_power: rn(3, 100).into(),
+            minimum_charge_power: rn(0, 100).into(),
+            maximum_charge_current: rn(0, 200).into(),
+            minimum_charge_current: rn(0, 1).into(),
+            maximum_voltage: rn(0, 450).into(),
+            minimum_voltage: rn(0, 200).into(),
             target_soc: Some(80),
         }
     }
     fn dc_loop_limits(&self) -> DcLimits {
         let now = LOOP_CURRENT.with(Cell::get);
-        DcLimits { maximum_charge_current: if now > 0 { rn(0, now) } else { self.dc_limits().maximum_charge_current }, ..self.dc_limits() }
+        DcLimits { maximum_charge_current: if now > 0 { rn(0, now).into() } else { self.dc_limits().maximum_charge_current }, ..self.dc_limits() }
     }
-    fn battery_voltage(&self) -> RationalNumber {
-        rn(0, BATTERY_V)
+    fn battery_voltage(&self) -> evcc_core::Rational {
+        rn(0, BATTERY_V).into()
     }
-    fn inlet_voltage(&self) -> RationalNumber {
-        rn(0, INLET.with(Cell::get))
+    fn inlet_voltage(&self) -> evcc_core::Rational {
+        rn(0, INLET.with(Cell::get)).into()
     }
 }
 
@@ -584,9 +584,9 @@ fn the_charge_loop_cycles_and_stops_on_request() {
             Timers::one(TimerCmd::Cancel(Timer::Response)).with(TimerCmd::Arm { timer: Timer::Poll, ms: 100 })
         );
         let Some(Notice::ChargeLoop(status)) = step.notice else { panic!("{step:?}") };
-        assert_eq!(status.present_current, rn(0, 100));
+        assert_eq!(status.present_current, rn(0, 100).into());
         assert!(status.current_limit_achieved);
-        assert_eq!(status.maximum_charge_current, rn(0, 300));
+        assert_eq!(status.maximum_charge_current, rn(0, 300).into());
         let step = s.handle(Event::TimerExpired(Timer::Poll));
         assert_eq!(step.timers, loop_timer());
         sent_dc(&s, &step, |m| {

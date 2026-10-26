@@ -38,7 +38,7 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
                 // V2G20-1844, V2G20-2098: authorization and service selection are valid; the
                 // next request is the charge parameter discovery.
                 self.log.record(&Record::SessionResumed { session_id: old.session_id });
-                self.selected = old.selected;
+                self.selected = SelectedService { service_id: old.service_id, parameter_set_id: old.parameter_set_id };
                 self.renegotiation_supported = old.renegotiation_supported;
                 let framed = self.frame_charge_parameter_discovery_req(self.energy_payload_type(), tx);
                 let mut step = self.send_then(State::AwaitChargeParameterDiscoveryRes, self.cpd_req_kind(), framed);
@@ -243,26 +243,26 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
             let d = self.ev.dc_discharge_limits();
             self.ev_announced_discharge = Some(d);
             dc::DcCpdReqEnergyTransferModeChoice::Bpt(dc::BptDcCpdReqEnergyTransferMode {
-                ev_maximum_charge_power: limits.maximum_charge_power,
-                ev_minimum_charge_power: limits.minimum_charge_power,
-                ev_maximum_charge_current: limits.maximum_charge_current,
-                ev_minimum_charge_current: limits.minimum_charge_current,
-                ev_maximum_voltage: limits.maximum_voltage,
-                ev_minimum_voltage: limits.minimum_voltage,
+                ev_maximum_charge_power: limits.maximum_charge_power.into(),
+                ev_minimum_charge_power: limits.minimum_charge_power.into(),
+                ev_maximum_charge_current: limits.maximum_charge_current.into(),
+                ev_minimum_charge_current: limits.minimum_charge_current.into(),
+                ev_maximum_voltage: limits.maximum_voltage.into(),
+                ev_minimum_voltage: limits.minimum_voltage.into(),
                 target_soc: limits.target_soc.map(|s| s as i8),
-                ev_maximum_discharge_power: d.maximum_discharge_power,
-                ev_minimum_discharge_power: d.minimum_discharge_power,
-                ev_maximum_discharge_current: d.maximum_discharge_current,
-                ev_minimum_discharge_current: d.minimum_discharge_current,
+                ev_maximum_discharge_power: d.maximum_discharge_power.into(),
+                ev_minimum_discharge_power: d.minimum_discharge_power.into(),
+                ev_maximum_discharge_current: d.maximum_discharge_current.into(),
+                ev_minimum_discharge_current: d.minimum_discharge_current.into(),
             })
         } else {
             dc::DcCpdReqEnergyTransferModeChoice::Base(dc::DcCpdReqEnergyTransferMode {
-                ev_maximum_charge_power: limits.maximum_charge_power,
-                ev_minimum_charge_power: limits.minimum_charge_power,
-                ev_maximum_charge_current: limits.maximum_charge_current,
-                ev_minimum_charge_current: limits.minimum_charge_current,
-                ev_maximum_voltage: limits.maximum_voltage,
-                ev_minimum_voltage: limits.minimum_voltage,
+                ev_maximum_charge_power: limits.maximum_charge_power.into(),
+                ev_minimum_charge_power: limits.minimum_charge_power.into(),
+                ev_maximum_charge_current: limits.maximum_charge_current.into(),
+                ev_minimum_charge_current: limits.minimum_charge_current.into(),
+                ev_maximum_voltage: limits.maximum_voltage.into(),
+                ev_minimum_voltage: limits.minimum_voltage.into(),
                 target_soc: limits.target_soc.map(|s| s as i8),
             })
         };
@@ -279,27 +279,27 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
             let d = AcDischargePowerLimits { maximum_discharge_power: self.lines(d.maximum_discharge_power), minimum_discharge_power: self.lines(d.minimum_discharge_power) };
             self.ev_announced_ac_discharge = Some(d);
             ac::AcCpdReqEnergyTransferModeChoice::Bpt(ac::BptAcCpdReqEnergyTransferMode {
-                ev_maximum_charge_power: l.maximum_charge_power.l1,
-                ev_maximum_charge_power_l2: l.maximum_charge_power.l2,
-                ev_maximum_charge_power_l3: l.maximum_charge_power.l3,
-                ev_minimum_charge_power: l.minimum_charge_power.l1,
-                ev_minimum_charge_power_l2: l.minimum_charge_power.l2,
-                ev_minimum_charge_power_l3: l.minimum_charge_power.l3,
-                ev_maximum_discharge_power: d.maximum_discharge_power.l1,
-                ev_maximum_discharge_power_l2: d.maximum_discharge_power.l2,
-                ev_maximum_discharge_power_l3: d.maximum_discharge_power.l3,
-                ev_minimum_discharge_power: d.minimum_discharge_power.l1,
-                ev_minimum_discharge_power_l2: d.minimum_discharge_power.l2,
-                ev_minimum_discharge_power_l3: d.minimum_discharge_power.l3,
+                ev_maximum_charge_power: l.maximum_charge_power.l1.into(),
+                ev_maximum_charge_power_l2: l.maximum_charge_power.l2.map(Into::into),
+                ev_maximum_charge_power_l3: l.maximum_charge_power.l3.map(Into::into),
+                ev_minimum_charge_power: l.minimum_charge_power.l1.into(),
+                ev_minimum_charge_power_l2: l.minimum_charge_power.l2.map(Into::into),
+                ev_minimum_charge_power_l3: l.minimum_charge_power.l3.map(Into::into),
+                ev_maximum_discharge_power: d.maximum_discharge_power.l1.into(),
+                ev_maximum_discharge_power_l2: d.maximum_discharge_power.l2.map(Into::into),
+                ev_maximum_discharge_power_l3: d.maximum_discharge_power.l3.map(Into::into),
+                ev_minimum_discharge_power: d.minimum_discharge_power.l1.into(),
+                ev_minimum_discharge_power_l2: d.minimum_discharge_power.l2.map(Into::into),
+                ev_minimum_discharge_power_l3: d.minimum_discharge_power.l3.map(Into::into),
             })
         } else {
             ac::AcCpdReqEnergyTransferModeChoice::Base(ac::AcCpdReqEnergyTransferMode {
-                ev_maximum_charge_power: l.maximum_charge_power.l1,
-                ev_maximum_charge_power_l2: l.maximum_charge_power.l2,
-                ev_maximum_charge_power_l3: l.maximum_charge_power.l3,
-                ev_minimum_charge_power: l.minimum_charge_power.l1,
-                ev_minimum_charge_power_l2: l.minimum_charge_power.l2,
-                ev_minimum_charge_power_l3: l.minimum_charge_power.l3,
+                ev_maximum_charge_power: l.maximum_charge_power.l1.into(),
+                ev_maximum_charge_power_l2: l.maximum_charge_power.l2.map(Into::into),
+                ev_maximum_charge_power_l3: l.maximum_charge_power.l3.map(Into::into),
+                ev_minimum_charge_power: l.minimum_charge_power.l1.into(),
+                ev_minimum_charge_power_l2: l.minimum_charge_power.l2.map(Into::into),
+                ev_minimum_charge_power_l3: l.minimum_charge_power.l3.map(Into::into),
             })
         };
         let msg = ac::AcChargeParameterDiscoveryReq { header: self.header(), ac_cpd_req_energy_transfer_mode: mode };

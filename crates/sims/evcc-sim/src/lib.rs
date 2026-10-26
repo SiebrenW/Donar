@@ -10,7 +10,7 @@ use std::sync::Arc;
 use evcc_core::ev::{DcConnector, DcLimits, AcEv, AcPlugEv, DcEv, DcPlugEv, Ev, InvertedPantographEv, ScheduleRequest};
 use evcc_core::log::LogSink;
 use evcc_core::session::{Buffers, Config, Event, Notice, Session};
-use iso15118_20::common_types::RationalNumber;
+use evcc_core::Rational;
 
 use evcc_linux::{Outcome, Transport};
 
@@ -85,8 +85,8 @@ impl SimulatedEv {
     }
 }
 
-fn rn(x: u32) -> RationalNumber {
-    RationalNumber::from_f64(f64::from(x))
+fn rn(x: u32) -> Rational {
+    Rational::from_f64(f64::from(x))
 }
 
 impl Ev for SimulatedEv {
@@ -106,11 +106,11 @@ impl Ev for SimulatedEv {
         let (target, maximum, minimum) = match &self.live {
             Some(live) => {
                 let soc = live.present_soc();
-                let needed = |percent: f64| RationalNumber::from_f64(((percent - soc).max(0.0) / 100.0 * live::CAPACITY_WH).round());
+                let needed = |percent: f64| Rational::from_f64(((percent - soc).max(0.0) / 100.0 * live::CAPACITY_WH).round());
                 match l.discharge_to_soc.filter(|_| live.discharging()) {
                     // Discharging: a negative target is the energy to give back (a BPT session).
                     Some(floor) => {
-                        let give = RationalNumber::from_f64((-(soc - f64::from(floor)).max(0.0) / 100.0 * live::CAPACITY_WH).round());
+                        let give = Rational::from_f64((-(soc - f64::from(floor)).max(0.0) / 100.0 * live::CAPACITY_WH).round());
                         (give, needed(100.0), give)
                     }
                     None => (needed(f64::from(l.target_soc)), needed(100.0), needed(f64::from(l.min_soc.unwrap_or(0)))),
@@ -137,7 +137,7 @@ impl Ev for SimulatedEv {
         let (low, high) = (self.limits().v2x_min_soc?, self.limits().v2x_max_soc?);
         // The energy from the present state of charge to the ends of the range.
         let soc = self.live.as_ref()?.present_soc();
-        let energy = |percent: u8| RationalNumber::from_f64(((f64::from(percent) - soc) / 100.0 * live::CAPACITY_WH).round());
+        let energy = |percent: u8| Rational::from_f64(((f64::from(percent) - soc) / 100.0 * live::CAPACITY_WH).round());
         Some(evcc_core::ev::V2xEnergyRange { minimum: energy(low), maximum: energy(high) })
     }
     fn display(&self) -> evcc_core::ev::Display {
@@ -154,8 +154,8 @@ impl Ev for SimulatedEv {
     fn energy_offer(&self) -> Option<evcc_core::ev::EnergyOffer> {
         let l = self.limits();
         let watts = l.energy_offer_w?;
-        // The fee in cents per kWh is a RationalNumber of euros.
-        Some(evcc_core::ev::EnergyOffer::new("EUR").power(l.energy_offer_s.max(1), rn(watts)).price(l.energy_offer_s.max(1), RationalNumber { exponent: -2, value: l.energy_offer_fee_cents.min(i16::MAX as u32) as i16 }))
+        // The fee in cents per kWh is a Rational of euros.
+        Some(evcc_core::ev::EnergyOffer::new("EUR").power(l.energy_offer_s.max(1), rn(watts)).price(l.energy_offer_s.max(1), Rational { exponent: -2, value: l.energy_offer_fee_cents.min(i16::MAX as u32) as i16 }))
     }
     fn now_micros(&self) -> u64 {
         std::time::SystemTime::now()
@@ -186,15 +186,15 @@ impl DcEv for SimulatedEv {
             target_soc: Some(l.target_soc),
         }
     }
-    fn battery_voltage(&self) -> RationalNumber {
-        RationalNumber::from_f64(self.live.as_ref().map_or(400.0, |l| l.battery_voltage()))
+    fn battery_voltage(&self) -> Rational {
+        Rational::from_f64(self.live.as_ref().map_or(400.0, |l| l.battery_voltage()))
     }
     /// The first reading is below the battery voltage, the later ones match it.
-    fn inlet_voltage(&self) -> RationalNumber {
+    fn inlet_voltage(&self) -> Rational {
         let reads = self.reads.get();
         self.reads.set(reads + 1);
         let battery = self.live.as_ref().map_or(400.0, |l| l.battery_voltage());
-        RationalNumber::from_f64(if self.open.get() { 0.0 } else if reads == 0 { battery * 0.75 } else { battery })
+        Rational::from_f64(if self.open.get() { 0.0 } else if reads == 0 { battery * 0.75 } else { battery })
     }
 }
 
@@ -223,10 +223,10 @@ impl AcEv for SimulatedEv {
     fn ac_present_power(&self) -> evcc_core::ev::AcPresentPower {
         let watts = self.live.as_ref().map_or([0.0; 3], |l| l.ac_present_power());
         let lines = self.limits().ac_phases.clamp(1, 3) as usize;
-        let phase = |i: usize| (i < lines).then(|| RationalNumber::from_f64(watts[i]));
-        let zero = RationalNumber::from_f64(0.0);
+        let phase = |i: usize| (i < lines).then(|| Rational::from_f64(watts[i]));
+        let zero = Rational::from_f64(0.0);
         evcc_core::ev::AcPresentPower {
-            active: evcc_core::ev::Phases { l1: RationalNumber::from_f64(watts[0]), l2: phase(1), l3: phase(2) },
+            active: evcc_core::ev::Phases { l1: Rational::from_f64(watts[0]), l2: phase(1), l3: phase(2) },
             reactive: evcc_core::ev::Phases { l1: zero, l2: phase(1).map(|_| zero), l3: phase(2).map(|_| zero) },
         }
     }
@@ -255,7 +255,7 @@ impl InvertedPantographEv for SimulatedEv {
             ev_ready_to_charge: true,
             ev_immobilization_request: immobilized,
             ev_immobilized: Some(immobilized),
-            evwlan_strength: self.driver.as_ref().map(|d| RationalNumber { exponent: 0, value: d.wlan_dbm() }),
+            evwlan_strength: self.driver.as_ref().map(|d| iso15118_20::common_types::RationalNumber { exponent: 0, value: d.wlan_dbm() }),
             evcp_status: Some(match self.acdp_electrical_status() {
                 E::StateA => CpStatus::StateA,
                 E::StateB => CpStatus::StateB,

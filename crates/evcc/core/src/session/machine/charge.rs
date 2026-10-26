@@ -10,6 +10,7 @@ use super::{Machine, frame};
 use super::config::*;
 use super::types::*;
 use crate::ev::{AcDischargePowerLimits, AcPowerLimits, AcPresentPower, Iso20Vehicle, Phases};
+use crate::rational::Rational;
 use crate::log::{LogSink, MsgKind, Record};
 use crate::{Timer, TimerCmd, Timers};
 
@@ -56,7 +57,7 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
             };
         }
         // What the vehicle measures at its inlet; the next request reports it.
-        self.last_inlet = self.ev.inlet_voltage();
+        self.last_inlet = self.ev.inlet_voltage().into();
         let inlet = rational_to_volts(self.last_inlet);
         let battery = rational_to_volts(self.ev.battery_voltage());
         if (inlet - battery).abs() < f32::from(self.config.precharge_tolerance_v) {
@@ -105,14 +106,14 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
         self.check_evse_loop_limits(&mode);
         let mobility_needs = self.take_mobility_needs(mode.departure_time, mode.minimum_soc, mode.target_soc);
         let status = ChargeLoopStatus {
-            present_current: res.evse_present_current,
-            present_voltage: res.evse_present_voltage,
+            present_current: res.evse_present_current.into(),
+            present_voltage: res.evse_present_voltage.into(),
             power_limit_achieved: res.evse_power_limit_achieved,
             current_limit_achieved: res.evse_current_limit_achieved,
             voltage_limit_achieved: res.evse_voltage_limit_achieved,
-            maximum_charge_power: mode.evse_maximum_charge_power,
-            maximum_charge_current: mode.evse_maximum_charge_current,
-            maximum_voltage: mode.evse_maximum_voltage,
+            maximum_charge_power: mode.evse_maximum_charge_power.into(),
+            maximum_charge_current: mode.evse_maximum_charge_current.into(),
+            maximum_voltage: mode.evse_maximum_voltage.into(),
             meter: res.meter_info.as_ref().map(reading),
             mobility_needs,
         };
@@ -216,7 +217,7 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
             // The voltage at the inlet (the 2022 text V2G20-2180, deleted by Amd 1), which follows the charger's output until
             // the contactors are closed; the target is the battery's.
             ev_present_voltage: self.last_inlet,
-            ev_target_voltage: battery,
+            ev_target_voltage: battery.into(),
         };
         let framed = frame(tx, PayloadType::DC_MAINSTREAM, |out| msg.encode(out));
         if self.state == State::AwaitPreChargeRes {
@@ -243,38 +244,38 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
             let d = self.loop_discharge_limits();
             dc::ClReqControlModeChoice::BptDynamicDc(dc::BptDynamicDcClReqControlMode {
                 departure_time: None,
-                ev_target_energy_request: r.target_energy,
-                ev_maximum_energy_request: r.maximum_energy,
-                ev_minimum_energy_request: r.minimum_energy,
-                ev_maximum_charge_power: l.maximum_charge_power,
-                ev_minimum_charge_power: l.minimum_charge_power,
-                ev_maximum_charge_current: l.maximum_charge_current,
-                ev_maximum_voltage: l.maximum_voltage,
-                ev_minimum_voltage: l.minimum_voltage,
-                ev_maximum_discharge_power: d.maximum_discharge_power,
-                ev_minimum_discharge_power: d.minimum_discharge_power,
-                ev_maximum_discharge_current: d.maximum_discharge_current,
+                ev_target_energy_request: r.target_energy.into(),
+                ev_maximum_energy_request: r.maximum_energy.into(),
+                ev_minimum_energy_request: r.minimum_energy.into(),
+                ev_maximum_charge_power: l.maximum_charge_power.into(),
+                ev_minimum_charge_power: l.minimum_charge_power.into(),
+                ev_maximum_charge_current: l.maximum_charge_current.into(),
+                ev_maximum_voltage: l.maximum_voltage.into(),
+                ev_minimum_voltage: l.minimum_voltage.into(),
+                ev_maximum_discharge_power: d.maximum_discharge_power.into(),
+                ev_minimum_discharge_power: d.minimum_discharge_power.into(),
+                ev_maximum_discharge_current: d.maximum_discharge_current.into(),
                 ev_maximum_v2x_energy_request: v2x.0,
                 ev_minimum_v2x_energy_request: v2x.1,
             })
         } else {
             dc::ClReqControlModeChoice::DynamicDc(dc::DynamicDcClReqControlMode {
                 departure_time: None,
-                ev_target_energy_request: r.target_energy,
-                ev_maximum_energy_request: r.maximum_energy,
-                ev_minimum_energy_request: r.minimum_energy,
-                ev_maximum_charge_power: l.maximum_charge_power,
-                ev_minimum_charge_power: l.minimum_charge_power,
-                ev_maximum_charge_current: l.maximum_charge_current,
-                ev_maximum_voltage: l.maximum_voltage,
-                ev_minimum_voltage: l.minimum_voltage,
+                ev_target_energy_request: r.target_energy.into(),
+                ev_maximum_energy_request: r.maximum_energy.into(),
+                ev_minimum_energy_request: r.minimum_energy.into(),
+                ev_maximum_charge_power: l.maximum_charge_power.into(),
+                ev_minimum_charge_power: l.minimum_charge_power.into(),
+                ev_maximum_charge_current: l.maximum_charge_current.into(),
+                ev_maximum_voltage: l.maximum_voltage.into(),
+                ev_minimum_voltage: l.minimum_voltage.into(),
             })
         };
         let msg = dc::DcChargeLoopReq {
             header: self.header(),
             display_parameters: self.display_parameters(),
             meter_info_requested: self.config.request_meter_info,
-            ev_present_voltage: self.ev.battery_voltage(),
+            ev_present_voltage: self.ev.battery_voltage().into(),
             cl_req_control_mode: control_mode,
         };
         let framed = frame(tx, PayloadType::DC_MAINSTREAM, |out| msg.encode(out));
@@ -294,21 +295,21 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
             // The charger's schedule sets the power; the vehicle reports its energy needs, what it
             // can take and what it draws.
             let scheduled = ac::ScheduledAcClReqControlMode {
-                ev_target_energy_request: Some(r.target_energy),
-                ev_maximum_energy_request: Some(r.maximum_energy),
-                ev_minimum_energy_request: Some(r.minimum_energy),
-                ev_maximum_charge_power: Some(l.maximum_charge_power.l1),
-                ev_maximum_charge_power_l2: l.maximum_charge_power.l2,
-                ev_maximum_charge_power_l3: l.maximum_charge_power.l3,
-                ev_minimum_charge_power: Some(l.minimum_charge_power.l1),
-                ev_minimum_charge_power_l2: l.minimum_charge_power.l2,
-                ev_minimum_charge_power_l3: l.minimum_charge_power.l3,
-                ev_present_active_power: p.active.l1,
-                ev_present_active_power_l2: p.active.l2,
-                ev_present_active_power_l3: p.active.l3,
-                ev_present_reactive_power: Some(p.reactive.l1),
-                ev_present_reactive_power_l2: p.reactive.l2,
-                ev_present_reactive_power_l3: p.reactive.l3,
+                ev_target_energy_request: Some(r.target_energy.into()),
+                ev_maximum_energy_request: Some(r.maximum_energy.into()),
+                ev_minimum_energy_request: Some(r.minimum_energy.into()),
+                ev_maximum_charge_power: Some(l.maximum_charge_power.l1.into()),
+                ev_maximum_charge_power_l2: l.maximum_charge_power.l2.map(Into::into),
+                ev_maximum_charge_power_l3: l.maximum_charge_power.l3.map(Into::into),
+                ev_minimum_charge_power: Some(l.minimum_charge_power.l1.into()),
+                ev_minimum_charge_power_l2: l.minimum_charge_power.l2.map(Into::into),
+                ev_minimum_charge_power_l3: l.minimum_charge_power.l3.map(Into::into),
+                ev_present_active_power: p.active.l1.into(),
+                ev_present_active_power_l2: p.active.l2.map(Into::into),
+                ev_present_active_power_l3: p.active.l3.map(Into::into),
+                ev_present_reactive_power: Some(p.reactive.l1.into()),
+                ev_present_reactive_power_l2: p.reactive.l2.map(Into::into),
+                ev_present_reactive_power_l3: p.reactive.l3.map(Into::into),
             };
             if self.config.bpt() {
                 let d = self.loop_ac_discharge_limits();
@@ -329,12 +330,12 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
                     ev_present_reactive_power: scheduled.ev_present_reactive_power,
                     ev_present_reactive_power_l2: scheduled.ev_present_reactive_power_l2,
                     ev_present_reactive_power_l3: scheduled.ev_present_reactive_power_l3,
-                    ev_maximum_discharge_power: Some(d.maximum_discharge_power.l1),
-                    ev_maximum_discharge_power_l2: d.maximum_discharge_power.l2,
-                    ev_maximum_discharge_power_l3: d.maximum_discharge_power.l3,
-                    ev_minimum_discharge_power: Some(d.minimum_discharge_power.l1),
-                    ev_minimum_discharge_power_l2: d.minimum_discharge_power.l2,
-                    ev_minimum_discharge_power_l3: d.minimum_discharge_power.l3,
+                    ev_maximum_discharge_power: Some(d.maximum_discharge_power.l1.into()),
+                    ev_maximum_discharge_power_l2: d.maximum_discharge_power.l2.map(Into::into),
+                    ev_maximum_discharge_power_l3: d.maximum_discharge_power.l3.map(Into::into),
+                    ev_minimum_discharge_power: Some(d.minimum_discharge_power.l1.into()),
+                    ev_minimum_discharge_power_l2: d.minimum_discharge_power.l2.map(Into::into),
+                    ev_minimum_discharge_power_l3: d.minimum_discharge_power.l3.map(Into::into),
                 })
             } else {
                 ac::ClReqControlModeChoice::ScheduledAc(scheduled)
@@ -344,48 +345,48 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
             let d = AcDischargePowerLimits { maximum_discharge_power: self.lines(d.maximum_discharge_power), minimum_discharge_power: self.lines(d.minimum_discharge_power) };
             ac::ClReqControlModeChoice::BptDynamicAc(ac::BptDynamicAcClReqControlMode {
                 departure_time: None,
-                ev_target_energy_request: r.target_energy,
-                ev_maximum_energy_request: r.maximum_energy,
-                ev_minimum_energy_request: r.minimum_energy,
-                ev_maximum_charge_power: l.maximum_charge_power.l1,
-                ev_maximum_charge_power_l2: l.maximum_charge_power.l2,
-                ev_maximum_charge_power_l3: l.maximum_charge_power.l3,
-                ev_minimum_charge_power: l.minimum_charge_power.l1,
-                ev_minimum_charge_power_l2: l.minimum_charge_power.l2,
-                ev_minimum_charge_power_l3: l.minimum_charge_power.l3,
-                ev_present_active_power: p.active.l1,
-                ev_present_active_power_l2: p.active.l2,
-                ev_present_active_power_l3: p.active.l3,
-                ev_present_reactive_power: p.reactive.l1,
-                ev_present_reactive_power_l2: p.reactive.l2,
-                ev_present_reactive_power_l3: p.reactive.l3,
-                ev_maximum_discharge_power: d.maximum_discharge_power.l1,
-                ev_maximum_discharge_power_l2: d.maximum_discharge_power.l2,
-                ev_maximum_discharge_power_l3: d.maximum_discharge_power.l3,
-                ev_minimum_discharge_power: d.minimum_discharge_power.l1,
-                ev_minimum_discharge_power_l2: d.minimum_discharge_power.l2,
-                ev_minimum_discharge_power_l3: d.minimum_discharge_power.l3,
+                ev_target_energy_request: r.target_energy.into(),
+                ev_maximum_energy_request: r.maximum_energy.into(),
+                ev_minimum_energy_request: r.minimum_energy.into(),
+                ev_maximum_charge_power: l.maximum_charge_power.l1.into(),
+                ev_maximum_charge_power_l2: l.maximum_charge_power.l2.map(Into::into),
+                ev_maximum_charge_power_l3: l.maximum_charge_power.l3.map(Into::into),
+                ev_minimum_charge_power: l.minimum_charge_power.l1.into(),
+                ev_minimum_charge_power_l2: l.minimum_charge_power.l2.map(Into::into),
+                ev_minimum_charge_power_l3: l.minimum_charge_power.l3.map(Into::into),
+                ev_present_active_power: p.active.l1.into(),
+                ev_present_active_power_l2: p.active.l2.map(Into::into),
+                ev_present_active_power_l3: p.active.l3.map(Into::into),
+                ev_present_reactive_power: p.reactive.l1.into(),
+                ev_present_reactive_power_l2: p.reactive.l2.map(Into::into),
+                ev_present_reactive_power_l3: p.reactive.l3.map(Into::into),
+                ev_maximum_discharge_power: d.maximum_discharge_power.l1.into(),
+                ev_maximum_discharge_power_l2: d.maximum_discharge_power.l2.map(Into::into),
+                ev_maximum_discharge_power_l3: d.maximum_discharge_power.l3.map(Into::into),
+                ev_minimum_discharge_power: d.minimum_discharge_power.l1.into(),
+                ev_minimum_discharge_power_l2: d.minimum_discharge_power.l2.map(Into::into),
+                ev_minimum_discharge_power_l3: d.minimum_discharge_power.l3.map(Into::into),
                 ev_maximum_v2x_energy_request: v2x.0,
                 ev_minimum_v2x_energy_request: v2x.1,
             })
         } else {
             ac::ClReqControlModeChoice::DynamicAc(ac::DynamicAcClReqControlMode {
                 departure_time: None,
-                ev_target_energy_request: r.target_energy,
-                ev_maximum_energy_request: r.maximum_energy,
-                ev_minimum_energy_request: r.minimum_energy,
-                ev_maximum_charge_power: l.maximum_charge_power.l1,
-                ev_maximum_charge_power_l2: l.maximum_charge_power.l2,
-                ev_maximum_charge_power_l3: l.maximum_charge_power.l3,
-                ev_minimum_charge_power: l.minimum_charge_power.l1,
-                ev_minimum_charge_power_l2: l.minimum_charge_power.l2,
-                ev_minimum_charge_power_l3: l.minimum_charge_power.l3,
-                ev_present_active_power: p.active.l1,
-                ev_present_active_power_l2: p.active.l2,
-                ev_present_active_power_l3: p.active.l3,
-                ev_present_reactive_power: p.reactive.l1,
-                ev_present_reactive_power_l2: p.reactive.l2,
-                ev_present_reactive_power_l3: p.reactive.l3,
+                ev_target_energy_request: r.target_energy.into(),
+                ev_maximum_energy_request: r.maximum_energy.into(),
+                ev_minimum_energy_request: r.minimum_energy.into(),
+                ev_maximum_charge_power: l.maximum_charge_power.l1.into(),
+                ev_maximum_charge_power_l2: l.maximum_charge_power.l2.map(Into::into),
+                ev_maximum_charge_power_l3: l.maximum_charge_power.l3.map(Into::into),
+                ev_minimum_charge_power: l.minimum_charge_power.l1.into(),
+                ev_minimum_charge_power_l2: l.minimum_charge_power.l2.map(Into::into),
+                ev_minimum_charge_power_l3: l.minimum_charge_power.l3.map(Into::into),
+                ev_present_active_power: p.active.l1.into(),
+                ev_present_active_power_l2: p.active.l2.map(Into::into),
+                ev_present_active_power_l3: p.active.l3.map(Into::into),
+                ev_present_reactive_power: p.reactive.l1.into(),
+                ev_present_reactive_power_l2: p.reactive.l2.map(Into::into),
+                ev_present_reactive_power_l3: p.reactive.l3.map(Into::into),
             })
         };
         let msg = ac::AcChargeLoopReq {
@@ -417,9 +418,9 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
             minimum_soc: None,
             target_soc: None,
             ack_max_delay: None,
-            evse_target_active_power: m.evse_target_active_power.or(followed.map(|p| p.l1)).unwrap_or(iso15118_20::common_types::RationalNumber { exponent: 0, value: 0 }),
-            evse_target_active_power_l2: m.evse_target_active_power_l2.or(followed.and_then(|p| p.l2)),
-            evse_target_active_power_l3: m.evse_target_active_power_l3.or(followed.and_then(|p| p.l3)),
+            evse_target_active_power: m.evse_target_active_power.or(followed.map(|p| p.l1).map(Into::into)).unwrap_or(iso15118_20::common_types::RationalNumber { exponent: 0, value: 0 }),
+            evse_target_active_power_l2: m.evse_target_active_power_l2.or(followed.and_then(|p| p.l2).map(Into::into)),
+            evse_target_active_power_l3: m.evse_target_active_power_l3.or(followed.and_then(|p| p.l3).map(Into::into)),
             evse_target_reactive_power: m.evse_target_reactive_power,
             evse_target_reactive_power_l2: m.evse_target_reactive_power_l2,
             evse_target_reactive_power_l3: m.evse_target_reactive_power_l3,
@@ -460,10 +461,10 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
         };
         let mobility_needs = self.take_mobility_needs(mode.departure_time, mode.minimum_soc, mode.target_soc);
         let status = AcChargeLoopStatus {
-            target_active_power: crate::ev::Phases { l1: mode.evse_target_active_power, l2: mode.evse_target_active_power_l2, l3: mode.evse_target_active_power_l3 },
-            target_reactive_power: [mode.evse_target_reactive_power, mode.evse_target_reactive_power_l2, mode.evse_target_reactive_power_l3],
-            present_active_power: [mode.evse_present_active_power, mode.evse_present_active_power_l2, mode.evse_present_active_power_l3],
-            target_frequency: res.evse_target_frequency,
+            target_active_power: crate::ev::Phases { l1: mode.evse_target_active_power.into(), l2: mode.evse_target_active_power_l2.map(Into::into), l3: mode.evse_target_active_power_l3.map(Into::into) },
+            target_reactive_power: [mode.evse_target_reactive_power.map(Into::into), mode.evse_target_reactive_power_l2.map(Into::into), mode.evse_target_reactive_power_l3.map(Into::into)],
+            present_active_power: [mode.evse_present_active_power.map(Into::into), mode.evse_present_active_power_l2.map(Into::into), mode.evse_present_active_power_l3.map(Into::into)],
+            target_frequency: res.evse_target_frequency.map(Into::into),
             target_from_schedule: from_schedule,
             meter: res.meter_info.as_ref().map(reading),
             mobility_needs,
@@ -492,7 +493,7 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
             remaining_time_to_target_soc: d.remaining_time_to_target_soc,
             remaining_time_to_maximum_soc: d.remaining_time_to_maximum_soc,
             charging_complete: d.charging_complete,
-            battery_energy_capacity: d.battery_energy_capacity,
+            battery_energy_capacity: d.battery_energy_capacity.map(Into::into),
             inlet_hot: d.inlet_hot,
         })
     }
@@ -529,20 +530,20 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
         let (power, power_l2, power_l3) = if self.config.ac() {
             let announced = self.ev_announced_ac.unwrap_or_else(|| self.ev.ac20_limits()).maximum_charge_power;
             let evse = self.evse_announced_ac;
-            let take = |ev: Option<iso15118_20::common_types::RationalNumber>, evse: Option<iso15118_20::common_types::RationalNumber>| match (ev, evse) {
+            let take = |ev: Option<Rational>, evse: Option<Rational>| match (ev, evse) {
                 (Some(a), Some(b)) => Some(super::limits::smaller(a, b)),
                 (a, None) => a,
                 (None, _) => None,
             };
             (
-                take(Some(announced.l1), evse.map(|e| e.evse_maximum_charge_power)).unwrap_or(announced.l1),
-                take(announced.l2, evse.and_then(|e| e.evse_maximum_charge_power_l2)),
-                take(announced.l3, evse.and_then(|e| e.evse_maximum_charge_power_l3)),
+                take(Some(announced.l1), evse.map(|e| e.evse_maximum_charge_power.into())).unwrap_or(announced.l1),
+                take(announced.l2, evse.and_then(|e| e.evse_maximum_charge_power_l2).map(Into::into)),
+                take(announced.l3, evse.and_then(|e| e.evse_maximum_charge_power_l3).map(Into::into)),
             )
         } else {
             let announced = self.ev_announced.unwrap_or_else(|| self.ev.dc_limits());
             let power = match self.evse_announced {
-                Some(evse) => super::limits::smaller(announced.maximum_charge_power, evse.evse_maximum_charge_power),
+                Some(evse) => super::limits::smaller(announced.maximum_charge_power, evse.evse_maximum_charge_power.into()),
                 None => announced.maximum_charge_power,
             };
             (power, None, None)
@@ -554,23 +555,23 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
         let whole = seconds as u32;
         let duration = (if (whole as f32) < seconds { whole + 1 } else { whole }).clamp(1, r.departure_time.max(1));
         let own = self.lines(Phases { l1: power, l2: power_l2, l3: power_l3 });
-        let mut entries = [common::PowerScheduleEntry { duration, power: own.l1, power_l2: own.l2, power_l3: own.l3 }; super::schedule::MAX_ENTRIES];
+        let mut entries = [common::PowerScheduleEntry { duration, power: own.l1.into(), power_l2: own.l2.map(Into::into), power_l3: own.l3.map(Into::into) }; super::schedule::MAX_ENTRIES];
         let mut count = 1;
         if self.config.scheduled && !self.schedule.is_empty() {
             // The profile stays within the schedule (V2G20-1559) from now on, and within what the
             // vehicle takes; a standby or stop is a period of zero power (V2G20-1068, 1839).
             let zero = iso15118_20::common_types::RationalNumber { exponent: 0, value: 0 };
-            let mut left = [(0u32, Phases::single(zero)); super::schedule::MAX_ENTRIES];
+            let mut left = [(0u32, Phases::single(zero.into())); super::schedule::MAX_ENTRIES];
             count = self.schedule.remaining(self.secc_now(), &mut left);
             let ceiling = if self.config.ac() { self.ev_announced_ac.unwrap_or_else(|| self.ev.ac20_limits()).maximum_charge_power } else { Phases::single(power) };
             for (slot, (duration, allowed)) in entries.iter_mut().zip(&left[..count]) {
                 let p = if matches!(progress, common::ChargeProgress::Standby | common::ChargeProgress::Stop) {
-                    Phases { l1: zero, l2: allowed.l2.map(|_| zero), l3: allowed.l3.map(|_| zero) }
+                    Phases { l1: zero.into(), l2: allowed.l2.map(|_| zero).map(Into::into), l3: allowed.l3.map(|_| zero).map(Into::into) }
                 } else {
                     super::limits::phases_with(*allowed, ceiling, super::limits::smaller)
                 };
                 let p = self.lines(p);
-                *slot = common::PowerScheduleEntry { duration: *duration, power: p.l1, power_l2: p.l2, power_l3: p.l3 };
+                *slot = common::PowerScheduleEntry { duration: *duration, power: p.l1.into(), power_l2: p.l2.map(Into::into), power_l3: p.l3.map(Into::into) };
             }
         }
         let time_anchor = self.timestamp();
@@ -613,7 +614,7 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
         if !self.ac_three_phase {
             Phases { l2: None, l3: None, ..p }
         } else if self.ev.ac_connector() == crate::ev::AcConnector::SinglePhase {
-            Phases { l1: p.l1, l2: Some(p.l2.unwrap_or(zero)), l3: Some(p.l3.unwrap_or(zero)) }
+            Phases { l1: p.l1, l2: Some(p.l2.unwrap_or(zero.into())), l3: Some(p.l3.unwrap_or(zero.into())) }
         } else {
             p
         }

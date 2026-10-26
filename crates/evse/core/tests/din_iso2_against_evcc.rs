@@ -10,10 +10,10 @@ use evcc_core::session::{Buffers, EndReason, Event, Notice};
 use evcc_core::{Timer, TimerCmd};
 use evse_core::din::{self, DinSecc};
 use evse_core::iso2::{self, Iso2Secc, Iso2DcSecc, Iso2AcSecc};
-use iso15118_20::common_types::RationalNumber;
+use evcc_core::Rational;
 
-fn rn(exponent: i8, value: i16) -> RationalNumber {
-    RationalNumber { exponent, value }
+fn rn(exponent: i8, value: i16) -> Rational {
+    Rational { exponent, value }
 }
 
 struct TestEv;
@@ -42,10 +42,10 @@ impl DcEv for TestEv {
             target_soc: Some(80),
         }
     }
-    fn battery_voltage(&self) -> RationalNumber {
+    fn battery_voltage(&self) -> Rational {
         rn(0, 400)
     }
-    fn inlet_voltage(&self) -> RationalNumber {
+    fn inlet_voltage(&self) -> Rational {
         rn(0, 400)
     }
 }

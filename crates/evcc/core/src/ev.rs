@@ -2,17 +2,17 @@
 //! plain call. Anything physical or slow (cable check, precharge, contactors) will go
 //! through events and actions instead, so the core never waits inside a call.
 
-use iso15118_20::common_types::RationalNumber;
+use crate::rational::Rational;
 
 /// The vehicle's DC charging limits, sent in `DC_ChargeParameterDiscoveryReq`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DcLimits {
-    pub maximum_charge_power: RationalNumber,
-    pub minimum_charge_power: RationalNumber,
-    pub maximum_charge_current: RationalNumber,
-    pub minimum_charge_current: RationalNumber,
-    pub maximum_voltage: RationalNumber,
-    pub minimum_voltage: RationalNumber,
+    pub maximum_charge_power: Rational,
+    pub minimum_charge_power: Rational,
+    pub maximum_charge_current: Rational,
+    pub minimum_charge_current: Rational,
+    pub maximum_voltage: Rational,
+    pub minimum_voltage: Rational,
     /// Target state of charge in percent (0..=100), if the vehicle states one.
     pub target_soc: Option<u8>,
 }
@@ -20,38 +20,38 @@ pub struct DcLimits {
 /// What the vehicle can feed back into the grid or a load (bidirectional power transfer, BPT).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DischargeLimits {
-    pub maximum_discharge_power: RationalNumber,
-    pub minimum_discharge_power: RationalNumber,
-    pub maximum_discharge_current: RationalNumber,
-    pub minimum_discharge_current: RationalNumber,
+    pub maximum_discharge_power: Rational,
+    pub minimum_discharge_power: Rational,
+    pub maximum_discharge_current: Rational,
+    pub minimum_discharge_current: Rational,
 }
 
 /// The vehicle's AC charging parameters (ISO 15118-2 `AC_EVChargeParameter`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcLimits {
     /// `EAmount`: the energy the vehicle wants.
-    pub energy_amount: RationalNumber,
-    pub maximum_voltage: RationalNumber,
-    pub maximum_current: RationalNumber,
-    pub minimum_current: RationalNumber,
+    pub energy_amount: Rational,
+    pub maximum_voltage: Rational,
+    pub maximum_current: Rational,
+    pub minimum_current: Rational,
 }
 
 /// A quantity per phase: line 1, and lines 2 and 3 of a three-phase connection (ISO 15118-20 AC
 /// messages carry `_L2` and `_L3` variants of every power).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Phases {
-    pub l1: RationalNumber,
-    pub l2: Option<RationalNumber>,
-    pub l3: Option<RationalNumber>,
+    pub l1: Rational,
+    pub l2: Option<Rational>,
+    pub l3: Option<Rational>,
 }
 
 impl Phases {
     /// The same on one phase only.
-    pub const fn single(l1: RationalNumber) -> Self {
+    pub const fn single(l1: Rational) -> Self {
         Self { l1, l2: None, l3: None }
     }
     /// The same on all three phases.
-    pub const fn three(each: RationalNumber) -> Self {
+    pub const fn three(each: Rational) -> Self {
         Self { l1: each, l2: Some(each), l3: Some(each) }
     }
 }
@@ -84,10 +84,10 @@ pub struct AcPresentPower {
 pub struct V2xEnergyRange {
     /// `EVMaximumV2XEnergyRequest`: energy that may be charged until the state of charge leaves the range at the top;
     /// negative when the state of charge is above the range.
-    pub maximum: RationalNumber,
+    pub maximum: Rational,
     /// `EVMinimumV2XEnergyRequest`: energy needed to enter the range from below; positive when the state of charge is
     /// below the range.
-    pub minimum: RationalNumber,
+    pub minimum: Rational,
 }
 
 /// What the vehicle tells the EVSE about its energy needs (Dynamic control mode).
@@ -98,9 +98,9 @@ pub struct ScheduleRequest {
     pub departure_time: u32,
     pub minimum_soc: Option<u8>,
     pub target_soc: Option<u8>,
-    pub target_energy: RationalNumber,
-    pub maximum_energy: RationalNumber,
-    pub minimum_energy: RationalNumber,
+    pub target_energy: Rational,
+    pub maximum_energy: Rational,
+    pub minimum_energy: Rational,
 }
 
 /// The mobility needs the charger provided or changed (`MobilityNeedsMode` 2), as it states them in
@@ -123,7 +123,7 @@ pub struct Display {
     pub remaining_time_to_target_soc: Option<u32>,
     pub remaining_time_to_maximum_soc: Option<u32>,
     pub charging_complete: Option<bool>,
-    pub battery_energy_capacity: Option<RationalNumber>,
+    pub battery_energy_capacity: Option<Rational>,
     pub inlet_hot: Option<bool>,
 }
 
@@ -138,17 +138,24 @@ pub struct EnergyOffer {
     pub currency: &'static str,
     /// For instance [`EnergyOffer::PRICE_PER_POWER`].
     pub price_algorithm: &'static str,
-    power: [iso15118_20::common::EvPowerScheduleEntry; Self::CAPACITY],
+    power: [OfferedPower; Self::CAPACITY],
     power_len: usize,
     prices: [OfferedPrice; Self::CAPACITY],
     prices_len: usize,
+}
+
+/// One power entry of an [`EnergyOffer`]: the power (positive: fed back) for a duration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OfferedPower {
+    pub duration: u32,
+    pub power: Rational,
 }
 
 /// One price of an [`EnergyOffer`]: the fee per kWh for a duration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OfferedPrice {
     pub duration: u32,
-    pub energy_fee: RationalNumber,
+    pub energy_fee: Rational,
 }
 
 impl EnergyOffer {
@@ -156,13 +163,13 @@ impl EnergyOffer {
     /// The price algorithm of ISO 15118-20 Table 76 that prices energy by power range.
     pub const PRICE_PER_POWER: &'static str = "urn:iso:std:iso:15118:-20:PriceAlgorithm:1-Power";
 
-    const NONE: RationalNumber = RationalNumber { exponent: 0, value: 0 };
+    const NONE: Rational = Rational { exponent: 0, value: 0 };
 
     pub const fn new(currency: &'static str) -> Self {
         Self {
             currency,
             price_algorithm: Self::PRICE_PER_POWER,
-            power: [iso15118_20::common::EvPowerScheduleEntry { duration: 0, power: Self::NONE }; Self::CAPACITY],
+            power: [OfferedPower { duration: 0, power: Self::NONE }; Self::CAPACITY],
             power_len: 0,
             prices: [OfferedPrice { duration: 0, energy_fee: Self::NONE }; Self::CAPACITY],
             prices_len: 0,
@@ -170,16 +177,16 @@ impl EnergyOffer {
     }
 
     /// Offers `power` (positive: fed back) for `duration` seconds after the previous entry.
-    pub fn power(mut self, duration: u32, power: RationalNumber) -> Self {
+    pub fn power(mut self, duration: u32, power: Rational) -> Self {
         if self.power_len < Self::CAPACITY {
-            self.power[self.power_len] = iso15118_20::common::EvPowerScheduleEntry { duration, power };
+            self.power[self.power_len] = OfferedPower { duration, power };
             self.power_len += 1;
         }
         self
     }
 
     /// Asks `energy_fee` per kWh for `duration` seconds after the previous price.
-    pub fn price(mut self, duration: u32, energy_fee: RationalNumber) -> Self {
+    pub fn price(mut self, duration: u32, energy_fee: Rational) -> Self {
         if self.prices_len < Self::CAPACITY {
             self.prices[self.prices_len] = OfferedPrice { duration, energy_fee };
             self.prices_len += 1;
@@ -187,7 +194,7 @@ impl EnergyOffer {
         self
     }
 
-    pub fn power_entries(&self) -> &[iso15118_20::common::EvPowerScheduleEntry] {
+    pub fn power_entries(&self) -> &[OfferedPower] {
         &self.power[..self.power_len]
     }
 
@@ -299,10 +306,10 @@ pub trait DcEv: Ev {
     /// `SERVICE_ID_DC_BPT`). The default is a small vehicle-to-load capability.
     fn dc_discharge_limits(&self) -> DischargeLimits {
         DischargeLimits {
-            maximum_discharge_power: RationalNumber { exponent: 3, value: 11 },
-            minimum_discharge_power: RationalNumber { exponent: 0, value: 100 },
-            maximum_discharge_current: RationalNumber { exponent: 0, value: 30 },
-            minimum_discharge_current: RationalNumber { exponent: 0, value: 1 },
+            maximum_discharge_power: Rational { exponent: 3, value: 11 },
+            minimum_discharge_power: Rational { exponent: 0, value: 100 },
+            maximum_discharge_current: Rational { exponent: 0, value: 30 },
+            minimum_discharge_current: Rational { exponent: 0, value: 1 },
         }
     }
     // The limits above are the vehicle's *capabilities*, sent once in the charge parameter
@@ -322,10 +329,10 @@ pub trait DcEv: Ev {
     }
     /// The voltage of the vehicle's battery system (read when the cable check is done and
     /// during pre-charge).
-    fn battery_voltage(&self) -> RationalNumber;
+    fn battery_voltage(&self) -> Rational;
     /// The voltage the vehicle measures at its inlet (side B); during pre-charge it follows the
     /// EVSE's output. Read each time a `DC_PreChargeRes` arrives.
-    fn inlet_voltage(&self) -> RationalNumber;
+    fn inlet_voltage(&self) -> Rational;
 }
 
 /// A vehicle with a DC plug (CCS, CHAdeMO-style inlets): which inlet it has.
@@ -339,30 +346,30 @@ pub trait AcEv: Ev {
     /// The vehicle's AC limits (ISO 15118-2 AC charging).
     fn ac_limits(&self) -> AcLimits {
         AcLimits {
-            energy_amount: RationalNumber { exponent: 3, value: 20 },
-            maximum_voltage: RationalNumber { exponent: 0, value: 400 },
-            maximum_current: RationalNumber { exponent: 0, value: 32 },
-            minimum_current: RationalNumber { exponent: 0, value: 6 },
+            energy_amount: Rational { exponent: 3, value: 20 },
+            maximum_voltage: Rational { exponent: 0, value: 400 },
+            maximum_current: Rational { exponent: 0, value: 32 },
+            minimum_current: Rational { exponent: 0, value: 6 },
         }
     }
     /// The vehicle's AC power limits per phase (ISO 15118-20 AC), sent in
     /// `AC_ChargeParameterDiscoveryReq` and held to in the charge loop.
     fn ac20_limits(&self) -> AcPowerLimits {
-        let kw = |v| RationalNumber { exponent: 3, value: v };
-        AcPowerLimits { maximum_charge_power: Phases::three(kw(4)), minimum_charge_power: Phases::single(RationalNumber { exponent: 0, value: 1400 }) }
+        let kw = |v| Rational { exponent: 3, value: v };
+        AcPowerLimits { maximum_charge_power: Phases::three(kw(4)), minimum_charge_power: Phases::single(Rational { exponent: 0, value: 1400 }) }
     }
     /// The vehicle's AC discharge limits for BPT sessions
     /// ([`crate::session::SERVICE_ID_AC_BPT`]).
     fn ac20_discharge_limits(&self) -> AcDischargePowerLimits {
         AcDischargePowerLimits {
-            maximum_discharge_power: Phases::three(RationalNumber { exponent: 3, value: 4 }),
-            minimum_discharge_power: Phases::single(RationalNumber { exponent: 0, value: 500 }),
+            maximum_discharge_power: Phases::three(Rational { exponent: 3, value: 4 }),
+            minimum_discharge_power: Phases::single(Rational { exponent: 0, value: 500 }),
         }
     }
     /// The power the on-board charger draws now, for the AC charge loop request. The default is
     /// "nothing", for a host that does not measure.
     fn ac_present_power(&self) -> AcPresentPower {
-        let zero = Phases::three(RationalNumber { exponent: 0, value: 0 });
+        let zero = Phases::three(Rational { exponent: 0, value: 0 });
         AcPresentPower { active: zero, reactive: zero }
     }
     /// ISO 15118-20 AC power limits for the next charge loop request.
@@ -520,7 +527,7 @@ impl<E> core::ops::DerefMut for Caps<E> {
 }
 
 #[cfg(any(not(feature = "dc"), not(feature = "ac"), not(all(feature = "plug", feature = "dc"))))]
-const ZERO: RationalNumber = RationalNumber { exponent: 0, value: 0 };
+const ZERO: Rational = Rational { exponent: 0, value: 0 };
 
 #[cfg(feature = "dc")]
 impl<E: DcEv> Caps<E> {
@@ -536,10 +543,10 @@ impl<E: DcEv> Caps<E> {
     pub fn dc_discharge_loop_limits(&self) -> DischargeLimits {
         self.0.dc_discharge_loop_limits()
     }
-    pub fn battery_voltage(&self) -> RationalNumber {
+    pub fn battery_voltage(&self) -> Rational {
         self.0.battery_voltage()
     }
-    pub fn inlet_voltage(&self) -> RationalNumber {
+    pub fn inlet_voltage(&self) -> Rational {
         self.0.inlet_voltage()
     }
 }
@@ -558,10 +565,10 @@ impl<E> Caps<E> {
     pub fn dc_discharge_loop_limits(&self) -> DischargeLimits {
         self.dc_discharge_limits()
     }
-    pub fn battery_voltage(&self) -> RationalNumber {
+    pub fn battery_voltage(&self) -> Rational {
         ZERO
     }
-    pub fn inlet_voltage(&self) -> RationalNumber {
+    pub fn inlet_voltage(&self) -> Rational {
         ZERO
     }
 }
