@@ -14,7 +14,7 @@ use exi::Arena;
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
 use crate::secc::{Action, Ended, Progress};
-use crate::session::SEQUENCE_TIMEOUT_MS;
+use crate::SEQUENCE_TIMEOUT_MS;
 use crate::{Event, Step, Timer, TimerCmd};
 
 pub use din70121::types::ResponseCode;

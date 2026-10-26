@@ -439,14 +439,254 @@ pub trait InvertedPantographEv: Ev {
     }
 }
 
-/// What the ISO 15118-20 machine needs of a vehicle: every capability it can run (DC and AC through a plug, DC through the pantograph).
-pub trait Iso20Vehicle: DcPlugEv + AcPlugEv + InvertedPantographEv {}
-impl<T: DcPlugEv + AcPlugEv + InvertedPantographEv> Iso20Vehicle for T {}
+// ---- what a machine asks for, by the features compiled in
+//
+// A part is the capability trait when its feature is on and nothing otherwise, so a build without AC does not ask a vehicle for
+// `AcEv`. The machines reach the capability methods through [`Caps`], which answers with neutral values for what is not compiled in
+// (the configurations that would ask for it do not exist then).
 
-/// What the ISO 15118-2 machine needs of a vehicle: DC and AC through a plug.
-pub trait Iso2Vehicle: DcPlugEv + AcPlugEv {}
-impl<T: DcPlugEv + AcPlugEv> Iso2Vehicle for T {}
+#[cfg(feature = "dc")]
+pub trait DcPart: DcEv {}
+#[cfg(feature = "dc")]
+impl<T: DcEv> DcPart for T {}
+#[cfg(not(feature = "dc"))]
+pub trait DcPart {}
+#[cfg(not(feature = "dc"))]
+impl<T> DcPart for T {}
+
+#[cfg(feature = "ac")]
+pub trait AcPart: AcEv {}
+#[cfg(feature = "ac")]
+impl<T: AcEv> AcPart for T {}
+#[cfg(not(feature = "ac"))]
+pub trait AcPart {}
+#[cfg(not(feature = "ac"))]
+impl<T> AcPart for T {}
+
+#[cfg(all(feature = "plug", feature = "dc"))]
+pub trait DcPlugPart: DcPlugEv {}
+#[cfg(all(feature = "plug", feature = "dc"))]
+impl<T: DcPlugEv> DcPlugPart for T {}
+#[cfg(not(all(feature = "plug", feature = "dc")))]
+pub trait DcPlugPart {}
+#[cfg(not(all(feature = "plug", feature = "dc")))]
+impl<T> DcPlugPart for T {}
+
+#[cfg(all(feature = "plug", feature = "ac"))]
+pub trait AcPlugPart: AcPlugEv {}
+#[cfg(all(feature = "plug", feature = "ac"))]
+impl<T: AcPlugEv> AcPlugPart for T {}
+#[cfg(not(all(feature = "plug", feature = "ac")))]
+pub trait AcPlugPart {}
+#[cfg(not(all(feature = "plug", feature = "ac")))]
+impl<T> AcPlugPart for T {}
+
+#[cfg(feature = "inverted-pantograph")]
+pub trait PantographPart: InvertedPantographEv {}
+#[cfg(feature = "inverted-pantograph")]
+impl<T: InvertedPantographEv> PantographPart for T {}
+#[cfg(not(feature = "inverted-pantograph"))]
+pub trait PantographPart {}
+#[cfg(not(feature = "inverted-pantograph"))]
+impl<T> PantographPart for T {}
+
+/// What the ISO 15118-20 machine needs of a vehicle: the capabilities compiled in (DC and AC through a plug, DC through the pantograph).
+pub trait Iso20Vehicle: Ev + DcPart + AcPart + DcPlugPart + AcPlugPart + PantographPart {}
+impl<T: Ev + DcPart + AcPart + DcPlugPart + AcPlugPart + PantographPart> Iso20Vehicle for T {}
+
+/// What the ISO 15118-2 machine needs of a vehicle: DC and AC through a plug, as compiled in.
+pub trait Iso2Vehicle: Ev + DcPart + AcPart + DcPlugPart + AcPlugPart {}
+impl<T: Ev + DcPart + AcPart + DcPlugPart + AcPlugPart> Iso2Vehicle for T {}
 
 /// What the DIN SPEC 70121 machine needs of a vehicle: DC through a plug.
-pub trait DinVehicle: DcPlugEv {}
-impl<T: DcPlugEv> DinVehicle for T {}
+pub trait DinVehicle: Ev + DcPart + DcPlugPart {}
+impl<T: Ev + DcPart + DcPlugPart> DinVehicle for T {}
+
+/// The vehicle as a machine sees it: the generic methods of [`Ev`] through `Deref`, the capability methods as methods of its own.
+/// They call the vehicle when the capability is compiled in and answer with neutral values when it is not.
+pub struct Caps<E>(pub E);
+
+impl<E> core::ops::Deref for Caps<E> {
+    type Target = E;
+    fn deref(&self) -> &E {
+        &self.0
+    }
+}
+
+impl<E> core::ops::DerefMut for Caps<E> {
+    fn deref_mut(&mut self) -> &mut E {
+        &mut self.0
+    }
+}
+
+#[cfg(any(not(feature = "dc"), not(feature = "ac"), not(all(feature = "plug", feature = "dc"))))]
+const ZERO: RationalNumber = RationalNumber { exponent: 0, value: 0 };
+
+#[cfg(feature = "dc")]
+impl<E: DcEv> Caps<E> {
+    pub fn dc_limits(&self) -> DcLimits {
+        self.0.dc_limits()
+    }
+    pub fn dc_discharge_limits(&self) -> DischargeLimits {
+        self.0.dc_discharge_limits()
+    }
+    pub fn dc_loop_limits(&self) -> DcLimits {
+        self.0.dc_loop_limits()
+    }
+    pub fn dc_discharge_loop_limits(&self) -> DischargeLimits {
+        self.0.dc_discharge_loop_limits()
+    }
+    pub fn battery_voltage(&self) -> RationalNumber {
+        self.0.battery_voltage()
+    }
+    pub fn inlet_voltage(&self) -> RationalNumber {
+        self.0.inlet_voltage()
+    }
+}
+
+#[cfg(not(feature = "dc"))]
+impl<E> Caps<E> {
+    pub fn dc_limits(&self) -> DcLimits {
+        DcLimits { maximum_charge_power: ZERO, minimum_charge_power: ZERO, maximum_charge_current: ZERO, minimum_charge_current: ZERO, maximum_voltage: ZERO, minimum_voltage: ZERO, target_soc: None }
+    }
+    pub fn dc_discharge_limits(&self) -> DischargeLimits {
+        DischargeLimits { maximum_discharge_power: ZERO, minimum_discharge_power: ZERO, maximum_discharge_current: ZERO, minimum_discharge_current: ZERO }
+    }
+    pub fn dc_loop_limits(&self) -> DcLimits {
+        self.dc_limits()
+    }
+    pub fn dc_discharge_loop_limits(&self) -> DischargeLimits {
+        self.dc_discharge_limits()
+    }
+    pub fn battery_voltage(&self) -> RationalNumber {
+        ZERO
+    }
+    pub fn inlet_voltage(&self) -> RationalNumber {
+        ZERO
+    }
+}
+
+#[cfg(all(feature = "plug", feature = "dc"))]
+impl<E: DcPlugEv> Caps<E> {
+    pub fn dc_connector(&self) -> DcConnector {
+        self.0.dc_connector()
+    }
+}
+
+#[cfg(not(all(feature = "plug", feature = "dc")))]
+impl<E> Caps<E> {
+    pub fn dc_connector(&self) -> DcConnector {
+        DcConnector::Extended
+    }
+}
+
+#[cfg(feature = "ac")]
+impl<E: AcEv> Caps<E> {
+    pub fn ac_limits(&self) -> AcLimits {
+        self.0.ac_limits()
+    }
+    pub fn ac20_limits(&self) -> AcPowerLimits {
+        self.0.ac20_limits()
+    }
+    pub fn ac20_discharge_limits(&self) -> AcDischargePowerLimits {
+        self.0.ac20_discharge_limits()
+    }
+    pub fn ac_present_power(&self) -> AcPresentPower {
+        self.0.ac_present_power()
+    }
+    pub fn ac_loop_limits(&self) -> AcLimits {
+        self.0.ac_loop_limits()
+    }
+    pub fn ac20_loop_limits(&self) -> AcPowerLimits {
+        self.0.ac20_loop_limits()
+    }
+    pub fn ac20_discharge_loop_limits(&self) -> AcDischargePowerLimits {
+        self.0.ac20_discharge_loop_limits()
+    }
+}
+
+#[cfg(not(feature = "ac"))]
+impl<E> Caps<E> {
+    pub fn ac_limits(&self) -> AcLimits {
+        AcLimits { energy_amount: ZERO, maximum_voltage: ZERO, maximum_current: ZERO, minimum_current: ZERO }
+    }
+    pub fn ac20_limits(&self) -> AcPowerLimits {
+        AcPowerLimits { maximum_charge_power: Phases::single(ZERO), minimum_charge_power: Phases::single(ZERO) }
+    }
+    pub fn ac20_discharge_limits(&self) -> AcDischargePowerLimits {
+        AcDischargePowerLimits { maximum_discharge_power: Phases::single(ZERO), minimum_discharge_power: Phases::single(ZERO) }
+    }
+    pub fn ac_present_power(&self) -> AcPresentPower {
+        AcPresentPower { active: Phases::single(ZERO), reactive: Phases::single(ZERO) }
+    }
+    pub fn ac_loop_limits(&self) -> AcLimits {
+        self.ac_limits()
+    }
+    pub fn ac20_loop_limits(&self) -> AcPowerLimits {
+        self.ac20_limits()
+    }
+    pub fn ac20_discharge_loop_limits(&self) -> AcDischargePowerLimits {
+        self.ac20_discharge_limits()
+    }
+}
+
+#[cfg(all(feature = "plug", feature = "ac"))]
+impl<E: AcPlugEv> Caps<E> {
+    pub fn ac_connector(&self) -> AcConnector {
+        self.0.ac_connector()
+    }
+}
+
+#[cfg(not(all(feature = "plug", feature = "ac")))]
+impl<E> Caps<E> {
+    pub fn ac_connector(&self) -> AcConnector {
+        AcConnector::ThreePhase
+    }
+}
+
+#[cfg(feature = "inverted-pantograph")]
+impl<E: InvertedPantographEv> Caps<E> {
+    pub fn evid(&self) -> &str {
+        self.0.evid()
+    }
+    pub fn acdp_positioning_support(&self) -> bool {
+        self.0.acdp_positioning_support()
+    }
+    pub fn immobilized(&self) -> bool {
+        self.0.immobilized()
+    }
+    pub fn acdp_technical_status(&self) -> iso15118_20::acdp::EvTechnicalStatus {
+        self.0.acdp_technical_status()
+    }
+    pub fn acdp_electrical_status(&self) -> iso15118_20::acdp::ElectricalChargingDeviceStatus {
+        self.0.acdp_electrical_status()
+    }
+}
+
+#[cfg(not(feature = "inverted-pantograph"))]
+impl<E> Caps<E> {
+    pub fn evid(&self) -> &str {
+        "ZZ00000"
+    }
+    pub fn acdp_positioning_support(&self) -> bool {
+        false
+    }
+    pub fn immobilized(&self) -> bool {
+        true
+    }
+    pub fn acdp_technical_status(&self) -> iso15118_20::acdp::EvTechnicalStatus {
+        iso15118_20::acdp::EvTechnicalStatus {
+            ev_ready_to_charge: true,
+            ev_immobilization_request: true,
+            ev_immobilized: Some(true),
+            evwlan_strength: None,
+            evcp_status: None,
+            evsoc: None,
+            ev_error_code: None,
+            ev_timeout: Some(false),
+        }
+    }
+    pub fn acdp_electrical_status(&self) -> iso15118_20::acdp::ElectricalChargingDeviceStatus {
+        iso15118_20::acdp::ElectricalChargingDeviceStatus::StateA
+    }
+}

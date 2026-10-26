@@ -16,7 +16,7 @@ use iso15118_20::common_types::{MessageHeader, Processing, RationalNumber, Respo
 use iso15118_20::dc;
 use v2gtp::{FrameError, HEADER_LEN, Parse, PayloadType, parse, write_header};
 
-use crate::secc::{Iso20Evse, AcdpPositioningRequest, Action, Authorize, Ended, Progress, Request, Signed};
+use crate::secc::{Iso20Evse, SeccCaps, AcdpPositioningRequest, Action, Authorize, Ended, Progress, Request, Signed};
 use crate::{Event, State, Step, Timer, TimerCmd};
 
 /// Memory the host provides; nothing is allocated here.
@@ -31,8 +31,7 @@ pub struct Buffers<'a> {
     pub scratch: &'a mut [u8],
 }
 
-/// The timeout of `V2G_SECC_Sequence_Timeout` (Table 215).
-pub const SEQUENCE_TIMEOUT_MS: u32 = 60_000;
+pub use crate::SEQUENCE_TIMEOUT_MS;
 
 /// Service ids of the AC services (Table 204).
 const SERVICE_AC: u16 = 1;
@@ -75,7 +74,7 @@ pub struct Session<S: Iso20Evse> {
 }
 
 struct Machine<S> {
-    secc: S,
+    secc: SeccCaps<S>,
     state: State,
     /// What the control pilot means to the session (the host reports it with `Event::Pilot`).
     pilot: control_pilot::EvseWatch,
@@ -113,7 +112,7 @@ impl<S: Iso20Evse> Session<S> {
         Self {
             rx_len: 0,
             m: Machine {
-                secc,
+                secc: SeccCaps(secc),
                 state: State::AwaitSupportedAppProtocolReq,
                 pilot: control_pilot::EvseWatch::new(), last_guard: control_pilot::Guard::disarmed(control_pilot::Side::Charger),
                 secured: false,
@@ -139,11 +138,11 @@ impl<S: Iso20Evse> Session<S> {
 
     /// The charger the machine asks.
     pub fn secc(&self) -> &S {
-        &self.m.secc
+        &self.m.secc.0
     }
 
     pub fn secc_mut(&mut self) -> &mut S {
-        &mut self.m.secc
+        &mut self.m.secc.0
     }
 
     pub fn session_id(&self) -> [u8; 8] {

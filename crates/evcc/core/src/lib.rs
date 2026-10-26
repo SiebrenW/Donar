@@ -8,14 +8,28 @@
 #[cfg(test)]
 extern crate std;
 
+#[cfg(feature = "din")]
 pub mod din;
+#[cfg(feature = "iso2")]
 pub mod iso2;
 pub mod ev;
 pub mod log;
 pub mod machine;
 pub mod sdp;
+#[cfg(feature = "slac")]
 pub mod slac;
 pub mod session;
+
+#[cfg(all(feature = "strict", not(any(feature = "iso20", feature = "iso2", feature = "din"))))]
+compile_error!("evcc-core: enable a protocol: `iso20`, `iso2`, `din` (or `acdp`)");
+#[cfg(all(feature = "strict", not(any(feature = "ac", feature = "dc"))))]
+compile_error!("evcc-core: enable `ac` and/or `dc`: a connector delivers energy");
+#[cfg(all(feature = "strict", feature = "inverted-pantograph", feature = "ac"))]
+compile_error!("evcc-core: the inverted pantograph (`acdp`) has no AC: do not enable `ac` with it");
+#[cfg(all(feature = "strict", feature = "inverted-pantograph", feature = "plug"))]
+compile_error!("evcc-core: a pantograph and a plug are different connectors, and a machine drives one connector: build one machine per connector");
+#[cfg(all(feature = "strict", feature = "iso20", not(feature = "plug"), not(feature = "inverted-pantograph")))]
+compile_error!("evcc-core: `iso20` needs a connection: `plug` or `acdp`");
 
 /// The timers the machines use. Each is independent; the host keeps at most one pending
 /// expiry per timer and reports it back as an event naming the timer.

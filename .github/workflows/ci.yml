@@ -59,6 +59,9 @@ jobs:
           cargo build --locked --target thumbv7em-none-eabihf
           -p evcc-core -p evse-core -p control-pilot -p v2gtp -p homeplug
           -p exi -p app-protocol -p iso15118-20 -p iso15118-2 -p din70121
+      # The feature combinations people build (`cargo xtask features` lists them), here for the bare-metal target and, below, on the host.
+      - run: cargo xtask features --target thumbv7em-none-eabihf
+      - run: cargo xtask features
 
   # Everything, on Linux, with the privileges the network tests need: the scenarios (two vehicles and chargers in network
   # namespaces joined by a virtual cable, a pcap of each), TLS, SLAC, the web page in a headless Chrome.

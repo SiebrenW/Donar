@@ -373,9 +373,147 @@ pub trait InvertedPantographSecc: Secc {
     fn acdp_emergency(&mut self) {}
 }
 
-/// What the ISO 15118-20 machine needs of a charger: every capability it can serve (DC and AC, and the inverted pantograph).
-pub trait Iso20Evse: DcSecc + AcSecc + InvertedPantographSecc {}
-impl<T: DcSecc + AcSecc + InvertedPantographSecc> Iso20Evse for T {}
+#[cfg(feature = "dc")]
+pub trait DcSeccPart: DcSecc {}
+#[cfg(feature = "dc")]
+impl<T: DcSecc> DcSeccPart for T {}
+#[cfg(not(feature = "dc"))]
+pub trait DcSeccPart {}
+#[cfg(not(feature = "dc"))]
+impl<T> DcSeccPart for T {}
+
+#[cfg(feature = "ac")]
+pub trait AcSeccPart: AcSecc {}
+#[cfg(feature = "ac")]
+impl<T: AcSecc> AcSeccPart for T {}
+#[cfg(not(feature = "ac"))]
+pub trait AcSeccPart {}
+#[cfg(not(feature = "ac"))]
+impl<T> AcSeccPart for T {}
+
+#[cfg(feature = "inverted-pantograph")]
+pub trait PantographSeccPart: InvertedPantographSecc {}
+#[cfg(feature = "inverted-pantograph")]
+impl<T: InvertedPantographSecc> PantographSeccPart for T {}
+#[cfg(not(feature = "inverted-pantograph"))]
+pub trait PantographSeccPart {}
+#[cfg(not(feature = "inverted-pantograph"))]
+impl<T> PantographSeccPart for T {}
+
+/// What the ISO 15118-20 machine needs of a charger: the capabilities compiled in (DC, AC, the inverted pantograph).
+pub trait Iso20Evse: Secc + DcSeccPart + AcSeccPart + PantographSeccPart {}
+impl<T: Secc + DcSeccPart + AcSeccPart + PantographSeccPart> Iso20Evse for T {}
+
+/// The charger as the machine sees it: the methods of [`Secc`] through `Deref`, the capability methods as methods of its own.
+/// They call the charger when the capability is compiled in and answer with neutral values (a refusal, nothing to deliver) when it is not.
+pub struct SeccCaps<S>(pub S);
+
+impl<S> core::ops::Deref for SeccCaps<S> {
+    type Target = S;
+    fn deref(&self) -> &S {
+        &self.0
+    }
+}
+
+impl<S> core::ops::DerefMut for SeccCaps<S> {
+    fn deref_mut(&mut self) -> &mut S {
+        &mut self.0
+    }
+}
+
+#[cfg(feature = "dc")]
+impl<S: DcSecc> SeccCaps<S> {
+    pub fn dc_charge_parameters(&mut self, bpt: bool, request: &dc::DcChargeParameterDiscoveryReq<'_>) -> Result<dc::DcCpdResEnergyTransferModeChoice, ResponseCode> {
+        self.0.dc_charge_parameters(bpt, request)
+    }
+    pub fn cable_check(&mut self) -> Progress<ResponseCode> {
+        self.0.cable_check()
+    }
+    pub fn pre_charge(&mut self, target: RationalNumber, vehicle: RationalNumber) -> RationalNumber {
+        self.0.pre_charge(target, vehicle)
+    }
+    pub fn welding_detection(&mut self) -> RationalNumber {
+        self.0.welding_detection()
+    }
+    pub fn dc_loop(&mut self, request: &dc::DcChargeLoopReq<'_>, bpt: bool) -> Option<DcLoopAnswer> {
+        self.0.dc_loop(request, bpt)
+    }
+}
+
+#[cfg(not(feature = "dc"))]
+impl<S> SeccCaps<S> {
+    pub fn dc_charge_parameters(&mut self, _bpt: bool, _request: &dc::DcChargeParameterDiscoveryReq<'_>) -> Result<dc::DcCpdResEnergyTransferModeChoice, ResponseCode> {
+        Err(ResponseCode::FailedWrongChargeParameter)
+    }
+    pub fn cable_check(&mut self) -> Progress<ResponseCode> {
+        Progress::Done(ResponseCode::Failed)
+    }
+    pub fn pre_charge(&mut self, target: RationalNumber, _vehicle: RationalNumber) -> RationalNumber {
+        target
+    }
+    pub fn welding_detection(&mut self) -> RationalNumber {
+        RationalNumber { exponent: 0, value: 0 }
+    }
+    pub fn dc_loop(&mut self, _request: &dc::DcChargeLoopReq<'_>, _bpt: bool) -> Option<DcLoopAnswer> {
+        None
+    }
+}
+
+#[cfg(feature = "ac")]
+impl<S: AcSecc> SeccCaps<S> {
+    pub fn ac_charge_parameters(&mut self, bpt: bool, request: &ac::AcChargeParameterDiscoveryReq<'_>) -> Result<ac::AcCpdResEnergyTransferModeChoice, ResponseCode> {
+        self.0.ac_charge_parameters(bpt, request)
+    }
+    pub fn ac_loop(&mut self, request: &ac::AcChargeLoopReq<'_>, bpt: bool) -> Option<AcLoopAnswer> {
+        self.0.ac_loop(request, bpt)
+    }
+}
+
+#[cfg(not(feature = "ac"))]
+impl<S> SeccCaps<S> {
+    pub fn ac_charge_parameters(&mut self, _bpt: bool, _request: &ac::AcChargeParameterDiscoveryReq<'_>) -> Result<ac::AcCpdResEnergyTransferModeChoice, ResponseCode> {
+        Err(ResponseCode::FailedWrongChargeParameter)
+    }
+    pub fn ac_loop(&mut self, _request: &ac::AcChargeLoopReq<'_>, _bpt: bool) -> Option<AcLoopAnswer> {
+        None
+    }
+}
+
+#[cfg(feature = "inverted-pantograph")]
+impl<S: InvertedPantographSecc> SeccCaps<S> {
+    pub fn acdp_positioning(&mut self, request: AcdpPositioningRequest) -> AcdpPositioning {
+        self.0.acdp_positioning(request)
+    }
+    pub fn acdp_connect(&mut self, electrical: acdp::ElectricalChargingDeviceStatus) -> AcdpConnection {
+        self.0.acdp_connect(electrical)
+    }
+    pub fn acdp_disconnect(&mut self, electrical: acdp::ElectricalChargingDeviceStatus) -> AcdpConnection {
+        self.0.acdp_disconnect(electrical)
+    }
+    pub fn acdp_system_status(&mut self, vehicle: &acdp::EvTechnicalStatus) -> AcdpSystemStatus {
+        self.0.acdp_system_status(vehicle)
+    }
+    pub fn acdp_emergency(&mut self) {
+        self.0.acdp_emergency()
+    }
+}
+
+#[cfg(not(feature = "inverted-pantograph"))]
+impl<S> SeccCaps<S> {
+    pub fn acdp_positioning(&mut self, _request: AcdpPositioningRequest) -> AcdpPositioning {
+        AcdpPositioning::UNGUIDED
+    }
+    pub fn acdp_connect(&mut self, _electrical: acdp::ElectricalChargingDeviceStatus) -> AcdpConnection {
+        AcdpConnection { finished: true, electrical: acdp::ElectricalChargingDeviceStatus::StateA, mechanical: acdp::MechanicalChargingDeviceStatus::Home }
+    }
+    pub fn acdp_disconnect(&mut self, _electrical: acdp::ElectricalChargingDeviceStatus) -> AcdpConnection {
+        AcdpConnection { finished: true, electrical: acdp::ElectricalChargingDeviceStatus::StateA, mechanical: acdp::MechanicalChargingDeviceStatus::Home }
+    }
+    pub fn acdp_system_status(&mut self, _vehicle: &acdp::EvTechnicalStatus) -> AcdpSystemStatus {
+        AcdpSystemStatus::HEALTHY
+    }
+    pub fn acdp_emergency(&mut self) {}
+}
 
 /// A decoded request of either message set.
 pub enum Request<'a> {

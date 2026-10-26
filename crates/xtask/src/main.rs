@@ -1,6 +1,7 @@
 //! Project automation. Run as `cargo xtask <command>`.
 
 mod container;
+mod features;
 mod java;
 mod schemas;
 
@@ -18,11 +19,12 @@ fn main() -> ExitCode {
         Some("vectors") => java::vectors(),
         Some("grammars") => java::grammars(),
         Some("lint") => container::lint(),
+        Some("features") => features::check(args.collect()),
         Some("linux-test") => container::linux_test(args.collect()),
         Some("interop") => container::interop(args.collect()),
         Some("web") => container::web(args.collect()),
         _ => {
-            eprintln!("usage: cargo xtask setup [--force] | gen [--force] | vectors | grammars | lint | linux-test [cargo test args] | interop [scenario...] | web [PORT]");
+            eprintln!("usage: cargo xtask setup [--force] | gen [--force] | vectors | grammars | lint | features [--target TRIPLE] | linux-test [cargo test args] | interop [scenario...] | web [PORT]");
             return ExitCode::from(2);
         }
     };
