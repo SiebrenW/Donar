@@ -119,7 +119,9 @@ pub struct AcLoopAnswer {
     pub receipt_required: Option<bool>,
 }
 
-/// The charger, as the ISO 15118-2 machine sees it. Every method has a default.
+/// What every ISO 15118-2 charger has, whatever it delivers: identity, payment, services, authorization, the charge parameters, the
+/// schedule and the power delivery. The rest is split by capability: [`Iso2DcSecc`] and [`Iso2AcSecc`]. The machine asks for the
+/// combination it needs ([`Iso2Evse`]). Every method has a default but the charge parameters.
 pub trait Iso2Secc {
     fn evse_id(&self) -> &str {
         "ZZ00000"
@@ -169,27 +171,15 @@ pub trait Iso2Secc {
     fn schedule_tuples(&self) -> &[t::SaScheduleTuple<'_>] {
         &[]
     }
-    fn cable_check(&mut self) -> Progress<ResponseCode> {
-        Progress::Done(ResponseCode::Ok)
-    }
-    fn pre_charge(&mut self, target: PhysicalValue) -> PhysicalValue {
-        target
-    }
     /// The power starts or stops; the schedule selection and the profile were checked. The code to answer with.
     fn power_delivery(&mut self, _request: &PowerDeliveryReq<'_>) -> ResponseCode {
         ResponseCode::Ok
     }
     /// The vehicle asks for new charge parameters and a new schedule (`ChargeProgress` Renegotiate).
     fn renegotiation(&mut self) {}
-    /// A DC charge loop request; `announced_power` the `EVMaximumPowerLimit` of the discovery.
-    fn dc_loop(&mut self, request: &CurrentDemandReq, announced_power: Option<PhysicalValue>) -> DcLoopAnswer;
-    fn ac_loop(&mut self, request: &ChargingStatusReq) -> AcLoopAnswer;
     /// A `MeteringReceiptReq`: the host verifies the signature in `header` against the contract certificate and the reading it asked to confirm.
     fn metering_receipt(&mut self, _header: &MessageHeader<'_>, _request: &MeteringReceiptReq<'_>) -> ResponseCode {
         ResponseCode::FailedMeteringSignatureNotValid
-    }
-    fn welding_detection(&mut self) -> (ResponseCode, PhysicalValue) {
-        (ResponseCode::Ok, PhysicalValue::from_f64(0.0, UnitSymbol::V))
     }
     fn session_ended(&mut self, _how: Ended) {}
     fn intercept(&mut self, _request: &B<'_>) -> Action {
@@ -198,7 +188,31 @@ pub trait Iso2Secc {
     fn note(&mut self, _text: core::fmt::Arguments<'_>) {}
 }
 
-pub struct Session<S: Iso2Secc> {
+/// An ISO 15118-2 charger that delivers DC: the cable check, the pre-charge, the DC charge loop and the welding detection.
+pub trait Iso2DcSecc: Iso2Secc {
+    fn cable_check(&mut self) -> Progress<ResponseCode> {
+        Progress::Done(ResponseCode::Ok)
+    }
+    fn pre_charge(&mut self, target: PhysicalValue) -> PhysicalValue {
+        target
+    }
+    /// A DC charge loop request; `announced_power` the `EVMaximumPowerLimit` of the discovery.
+    fn dc_loop(&mut self, request: &CurrentDemandReq, announced_power: Option<PhysicalValue>) -> DcLoopAnswer;
+    fn welding_detection(&mut self) -> (ResponseCode, PhysicalValue) {
+        (ResponseCode::Ok, PhysicalValue::from_f64(0.0, UnitSymbol::V))
+    }
+}
+
+/// An ISO 15118-2 charger that delivers AC: the AC charge loop.
+pub trait Iso2AcSecc: Iso2Secc {
+    fn ac_loop(&mut self, request: &ChargingStatusReq) -> AcLoopAnswer;
+}
+
+/// What the ISO 15118-2 machine needs of a charger: DC and AC.
+pub trait Iso2Evse: Iso2DcSecc + Iso2AcSecc {}
+impl<T: Iso2DcSecc + Iso2AcSecc> Iso2Evse for T {}
+
+pub struct Session<S: Iso2Evse> {
     rx_len: usize,
     m: Machine<S>,
 }
@@ -258,7 +272,7 @@ impl Id {
     }
 }
 
-impl<S: Iso2Secc> Session<S> {
+impl<S: Iso2Evse> Session<S> {
     pub fn new(secc: S) -> Self {
         Self { rx_len: 0, m: Machine { secc, state: State::AwaitSessionSetupReq, pilot: control_pilot::EvseWatch::new(), last_guard: control_pilot::Guard::disarmed(control_pilot::Side::Charger), session_id: [0; 8], ac: false, renegotiating: false, announced_power: None, p_max_w: 0.0 } }
     }
@@ -356,7 +370,7 @@ impl<S: Iso2Secc> Session<S> {
     }
 }
 
-impl<S: Iso2Secc> Machine<S> {
+impl<S: Iso2Evse> Machine<S> {
     fn dc_status(&self, code: t::DcEvseStatusCode, isolation: Option<t::IsolationLevel>) -> t::DcEvseStatus {
         t::DcEvseStatus { notification_max_delay: 0, evse_notification: t::EvseNotification::None, evse_isolation_status: isolation, evse_status_code: code }
     }

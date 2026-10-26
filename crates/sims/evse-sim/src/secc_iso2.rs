@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use evse_core::iso2::{AcLoopAnswer, DcLoopAnswer, Iso2Secc, Offer, ResponseCode, SessionSetup};
+use evse_core::iso2::{AcLoopAnswer, DcLoopAnswer, Iso2Secc, Iso2DcSecc, Iso2AcSecc, Offer, ResponseCode, SessionSetup};
 use evse_core::secc::{Action, Progress};
 use iso15118_2::body::*;
 use iso15118_2::header::MessageHeader;
@@ -271,16 +271,6 @@ impl Iso2Secc for SimIso2 {
     fn schedule_tuples(&self) -> &[t::SaScheduleTuple<'_>] {
         if self.config.iso2.sales_tariffs { &TARIFF_TUPLES } else { &[] }
     }
-    fn cable_check(&mut self) -> Progress<ResponseCode> {
-        self.cable_reqs_seen += 1;
-        if self.cable_reqs_seen <= self.config.cable_check_ongoing_responses { Progress::Ongoing } else { Progress::Done(code(self.config.cable_check_code)) }
-    }
-    fn pre_charge(&mut self, target: PhysicalValue) -> PhysicalValue {
-        self.precharge_reqs_seen += 1;
-        let settled = self.precharge_reqs_seen >= self.config.precharge_requests_to_settle;
-        let target = target.to_f64();
-        pv(if settled { target } else { (target - 100.0).max(0.0) }, UnitSymbol::V)
-    }
     fn power_delivery(&mut self, request: &PowerDeliveryReq<'_>) -> ResponseCode {
         if request.charge_progress == t::ChargeProgress::Start {
             self.log.push(format!("schedule tuple {} selected", request.sa_schedule_tuple_id));
@@ -291,6 +281,37 @@ impl Iso2Secc for SimIso2 {
     }
     fn renegotiation(&mut self) {
         self.schedule_reqs_seen = 0;
+    }
+    fn metering_receipt(&mut self, header: &MessageHeader<'_>, req: &MeteringReceiptReq<'_>) -> ResponseCode {
+        let verdict = match &self.contract {
+            Some((leaf, _)) => crate::pnc::verify_iso2_receipt(leaf, header.signature.as_ref(), req, self.receipt_reading),
+            None => ResponseCode::FailedMeteringSignatureNotValid,
+        };
+        self.log.push(format!("metering receipt: {}", verdict.xml_name()));
+        verdict
+    }
+    fn intercept(&mut self, request: &BodyElementChoice<'_>) -> Action {
+        if self.config.silent || (self.config.silent_on_setup && matches!(request, BodyElementChoice::SessionSetupReq(_))) {
+            Action::Silent
+        } else {
+            Action::Pass
+        }
+    }
+    fn note(&mut self, text: core::fmt::Arguments<'_>) {
+        self.log.push(text.to_string());
+    }
+}
+
+impl Iso2DcSecc for SimIso2 {
+    fn cable_check(&mut self) -> Progress<ResponseCode> {
+        self.cable_reqs_seen += 1;
+        if self.cable_reqs_seen <= self.config.cable_check_ongoing_responses { Progress::Ongoing } else { Progress::Done(code(self.config.cable_check_code)) }
+    }
+    fn pre_charge(&mut self, target: PhysicalValue) -> PhysicalValue {
+        self.precharge_reqs_seen += 1;
+        let settled = self.precharge_reqs_seen >= self.config.precharge_requests_to_settle;
+        let target = target.to_f64();
+        pv(if settled { target } else { (target - 100.0).max(0.0) }, UnitSymbol::V)
     }
     fn dc_loop(&mut self, req: &CurrentDemandReq, announced_power: Option<PhysicalValue>) -> DcLoopAnswer {
         self.loops_seen += 1;
@@ -330,6 +351,12 @@ impl Iso2Secc for SimIso2 {
             meter_info,
         }
     }
+    fn welding_detection(&mut self) -> (ResponseCode, PhysicalValue) {
+        (code(self.config.welding_code), pv(f64::from(self.config.welding_voltage_v), UnitSymbol::V))
+    }
+}
+
+impl Iso2AcSecc for SimIso2 {
     fn ac_loop(&mut self, _req: &ChargingStatusReq) -> AcLoopAnswer {
         self.loops_seen += 1;
         let shutdown = self.config.iso2.shutdown_after_loops.is_some_and(|n| self.loops_seen >= n);
@@ -354,26 +381,5 @@ impl Iso2Secc for SimIso2 {
             receipt_required: Some(meter_info.is_some()),
             meter_info,
         }
-    }
-    fn metering_receipt(&mut self, header: &MessageHeader<'_>, req: &MeteringReceiptReq<'_>) -> ResponseCode {
-        let verdict = match &self.contract {
-            Some((leaf, _)) => crate::pnc::verify_iso2_receipt(leaf, header.signature.as_ref(), req, self.receipt_reading),
-            None => ResponseCode::FailedMeteringSignatureNotValid,
-        };
-        self.log.push(format!("metering receipt: {}", verdict.xml_name()));
-        verdict
-    }
-    fn welding_detection(&mut self) -> (ResponseCode, PhysicalValue) {
-        (code(self.config.welding_code), pv(f64::from(self.config.welding_voltage_v), UnitSymbol::V))
-    }
-    fn intercept(&mut self, request: &BodyElementChoice<'_>) -> Action {
-        if self.config.silent || (self.config.silent_on_setup && matches!(request, BodyElementChoice::SessionSetupReq(_))) {
-            Action::Silent
-        } else {
-            Action::Pass
-        }
-    }
-    fn note(&mut self, text: core::fmt::Arguments<'_>) {
-        self.log.push(text.to_string());
     }
 }

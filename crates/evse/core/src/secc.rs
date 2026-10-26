@@ -182,8 +182,10 @@ pub enum Ended {
     PilotFault(control_pilot::Reading),
 }
 
+/// What every ISO 15118-20 charger has, whatever it delivers: identity, clock, what it offers, authorization, the schedule, the power
+/// delivery and the hooks for the host to bend the machine. The rest is split by capability, so that a host implements only what its
+/// hardware does: [`DcSecc`], [`AcSecc`] and [`InvertedPantographSecc`]. The machine asks for the combination it needs ([`Iso20Evse`]).
 pub trait Secc {
-    // ---- identity and time
 
     /// `EVSEID` of `SessionSetupRes`.
     fn evse_id(&self) -> &str;
@@ -193,8 +195,6 @@ pub trait Secc {
     fn new_session_id(&mut self) -> [u8; 8];
     /// 128 random bits for `AuthorizationSetupRes` (V2G20-697).
     fn gen_challenge(&mut self) -> [u8; 16];
-
-    // ---- what the charger offers
 
     /// The protocols the charger speaks: whether it takes this namespace and major version of a
     /// `SupportedAppProtocolReq` entry. Of those it takes, the lowest priority number wins.
@@ -226,39 +226,6 @@ pub trait Secc {
         self.service_renegotiation_supported()
     }
 
-    // ---- ACDP
-
-    /// What the pairing and positioning device sees of the vehicle now. The machine answers `Ongoing` to a
-    /// request that says the vehicle is still mobilized and `Finished` to one that says it is immobilized (V2G20-4068, 4069);
-    /// the answer decides only what goes with it, and whether the association holds ([`AcdpPositioning::association`]).
-    fn acdp_positioning(&mut self, _request: AcdpPositioningRequest) -> AcdpPositioning {
-        AcdpPositioning::UNGUIDED
-    }
-
-    /// The vehicle asks for the pantograph (`ACDP_ConnectReq`, `electrical` is the pilot state the vehicle sees). Lower it; answer with
-    /// `finished` false while it moves and true when it is down. The default is a pantograph that is down at once.
-    fn acdp_connect(&mut self, _electrical: acdp::ElectricalChargingDeviceStatus) -> AcdpConnection {
-        AcdpConnection { finished: true, electrical: acdp::ElectricalChargingDeviceStatus::StateB, mechanical: acdp::MechanicalChargingDeviceStatus::EndPosition }
-    }
-    /// The vehicle asks for the pantograph to go home (`ACDP_DisconnectReq`). Raise it; `finished` when it is home. The default is
-    /// a pantograph that is home at once.
-    fn acdp_disconnect(&mut self, _electrical: acdp::ElectricalChargingDeviceStatus) -> AcdpConnection {
-        AcdpConnection { finished: true, electrical: acdp::ElectricalChargingDeviceStatus::StateA, mechanical: acdp::MechanicalChargingDeviceStatus::Home }
-    }
-
-    /// The vehicle's status (`ACDP_SystemStatusReq`, once a second or so from the session setup to the stop): how the charging point is
-    /// (V2G20-4017 to 4019). The vehicle's `EVReadyToCharge` false is answered like any other (4019).
-    fn acdp_system_status(&mut self, _vehicle: &acdp::EvTechnicalStatus) -> AcdpSystemStatus {
-        AcdpSystemStatus::HEALTHY
-    }
-
-    /// ACDP: an emergency shutdown (the vehicle's CP went from C/D to B, or the charger has one of its own): ramp down the current, open
-    /// the DC contactors and raise the pantograph (NOTE 2, 3 of 8.6.4.5.2.1). The disconnect and the session stop follow on the
-    /// open connection.
-    fn acdp_emergency(&mut self) {}
-
-    // ---- the service flow
-
     /// The service selection of a session paused with this id, if it can be resumed (V2G20-2623:
     /// authorization and the selection carry over, the next request is the charge parameter discovery).
     fn resume(&mut self, _session_id: [u8; 8]) -> Option<SelectedService> {
@@ -274,16 +241,6 @@ pub trait Secc {
     }
     /// The vehicle selected a service and a parameter set (checked against the offer already).
     fn service_selected(&mut self, _selection: &ServiceSelectionReq<'_>) {}
-
-    /// `DC_ChargeParameterDiscoveryRes` for the request: the charger's limits, or the code that
-    /// refuses (`FAILED_WrongChargeParameter`). The mode has to be the one of the selected service.
-    fn dc_charge_parameters(&mut self, _bpt: bool, _request: &dc::DcChargeParameterDiscoveryReq<'_>) -> Result<dc::DcCpdResEnergyTransferModeChoice, ResponseCode> {
-        Err(ResponseCode::FailedWrongChargeParameter)
-    }
-    fn ac_charge_parameters(&mut self, _bpt: bool, _request: &ac::AcChargeParameterDiscoveryReq<'_>) -> Result<ac::AcCpdResEnergyTransferModeChoice, ResponseCode> {
-        Err(ResponseCode::FailedWrongChargeParameter)
-    }
-
     /// Whether the schedule is ready (`Ongoing` while it is being worked out); `renegotiation` on the side
     /// stream of a schedule renegotiation.
     fn schedule_ready(&mut self, _renegotiation: bool) -> Progress<()> {
@@ -307,36 +264,11 @@ pub trait Secc {
         &[]
     }
 
-    // ---- DC only
-
-    /// The cable check (`Ongoing` while the insulation is tested); `Done(code)`.
-    fn cable_check(&mut self) -> Progress<ResponseCode> {
-        Progress::Done(ResponseCode::Ok)
-    }
-    /// One round of pre-charge: the voltage at the charger's output, given what the vehicle
-    /// wants (`target`) and its present voltage.
-    fn pre_charge(&mut self, target: RationalNumber, _vehicle: RationalNumber) -> RationalNumber {
-        target
-    }
-    /// One round of welding detection: the voltage seen at the (disabled) output.
-    fn welding_detection(&mut self) -> RationalNumber {
-        RationalNumber { exponent: 0, value: 0 }
-    }
-
-    // ---- energy transfer
-
     /// `PowerDeliveryReq`: close the contactors on `Start`, open them on `Stop`, enter or leave a standby
     /// period. The machine has checked the profile and the schedule selection. The code is the
     /// answer (`OK`, `FAILED_PowerDeliveryNotApplied`, `WARNING_StandbyNotAllowed`, ...).
     fn power_delivery(&mut self, _request: &PowerDeliveryReq<'_>) -> ResponseCode {
         ResponseCode::Ok
-    }
-    /// A DC charge loop request: what the charger delivers and what it tells the vehicle.
-    fn dc_loop(&mut self, _request: &dc::DcChargeLoopReq<'_>, _bpt: bool) -> Option<DcLoopAnswer> {
-        None
-    }
-    fn ac_loop(&mut self, _request: &ac::AcChargeLoopReq<'_>, _bpt: bool) -> Option<AcLoopAnswer> {
-        None
     }
     /// The charger's meter for the answer just made: the energy of the service session so far
     /// (V2G20-902). `wanted` when the vehicle asked for it (V2G20-1081) or the answer notifies a
@@ -361,8 +293,6 @@ pub trait Secc {
     /// The vehicle stops, pauses or renegotiates the services.
     fn session_ended(&mut self, _how: Ended) {}
 
-    // ---- the machine's own decisions, for the host to bend
-
     /// Called with every request before it is looked at.
     fn intercept(&mut self, _payload_type: PayloadType, _request: &Request<'_>) -> Action {
         Action::Pass
@@ -375,6 +305,77 @@ pub trait Secc {
     /// A step of the flow that was taken or refused, for a log: `(what happened)`.
     fn note(&mut self, _text: core::fmt::Arguments<'_>) {}
 }
+
+/// A charger that delivers DC (a plug or a pantograph): the charge parameters, the cable check, the pre-charge, the welding detection and the DC charge loop.
+pub trait DcSecc: Secc {
+    /// `DC_ChargeParameterDiscoveryRes` for the request: the charger's limits, or the code that
+    /// refuses (`FAILED_WrongChargeParameter`). The mode has to be the one of the selected service.
+    fn dc_charge_parameters(&mut self, _bpt: bool, _request: &dc::DcChargeParameterDiscoveryReq<'_>) -> Result<dc::DcCpdResEnergyTransferModeChoice, ResponseCode> {
+        Err(ResponseCode::FailedWrongChargeParameter)
+    }
+
+    /// The cable check (`Ongoing` while the insulation is tested); `Done(code)`.
+    fn cable_check(&mut self) -> Progress<ResponseCode> {
+        Progress::Done(ResponseCode::Ok)
+    }
+    /// One round of pre-charge: the voltage at the charger's output, given what the vehicle
+    /// wants (`target`) and its present voltage.
+    fn pre_charge(&mut self, target: RationalNumber, _vehicle: RationalNumber) -> RationalNumber {
+        target
+    }
+    /// One round of welding detection: the voltage seen at the (disabled) output.
+    fn welding_detection(&mut self) -> RationalNumber {
+        RationalNumber { exponent: 0, value: 0 }
+    }
+    /// A DC charge loop request: what the charger delivers and what it tells the vehicle.
+    fn dc_loop(&mut self, _request: &dc::DcChargeLoopReq<'_>, _bpt: bool) -> Option<DcLoopAnswer> {
+        None
+    }
+}
+
+/// A charger that delivers AC: the charge parameters and the AC charge loop.
+pub trait AcSecc: Secc {
+    fn ac_charge_parameters(&mut self, _bpt: bool, _request: &ac::AcChargeParameterDiscoveryReq<'_>) -> Result<ac::AcCpdResEnergyTransferModeChoice, ResponseCode> {
+        Err(ResponseCode::FailedWrongChargeParameter)
+    }
+    fn ac_loop(&mut self, _request: &ac::AcChargeLoopReq<'_>, _bpt: bool) -> Option<AcLoopAnswer> {
+        None
+    }
+}
+
+/// A charger with the inverted pantograph (ACDP of ISO 15118-20, OppCharge): the pairing and positioning device, the pantograph itself and the status of the charging point. DC only.
+pub trait InvertedPantographSecc: Secc {
+
+    /// What the pairing and positioning device sees of the vehicle now. The machine answers `Ongoing` to a
+    /// request that says the vehicle is still mobilized and `Finished` to one that says it is immobilized (V2G20-4068, 4069);
+    /// the answer decides only what goes with it, and whether the association holds ([`AcdpPositioning::association`]).
+    fn acdp_positioning(&mut self, _request: AcdpPositioningRequest) -> AcdpPositioning {
+        AcdpPositioning::UNGUIDED
+    }
+    /// The vehicle asks for the pantograph (`ACDP_ConnectReq`, `electrical` is the pilot state the vehicle sees). Lower it; answer with
+    /// `finished` false while it moves and true when it is down. The default is a pantograph that is down at once.
+    fn acdp_connect(&mut self, _electrical: acdp::ElectricalChargingDeviceStatus) -> AcdpConnection {
+        AcdpConnection { finished: true, electrical: acdp::ElectricalChargingDeviceStatus::StateB, mechanical: acdp::MechanicalChargingDeviceStatus::EndPosition }
+    }
+    /// The vehicle asks for the pantograph to go home (`ACDP_DisconnectReq`). Raise it; `finished` when it is home. The default is
+    /// a pantograph that is home at once.
+    fn acdp_disconnect(&mut self, _electrical: acdp::ElectricalChargingDeviceStatus) -> AcdpConnection {
+        AcdpConnection { finished: true, electrical: acdp::ElectricalChargingDeviceStatus::StateA, mechanical: acdp::MechanicalChargingDeviceStatus::Home }
+    }
+    /// The vehicle's status (`ACDP_SystemStatusReq`, once a second or so from the session setup to the stop): how the charging point is
+    /// (V2G20-4017 to 4019). The vehicle's `EVReadyToCharge` false is answered like any other (4019).
+    fn acdp_system_status(&mut self, _vehicle: &acdp::EvTechnicalStatus) -> AcdpSystemStatus {
+        AcdpSystemStatus::HEALTHY
+    }
+    /// ACDP: an emergency shutdown (the vehicle's CP went from C/D to B, or the charger has one of its own): ramp down the current, open
+    /// the DC contactors and raise the pantograph (NOTE 2, 3 of 8.6.4.5.2.1). The disconnect and the session stop follow on the
+    /// open connection.
+    fn acdp_emergency(&mut self) {}
+}
+
+/// What the ISO 15118-20 machine needs of a charger: every capability it can serve (DC and AC, and the inverted pantograph).
+pub trait Iso20Evse: DcSecc + AcSecc + InvertedPantographSecc {}
+impl<T: DcSecc + AcSecc + InvertedPantographSecc> Iso20Evse for T {}
 
 /// A decoded request of either message set.
 pub enum Request<'a> {

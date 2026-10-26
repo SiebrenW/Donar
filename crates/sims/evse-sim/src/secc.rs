@@ -6,7 +6,7 @@ use std::cell::Cell;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use evse_core::secc::{AcLoopAnswer, Action, MobilityNeeds, Authorize, DcLoopAnswer, Ended, Progress, Request, Secc, Signed};
+use evse_core::secc::{AcLoopAnswer, Action, MobilityNeeds, Authorize, DcLoopAnswer, Ended, Progress, Request, Secc, DcSecc, AcSecc, InvertedPantographSecc, Signed};
 use iso15118_20::ResponseMessage;
 use iso15118_20::ac;
 use iso15118_20::common::{
@@ -507,84 +507,29 @@ impl Secc for SimSecc {
     fn evse_id(&self) -> &str {
         &self.config.evse_id
     }
-
     fn now_micros(&self) -> u64 {
         SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_micros() as u64)
     }
-
     fn new_session_id(&mut self) -> [u8; 8] {
         // V2G20-2547: an id we do not know is a new session, with an id of its own.
         if self.refused_resume { self.config.session_id.map(|b| !b) } else { self.config.session_id }
     }
-
     fn gen_challenge(&mut self) -> [u8; 16] {
         let mut challenge = [0u8; 16];
         openssl::rand::rand_bytes(&mut challenge).expect("random bytes");
         challenge
     }
-
     fn supports_protocol(&self, namespace: &str, major: u32) -> bool {
         !self.config.reject_protocol
             && (namespace == "urn:iso:std:iso:15118:-20:DC" || namespace == "urn:iso:std:iso:15118:-20:AC" || (self.config.acdp.is_some() && namespace == "urn:iso:std:iso:15118:-20:ACDP"))
             && major == 1
     }
-
-    fn acdp_system_status(&mut self, vehicle: &iso15118_20::acdp::EvTechnicalStatus) -> evse_core::secc::AcdpSystemStatus {
-        use iso15118_20::acdp::{IsolationStatus, MechanicalChargingDeviceStatus as M};
-        let now = Instant::now();
-        let mechanical = self.pantograph_mut().map_or(M::Home, |p| p.update(now));
-        let ppd = self.config.acdp.as_ref().and_then(|a| crate::ppd::Ppd::new(a).ok().map(|ppd| ppd.positioning(&a.paired_evid)));
-        let status = evse_core::secc::AcdpSystemStatus {
-            mechanical,
-            // Nothing to monitor while the pantograph is up.
-            isolation: if mechanical == M::EndPosition { IsolationStatus::Safe } else { IsolationStatus::Invalid },
-            ready_to_charge: !self.emergency,
-            emergency_shutdown: self.emergency,
-            in_charge_position: ppd.is_some_and(|p| p.in_charge_position),
-            association: ppd.is_some_and(|p| p.association),
-            ..evse_core::secc::AcdpSystemStatus::HEALTHY
-        };
-        // Once a second would fill the log: a line when something changed.
-        let line = format!("system status: the vehicle says {vehicle:?}; the charging point is {status:?}");
-        if self.last_status_line.as_deref() != Some(line.as_str()) {
-            self.note(line.clone());
-            self.last_status_line = Some(line);
-        }
-        status
-    }
-
-    fn acdp_connect(&mut self, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> evse_core::secc::AcdpConnection {
-        self.pantograph_to(iso15118_20::acdp::MechanicalChargingDeviceStatus::EndPosition, "connect", electrical)
-    }
-
-    fn acdp_emergency(&mut self) {
-        // The power is off at once; the pantograph goes up, and the status says why.
-        self.emergency = true;
-        self.pantograph_to(iso15118_20::acdp::MechanicalChargingDeviceStatus::Home, "emergency", iso15118_20::acdp::ElectricalChargingDeviceStatus::StateB);
-    }
-
-    fn acdp_disconnect(&mut self, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> evse_core::secc::AcdpConnection {
-        self.pantograph_to(iso15118_20::acdp::MechanicalChargingDeviceStatus::Home, "disconnect", electrical)
-    }
-
-    fn acdp_positioning(&mut self, request: evse_core::secc::AcdpPositioningRequest) -> evse_core::secc::AcdpPositioning {
-        let Some(acdp) = &self.config.acdp else { return evse_core::secc::AcdpPositioning::UNGUIDED };
-        let seen = match crate::ppd::Ppd::new(acdp) {
-            Ok(ppd) => ppd.positioning(&acdp.paired_evid),
-            Err(_) => evse_core::secc::AcdpPositioning { association: false, ..evse_core::secc::AcdpPositioning::UNGUIDED },
-        };
-        self.note(format!("positioning: the vehicle says immobilized {}, positioning support {}; the PPD sees {seen:?}", request.immobilized, request.positioning_support));
-        seen
-    }
-
     fn authorization_services(&self) -> &[Authorization] {
         &self.config.offered_authorization
     }
-
     fn energy_services(&self) -> &[Service] {
         &self.services
     }
-
     fn parameter_sets(&self, service_id: u16) -> &[ParameterSet<'_>] {
         match service_id {
             SERVICE_AC | SERVICE_AC_BPT => &self.ac_sets,
@@ -594,15 +539,12 @@ impl Secc for SimSecc {
             _ => &self.dc_sets,
         }
     }
-
     fn service_renegotiation_supported(&self) -> bool {
         self.config.service_renegotiation_supported
     }
-
     fn accept_service_renegotiation(&mut self) -> bool {
         self.config.service_renegotiation_supported && !self.config.refuse_service_renegotiation
     }
-
     fn resume(&mut self, session_id: [u8; 8]) -> Option<SelectedService> {
         if session_id == self.config.session_id && !self.config.forget_paused_sessions {
             // V2G20-2623: a resumed session; authorization carries over. This process serves a new connection,
@@ -616,7 +558,6 @@ impl Secc for SimSecc {
             None
         }
     }
-
     fn authorize(&mut self, request: Authorize<'_, '_>) -> Progress<ResponseCode> {
         self.authorization_reqs_seen += 1;
         let ongoing = self.config.authorization_never_finishes || self.authorization_reqs_seen <= self.config.authorization_ongoing_responses;
@@ -644,7 +585,6 @@ impl Secc for SimSecc {
         }
         Progress::Done(code)
     }
-
     fn service_selected(&mut self, selection: &ServiceSelectionReq<'_>) {
         let SelectedService { service_id, parameter_set_id } = selection.selected_energy_transfer_service;
         self.service = service_id;
@@ -658,7 +598,174 @@ impl Secc for SimSecc {
             self.ac_voltage = f64::from(volts);
         }
     }
+    fn schedule_ready(&mut self, renegotiation: bool) -> Progress<()> {
+        self.schedule_reqs_seen += 1;
+        let _ = renegotiation;
+        if self.schedule_reqs_seen <= self.config.schedule_ongoing_responses {
+            return Progress::Ongoing;
+        }
+        if self.scheduled {
+            self.build_tuples();
+        }
+        Progress::Done(())
+    }
+    fn schedule_requested(&mut self, request: &common::ScheduleExchangeReq<'_>) -> MobilityNeeds {
+        if let common::SeReqControlModeChoice::Dynamic(m) = &request.se_req_control_mode
+            && let (Some(max), Some(min)) = (m.ev_maximum_v2x_energy_request, m.ev_minimum_v2x_energy_request) {
+                self.note(format!("the vehicle prefers to cycle between {} and {} Wh from its present energy", min.to_f64(), max.to_f64()));
+            }
+        if let common::SeReqControlModeChoice::Scheduled(m) = &request.se_req_control_mode
+            && let Some(offer) = &m.ev_energy_offer {
+                let entries = offer.ev_power_schedule.ev_power_schedule_entries.ev_power_schedule_entry;
+                let peak = entries.iter().map(|e| e.power.to_f64()).fold(f64::MIN, f64::max);
+                let seconds: u32 = entries.iter().map(|e| e.duration).sum();
+                self.note(format!("the vehicle offers energy: {} entries, up to {peak} W for {seconds} s, prices in {}", entries.len(), offer.ev_absolute_price_schedule.currency));
+            }
+        if !self.mobility_by_secc {
+            return MobilityNeeds::default();
+        }
+        let c = &self.config;
+        let needs = MobilityNeeds { departure_time: c.mobility_departure_s, minimum_soc: c.mobility_minimum_soc.map(|v| v as i8), target_soc: c.mobility_target_soc.map(|v| v as i8) };
+        if needs != MobilityNeeds::default() {
+            self.note(format!("mobility needs provided by the charger: departure {:?} s, minimum {:?} %, target {:?} %", needs.departure_time, needs.minimum_soc, needs.target_soc));
+        }
+        needs
+    }
+    fn no_power(&self) -> bool {
+        self.config.no_power
+    }
+    fn schedule_tuples(&self) -> &[ScheduleTuple<'_>] {
+        &self.tuples
+    }
+    fn power_delivery(&mut self, request: &PowerDeliveryReq<'_>) -> ResponseCode {
+        if let Some(EvpptControlModeChoice::Scheduled(m)) = request.ev_power_profile.as_ref().map(|p| p.evppt_control_mode) {
+            if self.selected_tuple != m.selected_schedule_tuple_id {
+                self.note(format!("schedule tuple {} selected", m.selected_schedule_tuple_id));
+            }
+            self.selected_tuple = m.selected_schedule_tuple_id;
+        }
+        match request.charge_progress {
+            common::ChargeProgress::Start if self.standby.is_some() => {
+                // V2G20-1386: Start ends the standby period.
+                self.standby = None;
+                ResponseCode::Ok
+            }
+            common::ChargeProgress::Start => {
+                self.schedule_started = Some(Instant::now());
+                self.config.power_delivery_code
+            }
+            common::ChargeProgress::Standby => {
+                // V2G20-1385, V2G20-1387
+                self.pause_answered = true;
+                if self.config.standby_allowed {
+                    self.standby = Some(0);
+                    ResponseCode::Ok
+                } else {
+                    ResponseCode::WarningStandbyNotAllowed
+                }
+            }
+            _ => ResponseCode::Ok,
+        }
+    }
+    fn schedule_renegotiated(&mut self, request: &PowerDeliveryReq<'_>) -> ResponseCode {
+        if let Some(EvpptControlModeChoice::Scheduled(m)) = request.ev_power_profile.as_ref().map(|p| p.evppt_control_mode) {
+            self.selected_tuple = m.selected_schedule_tuple_id;
+        }
+        self.side_renegotiated = true;
+        self.schedule_started = Some(Instant::now());
+        ResponseCode::Ok
+    }
+    fn meter_info(&self, wanted: bool) -> Option<MeterInfo<'_>> {
+        if !(wanted || self.config.meter_info_always || self.receipt_due.get()) {
+            return None;
+        }
+        // V2G20-902: the energy charged during the service session so far.
+        let charged = self.energy_charged_wh as u64;
+        self.last_reading.set(Some(charged));
+        Some(MeterInfo {
+            meter_id: &self.config.meter_id,
+            charged_energy_reading_wh: charged,
+            bpt_discharged_energy_reading_wh: self.bpt.then_some(self.energy_discharged_wh as u64),
+            capacitive_energy_reading_va_rh: None,
+            bpt_inductive_energy_reading_va_rh: None,
+            meter_signature: None,
+            meter_status: None,
+            meter_timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())),
+        })
+    }
+    fn receipt(&self) -> Option<Receipt<'_>> {
+        if !self.receipt_due.get() {
+            return None;
+        }
+        // 0.30 per kWh, in cents (V2G20-1918: at least one cost; V2G20-1919: the MeterInfo goes with it).
+        let kwh = self.energy_charged_wh / 1000.0;
+        let cents = (kwh * 30.0).round().clamp(0.0, f64::from(i16::MAX)) as i16;
+        Some(Receipt {
+            time_anchor: self.now_micros(),
+            energy_costs: Some(DetailedCost { amount: RationalNumber { exponent: -2, value: cents }, cost_per_unit: RationalNumber { exponent: -2, value: 30 } }),
+            occupancy_costs: None,
+            additional_services_costs: None,
+            overstay_costs: None,
+            tax_costs: &[],
+        })
+    }
+    fn confirm_metering(&mut self, request: &MeteringConfirmationReq<'_>, signed: Signed<'_, '_>) -> ResponseCode {
+        self.confirmation_outstanding = false;
+        // V2G20-904: with the contract of the authorization, when the charger has it.
+        let code = match &self.contract {
+            Some(contract) => crate::pnc::verify_metering(contract, signed.header.signature.as_ref(), &request.signed_metering_data, signed.fragment, self.last_reading.get()),
+            None => ResponseCode::Ok,
+        };
+        self.note(format!("metering confirmation: {} (reading {} Wh)", code.xml_name(), request.signed_metering_data.meter_info.charged_energy_reading_wh));
+        code
+    }
+    fn session_ended(&mut self, how: Ended) {
+        if how == Ended::Stopped(ChargingSession::ServiceRenegotiation) {
+            // The connection and the authorization stay; the service flow starts over.
+            (self.cable_reqs_seen, self.precharge_reqs_seen, self.loops_seen) = (0, 0, 0);
+            self.standby = None;
+            self.pause_answered = false;
+            self.pause_asked = None;
+            self.renegotiated = true;
+            self.renegotiation_requested = false;
+        }
+    }
+    fn intercept(&mut self, payload_type: PayloadType, request: &Request<'_>) -> Action {
+        if self.config.silent {
+            return Action::Silent;
+        }
+        if self.config.silent_on_setup && matches!(request, Request::Common(common::Message::SessionSetupReq(_))) {
+            return Action::Silent;
+        }
+        if self.config.side_stream_silent && payload_type == PayloadType::SCHEDULE_RENEGOTIATION {
+            return Action::Silent;
+        }
+        Action::Pass
+    }
+    fn response_code(&mut self, message: ResponseMessage, code: ResponseCode) -> ResponseCode {
+        let c = &self.config;
+        use ResponseMessage as M;
+        // The knobs replace the code of a message that was going fine; a failure of the machine's own stays.
+        let knob = match message {
+            M::SessionSetup if code == ResponseCode::OkNewSessionEstablished => Some(c.setup_code),
+            M::SessionSetup if !is_ok(c.setup_code) => Some(c.setup_code),
+            M::ServiceSelection => Some(c.selection_code),
+            M::DcChargeParameterDiscovery | M::AcChargeParameterDiscovery => Some(c.cpd_code),
+            M::ScheduleExchange => Some(c.schedule_code),
+            M::DcWeldingDetection => Some(c.welding_code),
+            _ => None,
+        };
+        match knob {
+            Some(k) if is_ok(code) => k,
+            _ => code,
+        }
+    }
+    fn note(&mut self, text: core::fmt::Arguments<'_>) {
+        self.log.push(text.to_string());
+    }
+}
 
+impl DcSecc for SimSecc {
     fn dc_charge_parameters(&mut self, bpt: bool, request: &dc::DcChargeParameterDiscoveryReq<'_>) -> Result<dc::DcCpdResEnergyTransferModeChoice, ResponseCode> {
         self.ev_announced = Some(match &request.dc_cpd_req_energy_transfer_mode {
             dc::DcCpdReqEnergyTransferModeChoice::Base(m) => *m,
@@ -702,103 +809,10 @@ impl Secc for SimSecc {
             dc::DcCpdResEnergyTransferModeChoice::Base(base)
         })
     }
-
-    fn ac_charge_parameters(&mut self, bpt: bool, request: &ac::AcChargeParameterDiscoveryReq<'_>) -> Result<ac::AcCpdResEnergyTransferModeChoice, ResponseCode> {
-        self.note_ac_announced(&request.ac_cpd_req_energy_transfer_mode);
-        self.schedule_reqs_seen = 0;
-        let l = self.limits();
-        let (max_1, max_2, max_3) = self.per_line(l.ac_max_charge_power_w);
-        let (min_1, min_2, min_3) = self.per_line(l.ac_min_charge_power_w);
-        let base = ac::AcCpdResEnergyTransferMode {
-            evse_maximum_charge_power: max_1,
-            evse_maximum_charge_power_l2: max_2,
-            evse_maximum_charge_power_l3: max_3,
-            evse_minimum_charge_power: min_1,
-            evse_minimum_charge_power_l2: min_2,
-            evse_minimum_charge_power_l3: min_3,
-            evse_nominal_frequency: RationalNumber::from_f64(f64::from(l.ac_nominal_frequency_hz)),
-            maximum_power_asymmetry: None,
-            evse_power_ramp_limitation: l.power_ramp_limitation_percent_per_min.map(|p| RationalNumber::from_f64(f64::from(p))),
-            evse_present_active_power: None,
-            evse_present_active_power_l2: None,
-            evse_present_active_power_l3: None,
-        };
-        Ok(if bpt {
-            let (dmax_1, dmax_2, dmax_3) = self.per_line(l.ac_max_discharge_power_w);
-            let (dmin_1, dmin_2, dmin_3) = self.per_line(l.ac_min_discharge_power_w);
-            ac::AcCpdResEnergyTransferModeChoice::Bpt(ac::BptAcCpdResEnergyTransferMode {
-                evse_maximum_charge_power: base.evse_maximum_charge_power,
-                evse_maximum_charge_power_l2: base.evse_maximum_charge_power_l2,
-                evse_maximum_charge_power_l3: base.evse_maximum_charge_power_l3,
-                evse_minimum_charge_power: base.evse_minimum_charge_power,
-                evse_minimum_charge_power_l2: base.evse_minimum_charge_power_l2,
-                evse_minimum_charge_power_l3: base.evse_minimum_charge_power_l3,
-                evse_nominal_frequency: base.evse_nominal_frequency,
-                maximum_power_asymmetry: base.maximum_power_asymmetry,
-                evse_power_ramp_limitation: base.evse_power_ramp_limitation,
-                evse_present_active_power: None,
-                evse_present_active_power_l2: None,
-                evse_present_active_power_l3: None,
-                evse_maximum_discharge_power: dmax_1,
-                evse_maximum_discharge_power_l2: dmax_2,
-                evse_maximum_discharge_power_l3: dmax_3,
-                evse_minimum_discharge_power: dmin_1,
-                evse_minimum_discharge_power_l2: dmin_2,
-                evse_minimum_discharge_power_l3: dmin_3,
-            })
-        } else {
-            ac::AcCpdResEnergyTransferModeChoice::Base(base)
-        })
-    }
-
-    fn schedule_ready(&mut self, renegotiation: bool) -> Progress<()> {
-        self.schedule_reqs_seen += 1;
-        let _ = renegotiation;
-        if self.schedule_reqs_seen <= self.config.schedule_ongoing_responses {
-            return Progress::Ongoing;
-        }
-        if self.scheduled {
-            self.build_tuples();
-        }
-        Progress::Done(())
-    }
-
-    fn schedule_requested(&mut self, request: &common::ScheduleExchangeReq<'_>) -> MobilityNeeds {
-        if let common::SeReqControlModeChoice::Dynamic(m) = &request.se_req_control_mode
-            && let (Some(max), Some(min)) = (m.ev_maximum_v2x_energy_request, m.ev_minimum_v2x_energy_request) {
-                self.note(format!("the vehicle prefers to cycle between {} and {} Wh from its present energy", min.to_f64(), max.to_f64()));
-            }
-        if let common::SeReqControlModeChoice::Scheduled(m) = &request.se_req_control_mode
-            && let Some(offer) = &m.ev_energy_offer {
-                let entries = offer.ev_power_schedule.ev_power_schedule_entries.ev_power_schedule_entry;
-                let peak = entries.iter().map(|e| e.power.to_f64()).fold(f64::MIN, f64::max);
-                let seconds: u32 = entries.iter().map(|e| e.duration).sum();
-                self.note(format!("the vehicle offers energy: {} entries, up to {peak} W for {seconds} s, prices in {}", entries.len(), offer.ev_absolute_price_schedule.currency));
-            }
-        if !self.mobility_by_secc {
-            return MobilityNeeds::default();
-        }
-        let c = &self.config;
-        let needs = MobilityNeeds { departure_time: c.mobility_departure_s, minimum_soc: c.mobility_minimum_soc.map(|v| v as i8), target_soc: c.mobility_target_soc.map(|v| v as i8) };
-        if needs != MobilityNeeds::default() {
-            self.note(format!("mobility needs provided by the charger: departure {:?} s, minimum {:?} %, target {:?} %", needs.departure_time, needs.minimum_soc, needs.target_soc));
-        }
-        needs
-    }
-
-    fn no_power(&self) -> bool {
-        self.config.no_power
-    }
-
-    fn schedule_tuples(&self) -> &[ScheduleTuple<'_>] {
-        &self.tuples
-    }
-
     fn cable_check(&mut self) -> Progress<ResponseCode> {
         self.cable_reqs_seen += 1;
         if self.cable_reqs_seen <= self.config.cable_check_ongoing_responses { Progress::Ongoing } else { Progress::Done(self.config.cable_check_code) }
     }
-
     fn pre_charge(&mut self, target: RationalNumber, _vehicle: RationalNumber) -> RationalNumber {
         self.precharge_reqs_seen += 1;
         // Until "settled" the output is 100 V away from the EV's target.
@@ -808,51 +822,9 @@ impl Secc for SimSecc {
             RationalNumber { exponent: target.exponent, value: target.value.saturating_sub(100) }
         }
     }
-
     fn welding_detection(&mut self) -> RationalNumber {
         RationalNumber { exponent: 0, value: self.config.welding_voltage_v }
     }
-
-    fn power_delivery(&mut self, request: &PowerDeliveryReq<'_>) -> ResponseCode {
-        if let Some(EvpptControlModeChoice::Scheduled(m)) = request.ev_power_profile.as_ref().map(|p| p.evppt_control_mode) {
-            if self.selected_tuple != m.selected_schedule_tuple_id {
-                self.note(format!("schedule tuple {} selected", m.selected_schedule_tuple_id));
-            }
-            self.selected_tuple = m.selected_schedule_tuple_id;
-        }
-        match request.charge_progress {
-            common::ChargeProgress::Start if self.standby.is_some() => {
-                // V2G20-1386: Start ends the standby period.
-                self.standby = None;
-                ResponseCode::Ok
-            }
-            common::ChargeProgress::Start => {
-                self.schedule_started = Some(Instant::now());
-                self.config.power_delivery_code
-            }
-            common::ChargeProgress::Standby => {
-                // V2G20-1385, V2G20-1387
-                self.pause_answered = true;
-                if self.config.standby_allowed {
-                    self.standby = Some(0);
-                    ResponseCode::Ok
-                } else {
-                    ResponseCode::WarningStandbyNotAllowed
-                }
-            }
-            _ => ResponseCode::Ok,
-        }
-    }
-
-    fn schedule_renegotiated(&mut self, request: &PowerDeliveryReq<'_>) -> ResponseCode {
-        if let Some(EvpptControlModeChoice::Scheduled(m)) = request.ev_power_profile.as_ref().map(|p| p.evppt_control_mode) {
-            self.selected_tuple = m.selected_schedule_tuple_id;
-        }
-        self.side_renegotiated = true;
-        self.schedule_started = Some(Instant::now());
-        ResponseCode::Ok
-    }
-
     fn dc_loop(&mut self, request: &dc::DcChargeLoopReq<'_>, bpt: bool) -> Option<DcLoopAnswer> {
         self.loops_seen += 1;
         self.note_display(request.display_parameters.as_ref());
@@ -946,7 +918,56 @@ impl Secc for SimSecc {
             status: notification.map(|(evse_notification, notification_max_delay)| EvseStatus { notification_max_delay, evse_notification }),
         })
     }
+}
 
+impl AcSecc for SimSecc {
+    fn ac_charge_parameters(&mut self, bpt: bool, request: &ac::AcChargeParameterDiscoveryReq<'_>) -> Result<ac::AcCpdResEnergyTransferModeChoice, ResponseCode> {
+        self.note_ac_announced(&request.ac_cpd_req_energy_transfer_mode);
+        self.schedule_reqs_seen = 0;
+        let l = self.limits();
+        let (max_1, max_2, max_3) = self.per_line(l.ac_max_charge_power_w);
+        let (min_1, min_2, min_3) = self.per_line(l.ac_min_charge_power_w);
+        let base = ac::AcCpdResEnergyTransferMode {
+            evse_maximum_charge_power: max_1,
+            evse_maximum_charge_power_l2: max_2,
+            evse_maximum_charge_power_l3: max_3,
+            evse_minimum_charge_power: min_1,
+            evse_minimum_charge_power_l2: min_2,
+            evse_minimum_charge_power_l3: min_3,
+            evse_nominal_frequency: RationalNumber::from_f64(f64::from(l.ac_nominal_frequency_hz)),
+            maximum_power_asymmetry: None,
+            evse_power_ramp_limitation: l.power_ramp_limitation_percent_per_min.map(|p| RationalNumber::from_f64(f64::from(p))),
+            evse_present_active_power: None,
+            evse_present_active_power_l2: None,
+            evse_present_active_power_l3: None,
+        };
+        Ok(if bpt {
+            let (dmax_1, dmax_2, dmax_3) = self.per_line(l.ac_max_discharge_power_w);
+            let (dmin_1, dmin_2, dmin_3) = self.per_line(l.ac_min_discharge_power_w);
+            ac::AcCpdResEnergyTransferModeChoice::Bpt(ac::BptAcCpdResEnergyTransferMode {
+                evse_maximum_charge_power: base.evse_maximum_charge_power,
+                evse_maximum_charge_power_l2: base.evse_maximum_charge_power_l2,
+                evse_maximum_charge_power_l3: base.evse_maximum_charge_power_l3,
+                evse_minimum_charge_power: base.evse_minimum_charge_power,
+                evse_minimum_charge_power_l2: base.evse_minimum_charge_power_l2,
+                evse_minimum_charge_power_l3: base.evse_minimum_charge_power_l3,
+                evse_nominal_frequency: base.evse_nominal_frequency,
+                maximum_power_asymmetry: base.maximum_power_asymmetry,
+                evse_power_ramp_limitation: base.evse_power_ramp_limitation,
+                evse_present_active_power: None,
+                evse_present_active_power_l2: None,
+                evse_present_active_power_l3: None,
+                evse_maximum_discharge_power: dmax_1,
+                evse_maximum_discharge_power_l2: dmax_2,
+                evse_maximum_discharge_power_l3: dmax_3,
+                evse_minimum_discharge_power: dmin_1,
+                evse_minimum_discharge_power_l2: dmin_2,
+                evse_minimum_discharge_power_l3: dmin_3,
+            })
+        } else {
+            ac::AcCpdResEnergyTransferModeChoice::Base(base)
+        })
+    }
     /// `AC_ChargeLoopReq`: the target active power per line is what both sides allow, negative when the vehicle
     /// asks to discharge (a negative `EVTargetEnergyRequest`, as in DC).
     fn ac_loop(&mut self, request: &ac::AcChargeLoopReq<'_>, bpt: bool) -> Option<AcLoopAnswer> {
@@ -1109,99 +1130,50 @@ impl Secc for SimSecc {
         };
         Some(AcLoopAnswer { response_code: code, target_frequency: None, control_mode, status })
     }
+}
 
-    fn meter_info(&self, wanted: bool) -> Option<MeterInfo<'_>> {
-        if !(wanted || self.config.meter_info_always || self.receipt_due.get()) {
-            return None;
-        }
-        // V2G20-902: the energy charged during the service session so far.
-        let charged = self.energy_charged_wh as u64;
-        self.last_reading.set(Some(charged));
-        Some(MeterInfo {
-            meter_id: &self.config.meter_id,
-            charged_energy_reading_wh: charged,
-            bpt_discharged_energy_reading_wh: self.bpt.then_some(self.energy_discharged_wh as u64),
-            capacitive_energy_reading_va_rh: None,
-            bpt_inductive_energy_reading_va_rh: None,
-            meter_signature: None,
-            meter_status: None,
-            meter_timestamp: Some(SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())),
-        })
-    }
-
-    fn receipt(&self) -> Option<Receipt<'_>> {
-        if !self.receipt_due.get() {
-            return None;
-        }
-        // 0.30 per kWh, in cents (V2G20-1918: at least one cost; V2G20-1919: the MeterInfo goes with it).
-        let kwh = self.energy_charged_wh / 1000.0;
-        let cents = (kwh * 30.0).round().clamp(0.0, f64::from(i16::MAX)) as i16;
-        Some(Receipt {
-            time_anchor: self.now_micros(),
-            energy_costs: Some(DetailedCost { amount: RationalNumber { exponent: -2, value: cents }, cost_per_unit: RationalNumber { exponent: -2, value: 30 } }),
-            occupancy_costs: None,
-            additional_services_costs: None,
-            overstay_costs: None,
-            tax_costs: &[],
-        })
-    }
-
-    fn confirm_metering(&mut self, request: &MeteringConfirmationReq<'_>, signed: Signed<'_, '_>) -> ResponseCode {
-        self.confirmation_outstanding = false;
-        // V2G20-904: with the contract of the authorization, when the charger has it.
-        let code = match &self.contract {
-            Some(contract) => crate::pnc::verify_metering(contract, signed.header.signature.as_ref(), &request.signed_metering_data, signed.fragment, self.last_reading.get()),
-            None => ResponseCode::Ok,
+impl InvertedPantographSecc for SimSecc {
+    fn acdp_system_status(&mut self, vehicle: &iso15118_20::acdp::EvTechnicalStatus) -> evse_core::secc::AcdpSystemStatus {
+        use iso15118_20::acdp::{IsolationStatus, MechanicalChargingDeviceStatus as M};
+        let now = Instant::now();
+        let mechanical = self.pantograph_mut().map_or(M::Home, |p| p.update(now));
+        let ppd = self.config.acdp.as_ref().and_then(|a| crate::ppd::Ppd::new(a).ok().map(|ppd| ppd.positioning(&a.paired_evid)));
+        let status = evse_core::secc::AcdpSystemStatus {
+            mechanical,
+            // Nothing to monitor while the pantograph is up.
+            isolation: if mechanical == M::EndPosition { IsolationStatus::Safe } else { IsolationStatus::Invalid },
+            ready_to_charge: !self.emergency,
+            emergency_shutdown: self.emergency,
+            in_charge_position: ppd.is_some_and(|p| p.in_charge_position),
+            association: ppd.is_some_and(|p| p.association),
+            ..evse_core::secc::AcdpSystemStatus::HEALTHY
         };
-        self.note(format!("metering confirmation: {} (reading {} Wh)", code.xml_name(), request.signed_metering_data.meter_info.charged_energy_reading_wh));
-        code
+        // Once a second would fill the log: a line when something changed.
+        let line = format!("system status: the vehicle says {vehicle:?}; the charging point is {status:?}");
+        if self.last_status_line.as_deref() != Some(line.as_str()) {
+            self.note(line.clone());
+            self.last_status_line = Some(line);
+        }
+        status
     }
-
-    fn session_ended(&mut self, how: Ended) {
-        if how == Ended::Stopped(ChargingSession::ServiceRenegotiation) {
-            // The connection and the authorization stay; the service flow starts over.
-            (self.cable_reqs_seen, self.precharge_reqs_seen, self.loops_seen) = (0, 0, 0);
-            self.standby = None;
-            self.pause_answered = false;
-            self.pause_asked = None;
-            self.renegotiated = true;
-            self.renegotiation_requested = false;
-        }
+    fn acdp_connect(&mut self, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> evse_core::secc::AcdpConnection {
+        self.pantograph_to(iso15118_20::acdp::MechanicalChargingDeviceStatus::EndPosition, "connect", electrical)
     }
-
-    fn intercept(&mut self, payload_type: PayloadType, request: &Request<'_>) -> Action {
-        if self.config.silent {
-            return Action::Silent;
-        }
-        if self.config.silent_on_setup && matches!(request, Request::Common(common::Message::SessionSetupReq(_))) {
-            return Action::Silent;
-        }
-        if self.config.side_stream_silent && payload_type == PayloadType::SCHEDULE_RENEGOTIATION {
-            return Action::Silent;
-        }
-        Action::Pass
+    fn acdp_emergency(&mut self) {
+        // The power is off at once; the pantograph goes up, and the status says why.
+        self.emergency = true;
+        self.pantograph_to(iso15118_20::acdp::MechanicalChargingDeviceStatus::Home, "emergency", iso15118_20::acdp::ElectricalChargingDeviceStatus::StateB);
     }
-
-    fn response_code(&mut self, message: ResponseMessage, code: ResponseCode) -> ResponseCode {
-        let c = &self.config;
-        use ResponseMessage as M;
-        // The knobs replace the code of a message that was going fine; a failure of the machine's own stays.
-        let knob = match message {
-            M::SessionSetup if code == ResponseCode::OkNewSessionEstablished => Some(c.setup_code),
-            M::SessionSetup if !is_ok(c.setup_code) => Some(c.setup_code),
-            M::ServiceSelection => Some(c.selection_code),
-            M::DcChargeParameterDiscovery | M::AcChargeParameterDiscovery => Some(c.cpd_code),
-            M::ScheduleExchange => Some(c.schedule_code),
-            M::DcWeldingDetection => Some(c.welding_code),
-            _ => None,
+    fn acdp_disconnect(&mut self, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> evse_core::secc::AcdpConnection {
+        self.pantograph_to(iso15118_20::acdp::MechanicalChargingDeviceStatus::Home, "disconnect", electrical)
+    }
+    fn acdp_positioning(&mut self, request: evse_core::secc::AcdpPositioningRequest) -> evse_core::secc::AcdpPositioning {
+        let Some(acdp) = &self.config.acdp else { return evse_core::secc::AcdpPositioning::UNGUIDED };
+        let seen = match crate::ppd::Ppd::new(acdp) {
+            Ok(ppd) => ppd.positioning(&acdp.paired_evid),
+            Err(_) => evse_core::secc::AcdpPositioning { association: false, ..evse_core::secc::AcdpPositioning::UNGUIDED },
         };
-        match knob {
-            Some(k) if is_ok(code) => k,
-            _ => code,
-        }
-    }
-
-    fn note(&mut self, text: core::fmt::Arguments<'_>) {
-        self.log.push(text.to_string());
+        self.note(format!("positioning: the vehicle says immobilized {}, positioning support {}; the PPD sees {seen:?}", request.immobilized, request.positioning_support));
+        seen
     }
 }
