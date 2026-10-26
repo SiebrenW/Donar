@@ -1,5 +1,5 @@
-"""The pictures of the simulation page: a car at a charging post, a bus whose pantograph meets the charger's overhead contacts
-(ACDP and OppCharge share it), made from a small 3D model (faces, a camera, painter's order) and written into
+"""The pictures of the simulation page: a car at a charging post, a bus under the charger's arm (the inverted,
+infrastructure-mounted pantograph of ACDP and OppCharge), made from a small 3D model (faces, a camera, painter's order) and written into
 src/index.html between the scenes:begin and scenes:end markers.
 
     python3 crates/sims/web/art/scenes.py crates/sims/web/src/index.html
@@ -235,7 +235,6 @@ def bus_scene(W=800, H=320):
     S.box(MX-0.2, MX+0.2, ay-0.2, ay+0.1, MZ-0.2, 0.45, "#9aa3ad", T=T)
     S.box(MX-0.3, MX+0.3, ay-0.3, ay+0.2, MZ-0.3, MZ+0.3, "#9aa3ad", T=T)
     shadow(S, T, -5.3, 5.3, -1.2, 1.2, .55)
-    S.box(MX-0.7, MX+0.7, ay-0.44, ay-0.2, -0.4, 0.45, "#6c757f", T=T)
     mx, mz = T(MX, 0, 0)[0], T(MX, 0, 0)[2]
     S.out.append('<g class="veh">')
     BH, HW, L = 3.25, 1.27, 5.1
@@ -291,17 +290,14 @@ def bus_scene(W=800, H=320):
 def gear(S, T, mx, mz, ay):
     BH = 3.25
     X = 0.6
-    # the vehicle's pantograph on the roof rises to the contact rail under the arm
-    top = ay - 0.46
-    base = BH + 0.3
-    S.box(X-0.5, X+0.5, BH+0.18, base, -0.45, 0.45, "#59626c", T=T)
-    S.raw('<g class="raise" style="transform-origin:%.1fpx %.1fpx">' % S.p(T(X, base, 0)))
-    for sg in (1, -1):
-        S.line([T(X-0.4*sg, base, 0.25), T(X+0.3*sg, top-0.05, 0.25)], "#59626c", 4)
-        S.line([T(X-0.4*sg, base, -0.25), T(X+0.3*sg, top-0.05, -0.25)], "#59626c", 4)
-    S.box(X-0.55, X+0.55, top-0.08, top, -0.4, 0.4, "#c9ced4", T=T)
+    # the charger's carriage runs down from the arm onto the rails on the roof
+    for off in (-0.3, 0.3):
+        S.box(X-1.0, X+1.0, BH+0.18, BH+0.26, off-0.06, off+0.06, "#c9ced4", T=T)
+    S.raw('<g class="lower" style="transform-origin:%.1fpx %.1fpx">' % S.p(T(X, ay-0.2, 0)))
+    S.line([T(X, ay-0.2, 0), T(X, BH+0.34, 0)], "#59626c", 5)
+    S.box(X-0.45, X+0.45, BH+0.26, BH+0.36, -0.4, 0.4, "#59626c", T=T)
     S.raw('</g>')
-    a, b = S.p(T(X, top, 0)), S.p(T(X, base, 0))
+    a, b = S.p(T(X, BH+0.36, 0)), S.p(T(X, BH+0.24, 0))
     S.raw('<path class="flow" d="M%.1f,%.1f L%.1f,%.1f"/>' % (*a, *b))
 
 def svg(S, W, H, off):
