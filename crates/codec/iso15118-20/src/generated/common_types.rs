@@ -745,7 +745,7 @@ const L_LIST_OF_ROOT_CERTIFICATE_IDS: ::exi::layout::Layout = ::exi::layout::Lay
 );
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ListOfRootCertificateIds<'a> {
-    pub root_certificate_id: &'a [super::xmldsig::X509IssuerSerial<'a>],
+    pub root_certificate_id: &'a [xmldsig::X509IssuerSerial<'a>],
 }
 impl<'a> ListOfRootCertificateIds<'a> {
     pub fn encode_content<'m>(
@@ -771,14 +771,14 @@ impl<'a> ListOfRootCertificateIds<'a> {
         d: &mut ::exi::codec::Dec<'r, 'a>,
     ) -> Result<Self, ::exi::DecodeError> {
         let mut pos = ::exi::layout::Pos::START;
-        let mut f0: Option<&'a [super::xmldsig::X509IssuerSerial<'a>]> = None;
+        let mut f0: Option<&'a [xmldsig::X509IssuerSerial<'a>]> = None;
         loop {
             match d.event(&L_LIST_OF_ROOT_CERTIFICATE_IDS, pos)? {
                 ::exi::layout::Event::End => break,
                 ::exi::layout::Event::Start { slot, alt, next } => match (slot, alt) {
                     (0, 0) => {
                         let (items, p) = d.list(&L_LIST_OF_ROOT_CERTIFICATE_IDS, 0, next, |d| {
-                            Ok(super::xmldsig::X509IssuerSerial::decode_content(d)?)
+                            Ok(xmldsig::X509IssuerSerial::decode_content(d)?)
                         })?;
                         f0 = Some(items);
                         pos = p;
@@ -805,7 +805,7 @@ const L_MESSAGE_HEADER: ::exi::layout::Layout = ::exi::layout::Layout(
 pub struct MessageHeader<'a> {
     pub session_id: [u8; 8],
     pub time_stamp: u64,
-    pub signature: Option<crate::signature::Signature<'a>>,
+    pub signature: Option<xmldsig::Signature<'a>>,
 }
 impl<'a> MessageHeader<'a> {
     pub fn encode_content<'m>(
@@ -845,7 +845,7 @@ impl<'a> MessageHeader<'a> {
         let mut pos = ::exi::layout::Pos::START;
         let mut f0: Option<[u8; 8]> = None;
         let mut f1: Option<u64> = None;
-        let mut f2: Option<crate::signature::Signature<'a>> = None;
+        let mut f2: Option<xmldsig::Signature<'a>> = None;
         loop {
             match d.event(&L_MESSAGE_HEADER, pos)? {
                 ::exi::layout::Event::End => break,
@@ -876,7 +876,7 @@ impl<'a> MessageHeader<'a> {
                         pos = next;
                     }
                     (2, 0) => {
-                        f2 = Some(crate::signature::Signature::decode_content(d)?);
+                        f2 = Some(xmldsig::Signature::decode_content(d)?);
                         pos = next;
                     }
                     _ => return Err(::exi::DecodeError::Unsupported("unexpected event")),

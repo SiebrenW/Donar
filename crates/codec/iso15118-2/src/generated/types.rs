@@ -2188,7 +2188,7 @@ const L_LIST_OF_ROOT_CERTIFICATE_IDS: ::exi::layout::Layout = ::exi::layout::Lay
 );
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ListOfRootCertificateIds<'a> {
-    pub root_certificate_id: &'a [super::xmldsig::X509IssuerSerial<'a>],
+    pub root_certificate_id: &'a [xmldsig::X509IssuerSerial<'a>],
 }
 impl<'a> ListOfRootCertificateIds<'a> {
     pub fn encode_content<'m>(
@@ -2214,14 +2214,14 @@ impl<'a> ListOfRootCertificateIds<'a> {
         d: &mut ::exi::codec::Dec<'r, 'a>,
     ) -> Result<Self, ::exi::DecodeError> {
         let mut pos = ::exi::layout::Pos::START;
-        let mut f0: Option<&'a [super::xmldsig::X509IssuerSerial<'a>]> = None;
+        let mut f0: Option<&'a [xmldsig::X509IssuerSerial<'a>]> = None;
         loop {
             match d.event(&L_LIST_OF_ROOT_CERTIFICATE_IDS, pos)? {
                 ::exi::layout::Event::End => break,
                 ::exi::layout::Event::Start { slot, alt, next } => match (slot, alt) {
                     (0, 0) => {
                         let (items, p) = d.list(&L_LIST_OF_ROOT_CERTIFICATE_IDS, 0, next, |d| {
-                            Ok(super::xmldsig::X509IssuerSerial::decode_content(d)?)
+                            Ok(xmldsig::X509IssuerSerial::decode_content(d)?)
                         })?;
                         f0 = Some(items);
                         pos = p;

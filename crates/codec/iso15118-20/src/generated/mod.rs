@@ -8,4 +8,3 @@ pub mod common_types;
 pub mod dc;
 pub mod fragment;
 pub mod wpt;
-pub mod xmldsig;

@@ -20,7 +20,7 @@ const L_MESSAGE_HEADER: ::exi::layout::Layout = ::exi::layout::Layout(
 pub struct MessageHeader<'a> {
     pub session_id: &'a [u8],
     pub notification: Option<super::types::Notification<'a>>,
-    pub signature: Option<crate::signature::Signature<'a>>,
+    pub signature: Option<xmldsig::Signature<'a>>,
 }
 impl<'a> MessageHeader<'a> {
     pub fn encode_content<'m>(
@@ -59,7 +59,7 @@ impl<'a> MessageHeader<'a> {
         let mut pos = ::exi::layout::Pos::START;
         let mut f0: Option<&'a [u8]> = None;
         let mut f1: Option<super::types::Notification<'a>> = None;
-        let mut f2: Option<crate::signature::Signature<'a>> = None;
+        let mut f2: Option<xmldsig::Signature<'a>> = None;
         loop {
             match d.event(&L_MESSAGE_HEADER, pos)? {
                 ::exi::layout::Event::End => break,
@@ -78,7 +78,7 @@ impl<'a> MessageHeader<'a> {
                         pos = next;
                     }
                     (2, 0) => {
-                        f2 = Some(crate::signature::Signature::decode_content(d)?);
+                        f2 = Some(xmldsig::Signature::decode_content(d)?);
                         pos = next;
                     }
                     _ => return Err(::exi::DecodeError::Unsupported("unexpected event")),

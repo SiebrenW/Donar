@@ -80,7 +80,7 @@ pub fn verify_contract(policy: &Pnc, challenge: [u8; 16], header: &MessageHeader
 /// The checks of an ISO 15118-20 `MeteringConfirmationReq` (V2G20-904): the signature in the header over the
 /// `SignedMeteringData` with the key of the contract certificate of the authorization, and the reading
 /// being the one the charger sent.
-pub fn verify_metering(contract: &X509, signature: Option<&iso15118_20::signature::Signature<'_>>, data: &iso15118_20::common::SignedMeteringData<'_>, fragment: &[u8], sent_reading: Option<u64>) -> ResponseCode {
+pub fn verify_metering(contract: &X509, signature: Option<&xmldsig::Signature<'_>>, data: &iso15118_20::common::SignedMeteringData<'_>, fragment: &[u8], sent_reading: Option<u64>) -> ResponseCode {
     let (Some(signature), Ok(key)) = (signature, contract.public_key()) else { return ResponseCode::FailedSignatureError };
     let uri = format!("#{}", data.id);
     if xmlsig::verify(&key, signature, &[(uri.as_str(), fragment)]).is_err() {
@@ -94,7 +94,7 @@ pub fn verify_metering(contract: &X509, signature: Option<&iso15118_20::signatur
 
 /// The checks of an ISO 15118-2 `MeteringReceiptReq`: the signature in the header over the element
 /// with the contract key, and the reading being the one the charger sent.
-pub fn verify_iso2_receipt(contract: &X509, signature: Option<&iso15118_2::signature::Signature<'_>>, request: &iso15118_2::body::MeteringReceiptReq<'_>, sent_reading: Option<u64>) -> iso15118_2::types::ResponseCode {
+pub fn verify_iso2_receipt(contract: &X509, signature: Option<&xmldsig::Signature<'_>>, request: &iso15118_2::body::MeteringReceiptReq<'_>, sent_reading: Option<u64>) -> iso15118_2::types::ResponseCode {
     use iso15118_2::types::ResponseCode as C;
     let (Some(signature), Ok(key), Some(id)) = (signature, contract.public_key(), request.id) else { return C::FailedMeteringSignatureNotValid };
     let mut fragment = vec![0u8; 1 << 12];
@@ -115,7 +115,7 @@ pub fn verify_iso2_receipt(contract: &X509, signature: Option<&iso15118_2::signa
 /// The checks of an ISO 15118-2 `AuthorizationReq` for a contract: the challenge of this session
 /// (V2G2-... `FAILED_ChallengeInvalid`) and the signature in the header over the element, made with the
 /// key of the contract certificate seen in `PaymentDetailsReq`.
-pub fn verify_iso2(challenge: [u8; 16], contract: &X509, signature: Option<&iso15118_2::signature::Signature<'_>>, request: &iso15118_2::body::AuthorizationReq<'_>) -> iso15118_2::types::ResponseCode {
+pub fn verify_iso2(challenge: [u8; 16], contract: &X509, signature: Option<&xmldsig::Signature<'_>>, request: &iso15118_2::body::AuthorizationReq<'_>) -> iso15118_2::types::ResponseCode {
     use iso15118_2::types::ResponseCode as C;
     if request.gen_challenge != Some(challenge) {
         return C::FailedChallengeInvalid;

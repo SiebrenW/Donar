@@ -8,5 +8,4 @@ description = "DIN SPEC 70121 message types and their schema-informed EXI codec"
 
 [dependencies]
 exi = { path = "../exi" }
-# The message signature is the same xmldsig element in both standards.
-iso15118-20 = { path = "../iso15118-20" }
+xmldsig = { path = "../xmldsig" }

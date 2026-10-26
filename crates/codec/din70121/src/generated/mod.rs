@@ -3,4 +3,3 @@ pub mod body;
 pub mod def;
 pub mod header;
 pub mod types;
-pub mod xmldsig;

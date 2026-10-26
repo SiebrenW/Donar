@@ -11,6 +11,7 @@ homeplug = { path = "../../codec/homeplug" }
 sha2 = "0.11"
 serde = { version = "1", features = ["derive"] }
 iso15118-20 = { path = "../../codec/iso15118-20" }
+xmldsig = { path = "../../codec/xmldsig" }
 evse-core = { path = "../../evse/core", features = ["acdp"] }
 control-pilot = { path = "../../pilot" }
 din70121 = { path = "../../codec/din70121" }

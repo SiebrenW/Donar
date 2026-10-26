@@ -805,7 +805,7 @@ fn mutated_streams_never_panic() {
 #[test]
 fn root_certificate_ids_with_serial_numbers_of_any_size() {
     use iso15118_20::common_types::ListOfRootCertificateIds;
-    use iso15118_20::xmldsig::X509IssuerSerial;
+    use xmldsig::X509IssuerSerial;
     let max20 = [0xffu8; 20];
     let mut high20 = [0u8; 20];
     high20[0] = 0x80;
@@ -865,18 +865,20 @@ fn bytes(range: std::ops::Range<u8>) -> Vec<u8> {
 /// strings come from the string table the second time, and the optional ids shift the event codes.
 #[test]
 fn header_signatures() {
-    use iso15118_20::signature::{Reference, Signature, SignatureValue, SignedInfo};
+    use xmldsig::{CanonicalizationMethod, DigestMethod, Reference, Signature, SignatureMethod, SignatureValue, SignedInfo, Transform, Transforms};
     let (d1, d2, value) = (bytes(0..64), bytes(64..128), bytes(0..132));
-    let first = Reference { id: None, uri: Some("#id1"), transform_algorithm: Some(CANONICAL), digest_algorithm: SHA512, digest_value: &d1 };
-    let second = Reference { id: Some("r2"), uri: Some("#id2"), transform_algorithm: None, digest_algorithm: SHA512, digest_value: &d2 };
+    let transform = [Transform { algorithm: CANONICAL }];
+    let first = Reference { id: None, uri: Some("#id1"), transforms: Some(Transforms { transform: &transform }), digest_method: DigestMethod { algorithm: SHA512 }, digest_value: &d1 };
+    let second = Reference { id: Some("r2"), uri: Some("#id2"), transforms: None, digest_method: DigestMethod { algorithm: SHA512 }, digest_value: &d2 };
+    let (canonical, ecdsa) = (CanonicalizationMethod { algorithm: CANONICAL }, SignatureMethod { algorithm: ECDSA512 });
     let plain = Signature {
         id: None,
-        signed_info: SignedInfo { id: None, canonicalization_algorithm: CANONICAL, signature_algorithm: ECDSA512, reference: &[first] },
+        signed_info: SignedInfo { id: None, canonicalization_method: canonical, signature_method: ecdsa, reference: &[first] },
         signature_value: SignatureValue { id: None, value: &value },
     };
     let ids = Signature {
         id: Some("sig"),
-        signed_info: SignedInfo { id: Some("si"), canonicalization_algorithm: CANONICAL, signature_algorithm: ECDSA512, reference: &[first, second] },
+        signed_info: SignedInfo { id: Some("si"), canonicalization_method: canonical, signature_method: ecdsa, reference: &[first, second] },
         signature_value: SignatureValue { id: Some("sv"), value: &value },
     };
     for (name, signature) in [("header_signature", plain), ("header_signature_two_references", ids)] {
@@ -926,15 +928,18 @@ fn truncated_and_mutated_signatures_never_panic() {
 /// `SignedInfo`.
 #[test]
 fn signed_fragments() {
-    use iso15118_20::signature::{self, Reference, SignedInfo, encode_fragment};
+    use iso15118_20::signature::{self, encode_fragment};
+    use xmldsig::{CanonicalizationMethod, DigestMethod, Reference, SignatureMethod, SignedInfo, Transform, Transforms};
     let chain = SignedCertificateChain { id: "id1", certificate: &[1, 2, 3, 4, 5], sub_certificates: None };
     let mut out = [0u8; 256];
     let n = encode_fragment(&mut out, signature::fragment::OEM_PROVISIONING_CERTIFICATE_CHAIN, |e| chain.encode_content(e)).unwrap();
     assert_eq!(&out[..n], &vector("fragment_signed_certificate_chain")[..]);
 
     let digest = bytes(0..64);
-    let reference = Reference { id: None, uri: Some("#id1"), transform_algorithm: Some(CANONICAL), digest_algorithm: SHA512, digest_value: &digest };
-    let info = SignedInfo { id: None, canonicalization_algorithm: CANONICAL, signature_algorithm: ECDSA512, reference: &[reference] };
+    let transform = [Transform { algorithm: CANONICAL }];
+    let reference = Reference { id: None, uri: Some("#id1"), transforms: Some(Transforms { transform: &transform }), digest_method: DigestMethod { algorithm: SHA512 }, digest_value: &digest };
+    let (canonical, ecdsa) = (CanonicalizationMethod { algorithm: CANONICAL }, SignatureMethod { algorithm: ECDSA512 });
+    let info = SignedInfo { id: None, canonicalization_method: canonical, signature_method: ecdsa, reference: &[reference] };
     let mut out = [0u8; 512];
     let n = info.encode_fragment(&mut out).unwrap();
     assert_eq!(&out[..n], &vector("fragment_signed_info")[..]);

@@ -16,6 +16,5 @@ mod rational;
 pub mod response_codes;
 pub mod signature;
 
-pub use generated::{ac, ac_der_iec, ac_der_sae, acdp, common, common_types, dc, wpt, xmldsig};
+pub use generated::{ac, ac_der_iec, ac_der_sae, acdp, common, common_types, dc, wpt};
 pub use response_codes::ResponseMessage;
-pub use signature::Signature;

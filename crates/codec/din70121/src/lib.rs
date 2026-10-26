@@ -13,9 +13,4 @@
 mod generated;
 mod physical;
 
-/// The message header's signature is the xmldsig element of ISO 15118-20's codec.
-pub mod signature {
-    pub use iso15118_20::signature::*;
-}
-
-pub use generated::{body, def, header, types, xmldsig};
+pub use generated::{body, def, header, types};

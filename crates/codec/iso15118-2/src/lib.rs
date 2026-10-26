@@ -13,17 +13,17 @@
 mod generated;
 mod physical;
 
-/// The message header's signature: the structure is the xmldsig element of ISO 15118-20's codec
-/// (the profile of V2G2-771 is the same: `SignedInfo` and `SignatureValue`, no `KeyInfo`); what is
-/// signed are fragments of this schema.
+/// What the standard adds to the signature of the header (the `xmldsig` crate's type): the algorithms and the
+/// fragment encoding of the signed parts, which are fragments of this schema.
 pub mod signature {
     use exi::codec::Enc;
     use exi::strings::Table;
     use exi::EncodeError;
 
     pub use crate::generated::fragment;
-    pub use iso15118_20::signature::{CANONICAL_EXI, Reference, Signature, SignatureValue, SignedInfo};
 
+    /// `Algorithm` of the canonicalization method and of the one transform (V2G2-771).
+    pub const CANONICAL_EXI: &str = "http://www.w3.org/TR/canonical-exi/";
     /// `SignatureMethod` with ECDSA over secp256r1 and SHA-256 .
     pub const ECDSA_SHA256: &str = "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256";
     /// `DigestMethod` with SHA-256.
@@ -45,17 +45,6 @@ pub mod signature {
         e.root(fragment::END, fragment::CODE_BITS)?;
         e.finish()
     }
-
-    /// The octets a signature value is computed over: the `SignedInfo` as a fragment of the grammar of
-    /// the xmldsig schema alone (ISO 15118-2 J.2), where the signed elements use that of `V2G_CI_MsgDef`.
-    pub fn signed_info_fragment(info: &SignedInfo<'_>, out: &mut [u8]) -> Result<usize, EncodeError> {
-        let mut table = Table::without_values();
-        let mut e = Enc::new(out, &mut table)?;
-        e.root(fragment::XMLDSIG_SIGNED_INFO, fragment::XMLDSIG_CODE_BITS)?;
-        info.encode_content(&mut e)?;
-        e.root(fragment::XMLDSIG_END, fragment::XMLDSIG_CODE_BITS)?;
-        e.finish()
-    }
 }
 
-pub use generated::{body, def, header, types, xmldsig};
+pub use generated::{body, def, header, types};

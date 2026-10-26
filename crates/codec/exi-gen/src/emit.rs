@@ -409,7 +409,7 @@ impl<'a, 'w> Emitter<'a, 'w> {
             .iter()
             .map(|sl| format!("::exi::layout::Slot::new({}, {}, {})", sl.min, sl.max, sl.alts.len()))
             .collect();
-        let _ = writeln!(s, "const {layout_name}: ::exi::layout::Layout = ::exi::layout::Layout(&::exi::layout::table([{}]), 0);", slots.join(", "));
+        let _ = writeln!(s, "const {layout_name}: ::exi::layout::Layout = ::exi::layout::Layout(&::exi::layout::table([{}]), {});", slots.join(", "), u32::from(c.mixed));
 
         // struct
         let _ = writeln!(s, "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct {name}{ltp} {{");
@@ -515,7 +515,7 @@ impl<'a, 'w> Emitter<'a, 'w> {
             for (ai, a) in slot.alts.iter().enumerate() {
                 let usable = self.model.alt_is_usable(a);
                 if !usable || matches!(sh, Shape::Omitted) {
-                    let why = if a.is_abstract { "abstract element" } else { "unsupported element (message signature)" };
+                    let why = if a.is_abstract { "abstract element" } else { "element outside the supported profile" };
                     let _ = writeln!(s, "                ({si}, {ai}) => return Err(::exi::DecodeError::Unsupported(\"{why}\")),");
                     continue;
                 }
