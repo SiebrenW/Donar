@@ -106,7 +106,7 @@ impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
         if kind == StopKind::Pause {
             // V2G20-1540: the session stays resumable; the host closes the connection
             // (V2G20-2071) and may come back with `Config::resume`.
-            let resume = Resume { session_id: self.session_id, selected: self.selected, renegotiation_supported: self.renegotiation_supported };
+            let resume = Resume { session_id: self.session_id, service_id: self.selected.service_id, parameter_set_id: self.selected.parameter_set_id, renegotiation_supported: self.renegotiation_supported };
             return self.end(EndReason::Paused(resume));
         }
         if kind == StopKind::ServiceRenegotiation {

@@ -268,7 +268,7 @@ impl EvLive {
     pub fn ac_charge_loop(&self, status: &AcChargeLoopStatus) -> bool {
         let mut g = self.inner.lock().unwrap();
         let p = status.target_active_power;
-        let target = [Some(p.l1), p.l2, p.l3].map(|v| v.map_or(0.0, iso15118_20::common_types::RationalNumber::to_f64));
+        let target = [Some(p.l1), p.l2, p.l3].map(|v| v.map_or(0.0, evcc_core::Rational::to_f64));
         let now = Instant::now();
         let elapsed = g.ac_power_at.replace(now).map_or(0.0, |t| now.duration_since(t).as_secs_f64());
         // V2G20-1831: changes of a power that comes from the vehicle's own schedule are held to the ramp limit;
@@ -437,10 +437,10 @@ impl Endpoint for EvLive {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iso15118_20::common_types::RationalNumber;
+    use evcc_core::Rational;
 
     fn status(volts: f64, amps: f64) -> ChargeLoopStatus {
-        let rn = RationalNumber::from_f64;
+        let rn = Rational::from_f64;
         ChargeLoopStatus {
             present_current: rn(amps),
             present_voltage: rn(volts),
@@ -499,7 +499,7 @@ mod tests {
         let live = EvLive::new(Limits::default(), 20, 1, false);
         // 10 % of 3680 W per line per minute: about 6 W in a hundredth of a second is nothing.
         live.set_ramp_limit(10.0);
-        let rn = RationalNumber::from_f64;
+        let rn = Rational::from_f64;
         let status = |from_schedule| AcChargeLoopStatus {
             target_active_power: Phases::three(rn(3680.0)),
             target_reactive_power: [None; 3],

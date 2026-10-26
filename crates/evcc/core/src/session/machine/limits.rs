@@ -4,7 +4,7 @@
 //! are at most the ones sent in the charge parameter discovery, the minimums at least
 //! (V2G20-2198, 2199 for the vehicle, 2654, 2655 for the charger).
 
-use iso15118_20::common_types::RationalNumber;
+use crate::rational::Rational;
 use iso15118_20::ac;
 use iso15118_20::dc;
 
@@ -13,24 +13,24 @@ use super::config::rational_to_volts;
 use crate::ev::{AcDischargePowerLimits, AcPowerLimits, DcLimits, Iso20Vehicle, Phases};
 use crate::log::{LogSink, Record};
 
-fn value(r: RationalNumber) -> f32 {
+fn value(r: impl Into<Rational>) -> f32 {
     rational_to_volts(r)
 }
 
 /// The smaller of two quantities.
-pub(super) fn smaller(a: RationalNumber, b: RationalNumber) -> RationalNumber {
+pub(super) fn smaller(a: Rational, b: Rational) -> Rational {
     if value(a) <= value(b) { a } else { b }
 }
 
 /// The larger of two quantities.
-pub(super) fn larger(a: RationalNumber, b: RationalNumber) -> RationalNumber {
+pub(super) fn larger(a: Rational, b: Rational) -> Rational {
     if value(a) >= value(b) { a } else { b }
 }
 
 /// Combines two per-phase quantities phase by phase with `pick`; a phase only one of them has is
 /// left out (the request may not go beyond what was announced).
-pub(super) fn phases_with(a: Phases, b: Phases, pick: fn(RationalNumber, RationalNumber) -> RationalNumber) -> Phases {
-    let both = |x: Option<RationalNumber>, y: Option<RationalNumber>| match (x, y) {
+pub(super) fn phases_with(a: Phases, b: Phases, pick: fn(Rational, Rational) -> Rational) -> Phases {
+    let both = |x: Option<Rational>, y: Option<Rational>| match (x, y) {
         (Some(x), Some(y)) => Some(pick(x, y)),
         _ => None,
     };

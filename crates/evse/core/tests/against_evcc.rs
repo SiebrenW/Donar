@@ -11,6 +11,10 @@ use iso15118_20::common::{Authorization, Parameter, ParameterChoice, ParameterSe
 use iso15118_20::common_types::{EvseNotification, EvseStatus, MeterInfo, RationalNumber, ResponseCode};
 use iso15118_20::dc;
 
+fn rat(exponent: i8, value: i16) -> evcc_core::Rational {
+    evcc_core::Rational { exponent, value }
+}
+
 fn rn(exponent: i8, value: i16) -> RationalNumber {
     RationalNumber { exponent, value }
 }
@@ -33,33 +37,33 @@ impl Ev for TestEv {
         self.clock.get()
     }
     fn schedule_request(&self) -> ScheduleRequest {
-        ScheduleRequest { departure_time: 3600, minimum_soc: None, target_soc: Some(80), target_energy: rn(3, 40), maximum_energy: rn(3, 60), minimum_energy: rn(0, 0) }
+        ScheduleRequest { departure_time: 3600, minimum_soc: None, target_soc: Some(80), target_energy: rat(3, 40), maximum_energy: rat(3, 60), minimum_energy: rat(0, 0) }
     }
     fn v2x_energy_range(&self) -> Option<evcc_core::ev::V2xEnergyRange> {
-        self.v2x.then(|| evcc_core::ev::V2xEnergyRange { maximum: rn(3, 5), minimum: rn(3, -3) })
+        self.v2x.then(|| evcc_core::ev::V2xEnergyRange { maximum: rat(3, 5), minimum: rat(3, -3) })
     }
     fn energy_offer(&self) -> Option<evcc_core::ev::EnergyOffer> {
-        self.offer.then(|| evcc_core::ev::EnergyOffer::new("EUR").power(1800, rn(3, 3)).power(1800, rn(3, 1)).price(3600, rn(-2, 30)))
+        self.offer.then(|| evcc_core::ev::EnergyOffer::new("EUR").power(1800, rat(3, 3)).power(1800, rat(3, 1)).price(3600, rat(-2, 30)))
     }
 }
 
 impl DcEv for TestEv {
     fn dc_limits(&self) -> DcLimits {
         DcLimits {
-            maximum_charge_power: rn(3, 100),
-            minimum_charge_power: rn(0, 100),
-            maximum_charge_current: rn(0, 200),
-            minimum_charge_current: rn(0, 1),
-            maximum_voltage: rn(0, 450),
-            minimum_voltage: rn(0, 200),
+            maximum_charge_power: rat(3, 100),
+            minimum_charge_power: rat(0, 100),
+            maximum_charge_current: rat(0, 200),
+            minimum_charge_current: rat(0, 1),
+            maximum_voltage: rat(0, 450),
+            minimum_voltage: rat(0, 200),
             target_soc: Some(80),
         }
     }
-    fn battery_voltage(&self) -> RationalNumber {
-        rn(0, 400)
+    fn battery_voltage(&self) -> evcc_core::Rational {
+        rat(0, 400)
     }
-    fn inlet_voltage(&self) -> RationalNumber {
-        rn(0, 400)
+    fn inlet_voltage(&self) -> evcc_core::Rational {
+        rat(0, 400)
     }
 }
 
@@ -537,10 +541,10 @@ impl DcEv for PnCEv {
     fn dc_limits(&self) -> DcLimits {
         self.0.dc_limits()
     }
-    fn battery_voltage(&self) -> RationalNumber {
+    fn battery_voltage(&self) -> evcc_core::Rational {
         self.0.battery_voltage()
     }
-    fn inlet_voltage(&self) -> RationalNumber {
+    fn inlet_voltage(&self) -> evcc_core::Rational {
         self.0.inlet_voltage()
     }
 }

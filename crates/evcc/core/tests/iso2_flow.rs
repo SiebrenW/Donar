@@ -10,10 +10,10 @@ use evcc_core::log::{LogSink, NoLog, Record};
 use evcc_core::session::{Buffers, ControlPilot, EndReason, Event, Notice, State};
 use evcc_core::{Timer, TimerCmd};
 use evse_sim::{Config as EvseConfig, Evse};
-use iso15118_20::common_types::RationalNumber;
+use evcc_core::Rational;
 
-fn rn(exponent: i8, value: i16) -> RationalNumber {
-    RationalNumber { exponent, value }
+fn rn(exponent: i8, value: i16) -> Rational {
+    Rational { exponent, value }
 }
 
 struct TestEv {
@@ -57,11 +57,11 @@ impl DcEv for TestEv {
             target_soc: Some(80),
         }
     }
-    fn battery_voltage(&self) -> RationalNumber {
+    fn battery_voltage(&self) -> Rational {
         rn(0, 400)
     }
     /// The first reading is below the battery voltage, the later ones match it.
-    fn inlet_voltage(&self) -> RationalNumber {
+    fn inlet_voltage(&self) -> Rational {
         let n = self.reads.get();
         self.reads.set(n + 1);
         rn(0, if n == 0 { 300 } else { 400 })

@@ -19,7 +19,7 @@ use iso15118_2::def::V2gMessage;
 use iso15118_2::header::MessageHeader;
 use iso15118_2::types::*;
 use exi::{Arena, DecodeError};
-use iso15118_20::common_types::RationalNumber;
+use crate::rational::Rational;
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
 use crate::ev::{Caps, DcLimits, Iso2Vehicle};
@@ -41,9 +41,9 @@ const MAX_ENTRIES: usize = 24;
 /// What the charger announced in its charge parameter discovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EvseLimits {
-    pub(crate) max_current: RationalNumber,
-    pub(crate) max_power: Option<RationalNumber>,
-    pub(crate) max_voltage: RationalNumber,
+    pub(crate) max_current: Rational,
+    pub(crate) max_power: Option<Rational>,
+    pub(crate) max_voltage: Rational,
 }
 
 /// The default schedule (V2G-DC-319) the charger offered, for the charging profile.
@@ -103,7 +103,7 @@ struct Machine<E, L> {
     evse: Option<EvseLimits>,
     schedule: Option<Schedule>,
     /// The voltage the vehicle measured at its inlet in the last pre-charge exchange.
-    last_inlet: RationalNumber,
+    last_inlet: Rational,
     /// A renegotiation of the schedule is under way: stop, `PowerDeliveryReq(Renegotiate)`, the
     /// charge parameter discovery again, then `PowerDeliveryReq(Start)`.
     renegotiating: bool,
@@ -151,7 +151,7 @@ impl<'a, E: Iso2Vehicle, L: LogSink> Session<'a, E, L> {
                 ev_announced: None,
                 evse: None,
                 schedule: None,
-                last_inlet: RationalNumber { exponent: 0, value: 0 },
+                last_inlet: Rational { exponent: 0, value: 0 },
                 renegotiating: false,
                 renegotiate_requested: false,
                 pausing: false,

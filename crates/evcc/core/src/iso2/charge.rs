@@ -3,7 +3,7 @@
 
 use iso15118_2::body::*;
 use iso15118_2::types::*;
-use iso15118_20::common_types::RationalNumber;
+use crate::rational::Rational;
 
 use super::convert::{number, physical, rational};
 use super::Machine;
@@ -21,11 +21,11 @@ pub(super) fn merge(a: Timers, b: Timers) -> Timers {
     out
 }
 
-fn n(r: RationalNumber) -> f64 {
+fn n(r: Rational) -> f64 {
     r.to_f64()
 }
 
-fn lower(a: RationalNumber, b: RationalNumber) -> RationalNumber {
+fn lower(a: Rational, b: Rational) -> Rational {
     if n(b) < n(a) { b } else { a }
 }
 
@@ -76,7 +76,7 @@ impl<E: Iso2Vehicle, L: LogSink> Machine<E, L> {
 
     pub(super) fn send_precharge_req(&mut self, tx: &mut [u8]) -> Step {
         let minimum = self.ev.dc_limits().minimum_charge_current;
-        let current = if n(minimum) > 0.0 { minimum } else { RationalNumber { exponent: 0, value: 1 } };
+        let current = if n(minimum) > 0.0 { minimum } else { Rational { exponent: 0, value: 1 } };
         let body = BodyElementChoice::PreChargeReq(PreChargeReq {
             dc_ev_status: self.status(),
             ev_target_voltage: physical(self.ev.battery_voltage(), UnitSymbol::V),
@@ -118,7 +118,7 @@ impl<E: Iso2Vehicle, L: LogSink> Machine<E, L> {
     /// vehicle wants new charge parameters and a new schedule).
     pub(super) fn send_power_delivery_as(&mut self, progress: ChargeProgress, tx: &mut [u8]) -> Step {
         let start = progress == ChargeProgress::Start;
-        let mut entries = [ProfileEntry { charging_profile_entry_start: 0, charging_profile_entry_max_power: physical(RationalNumber { exponent: 0, value: 0 }, UnitSymbol::W), charging_profile_entry_max_number_of_phases_in_use: None }; super::MAX_ENTRIES];
+        let mut entries = [ProfileEntry { charging_profile_entry_start: 0, charging_profile_entry_max_power: physical(Rational { exponent: 0, value: 0 }, UnitSymbol::W), charging_profile_entry_max_number_of_phases_in_use: None }; super::MAX_ENTRIES];
         let mut profile_len = None;
         let mut tuple = 1;
         if let Some(schedule) = self.schedule {
@@ -133,7 +133,7 @@ impl<E: Iso2Vehicle, L: LogSink> Machine<E, L> {
                     };
                     entries[i] = ProfileEntry {
                         charging_profile_entry_start: *at,
-                        charging_profile_entry_max_power: physical(RationalNumber::from_f64(watts.min(ev_power)), UnitSymbol::W),
+                        charging_profile_entry_max_power: physical(Rational::from_f64(watts.min(ev_power)), UnitSymbol::W),
                         charging_profile_entry_max_number_of_phases_in_use: phases,
                     };
                 }
@@ -213,7 +213,7 @@ impl<E: Iso2Vehicle, L: LogSink> Machine<E, L> {
         }
         let body = BodyElementChoice::CurrentDemandReq(CurrentDemandReq {
             dc_ev_status: self.status(),
-            ev_target_current: physical(RationalNumber::from_f64(current.max(0.0)), UnitSymbol::A),
+            ev_target_current: physical(Rational::from_f64(current.max(0.0)), UnitSymbol::A),
             ev_maximum_voltage_limit: Some(physical(limits.maximum_voltage, UnitSymbol::V)),
             ev_maximum_current_limit: Some(physical(limits.maximum_charge_current, UnitSymbol::A)),
             ev_maximum_power_limit: Some(physical(limits.maximum_charge_power, UnitSymbol::W)),
@@ -221,7 +221,7 @@ impl<E: Iso2Vehicle, L: LogSink> Machine<E, L> {
             charging_complete: false,
             remaining_time_to_full_so_c: None,
             remaining_time_to_bulk_so_c: None,
-            ev_target_voltage: physical(RationalNumber::from_f64(voltage.max(0.0)), UnitSymbol::V),
+            ev_target_voltage: physical(Rational::from_f64(voltage.max(0.0)), UnitSymbol::V),
         });
         self.send(body, MsgKind::CurrentDemandReq, State::AwaitCurrentDemandRes, tx)
     }
@@ -232,7 +232,7 @@ impl<E: Iso2Vehicle, L: LogSink> Machine<E, L> {
         }
         self.note_status(&EvseStatusChoice::Dc(res.dc_evse_status));
         let announced = self.evse;
-        let zero = RationalNumber { exponent: 0, value: 0 };
+        let zero = Rational { exponent: 0, value: 0 };
         let status = ChargeLoopStatus {
             present_current: rational(res.evse_present_current),
             present_voltage: rational(res.evse_present_voltage),
@@ -262,13 +262,13 @@ impl<E: Iso2Vehicle, L: LogSink> Machine<E, L> {
             return end;
         }
         self.note_status(&EvseStatusChoice::Ac(res.ac_evse_status));
-        let zero = RationalNumber { exponent: 0, value: 0 };
+        let zero = Rational { exponent: 0, value: 0 };
         let max_current = res.evse_max_current.map(rational).or(self.evse.map(|e| e.max_current)).unwrap_or(zero);
         // The status carries no measurements: the vehicle assumes it gets the lower of the
         // charger's and its own maximum current on every phase, at the nominal voltage (so
         // that the current is the sum over the phases, and voltage times current the power).
         let phases = if self.config.mode == crate::iso2::Mode::AcThreePhase { 3.0 } else { 1.0 };
-        let current = RationalNumber::from_f64(max_current.to_f64().min(self.ev.ac_loop_limits().maximum_current.to_f64()) * phases);
+        let current = Rational::from_f64(max_current.to_f64().min(self.ev.ac_loop_limits().maximum_current.to_f64()) * phases);
         let status = ChargeLoopStatus {
             present_current: current,
             present_voltage: self.evse.map_or(zero, |e| e.max_voltage),
@@ -434,7 +434,8 @@ impl<E: Iso2Vehicle, L: LogSink> Machine<E, L> {
             // The id and the service of the session are what resuming it needs.
             let resume = crate::session::Resume {
                 session_id: self.session_id,
-                selected: iso15118_20::common::SelectedService { service_id: self.service_id, parameter_set_id: 0 },
+                service_id: self.service_id,
+                parameter_set_id: 0,
                 renegotiation_supported: None,
             };
             return self.end(EndReason::Paused(resume));
