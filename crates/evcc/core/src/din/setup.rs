@@ -7,13 +7,13 @@ use din70121::types::*;
 
 use super::convert::{physical, rational};
 use super::{EvseLimits, Machine, MAX_ENTRIES, Schedule, frame};
-use crate::ev::{DcConnector, Ev};
+use crate::ev::{DcConnector, DinVehicle};
 use crate::log::{LogSink, MsgKind, Record};
 use crate::session::{EndReason, Notice, State, Step};
 use crate::{Timer, TimerCmd};
 use v2gtp::PayloadType;
 
-impl<E: Ev, L: LogSink> Machine<E, L> {
+impl<E: DinVehicle, L: LogSink> Machine<E, L> {
     pub(super) fn send_supported_app_protocol_req(&mut self, tx: &mut [u8]) -> Step {
         let offer = [self.config.offer];
         let msg = SupportedAppProtocolReq { app_protocol: &offer };

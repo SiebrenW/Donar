@@ -16,7 +16,7 @@ use v2gtp::PayloadType;
 
 use super::types::*;
 use super::Machine;
-use crate::ev::Ev;
+use crate::ev::Iso20Vehicle;
 use crate::log::{LogSink, MsgKind, Record};
 use crate::{Timer, TimerCmd, Timers};
 use exi::Arena;
@@ -39,7 +39,7 @@ pub enum Side {
 /// poll interval is zero.
 const MIN_REPEAT_PAUSE_MS: u32 = 50;
 
-impl<E: Ev, L: LogSink> Machine<E, L> {
+impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
     /// Starts a renegotiation: the first request goes out in `step` (after a frame the step
     /// already holds). Not while one is running, outside the charge loop or before the first
     /// `ChargeLoopReq` (V2G20-1846).

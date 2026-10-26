@@ -20,7 +20,7 @@ use exi::{Arena, DecodeError};
 use iso15118_20::common_types::RationalNumber;
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
-use crate::ev::{DcLimits, Ev};
+use crate::ev::{DcLimits, DinVehicle};
 use crate::log::{LogSink, MsgKind, Record};
 use crate::session::{Buffers, EndReason, Event, State, Step};
 use crate::{Timer, TimerCmd, Timers};
@@ -52,7 +52,7 @@ pub(crate) struct Schedule {
     pub(crate) len: usize,
 }
 
-pub struct Session<'a, E: Ev, L: LogSink> {
+pub struct Session<'a, E: DinVehicle, L: LogSink> {
     rx: &'a mut [u8],
     rx_len: usize,
     tx: &'a mut [u8],
@@ -97,7 +97,7 @@ struct Machine<E, L> {
     last_inlet: RationalNumber,
 }
 
-impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
+impl<'a, E: DinVehicle, L: LogSink> Session<'a, E, L> {
     pub fn new(config: Config, ev: E, log: L, buffers: Buffers<'a>) -> Self {
         Self {
             rx: buffers.rx,
@@ -236,7 +236,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
     }
 }
 
-impl<E: Ev, L: LogSink> crate::machine::Machine for Session<'_, E, L> {
+impl<E: DinVehicle, L: LogSink> crate::machine::Machine for Session<'_, E, L> {
     fn handle(&mut self, event: Event) -> Step {
         Session::handle(self, event)
     }
@@ -268,7 +268,7 @@ pub fn is_ok(code: ResponseCode) -> bool {
     )
 }
 
-impl<E: Ev, L: LogSink> Machine<E, L> {
+impl<E: DinVehicle, L: LogSink> Machine<E, L> {
     fn is_awaiting(&self, state: State) -> bool {
         matches!(
             state,

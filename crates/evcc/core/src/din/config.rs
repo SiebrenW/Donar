@@ -48,7 +48,7 @@ pub struct Config {
     pub service_category: bool,
     /// Keep the limits of the charge loop within those of the charge parameter discovery
     /// (V2G-DC-641): maximums no higher. Off, the vehicle sends whatever
-    /// [`crate::ev::Ev::dc_limits`] says, for tests of a charger.
+    /// [`crate::ev::DcEv::dc_limits`] says, for tests of a charger.
     pub enforce_cpd_limits: bool,
 }
 

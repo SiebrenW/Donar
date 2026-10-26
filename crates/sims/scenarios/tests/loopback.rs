@@ -549,9 +549,12 @@ fn a_vehicle_that_raises_its_limits_in_the_charge_loop_is_noted_and_may_be_faile
         fn now_micros(&self) -> u64 {
             self.0.now_micros()
         }
-        fn dc_connector(&self) -> evcc_core::ev::DcConnector {
-            self.0.dc_connector()
+        fn schedule_request(&self) -> evcc_core::ev::ScheduleRequest {
+            self.0.schedule_request()
         }
+    }
+
+    impl evcc_core::ev::DcEv for Greedy {
         fn dc_limits(&self) -> evcc_core::ev::DcLimits {
             // The first call is the discovery; later ones ask for more.
             let calls = self.1.get();
@@ -568,10 +571,19 @@ fn a_vehicle_that_raises_its_limits_in_the_charge_loop_is_noted_and_may_be_faile
         fn inlet_voltage(&self) -> iso15118_20::common_types::RationalNumber {
             self.0.inlet_voltage()
         }
-        fn schedule_request(&self) -> evcc_core::ev::ScheduleRequest {
-            self.0.schedule_request()
+    }
+
+    impl evcc_core::ev::DcPlugEv for Greedy {
+        fn dc_connector(&self) -> evcc_core::ev::DcConnector {
+            self.0.dc_connector()
         }
     }
+
+    impl evcc_core::ev::AcEv for Greedy {}
+
+    impl evcc_core::ev::AcPlugEv for Greedy {}
+
+    impl evcc_core::ev::InvertedPantographEv for Greedy {}
     for (fail, expect_ended) in [(false, EndReason::Completed), (true, EndReason::Rejected(ResponseCode::Failed))] {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();

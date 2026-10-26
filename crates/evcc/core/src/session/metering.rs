@@ -12,7 +12,7 @@ use v2gtp::PayloadType;
 use super::renegotiation::Side;
 use super::types::*;
 use super::{Machine, frame};
-use crate::ev::Ev;
+use crate::ev::Iso20Vehicle;
 use crate::log::{LogSink, MsgKind, Record};
 use crate::{Timer, TimerCmd};
 use exi::Arena;
@@ -21,7 +21,7 @@ use exi::Arena;
 const METER_ID: &str = "meter1";
 const METER_URI: &str = "#meter1";
 
-impl<E: Ev, L: LogSink> Machine<E, L> {
+impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
     /// Appends the `MeteringConfirmationReq` for `meter` and `receipt` to `step` (which may already hold
     /// a main stream frame in the buffer) and starts waiting for the answer. Not while another side
     /// stream is running (the charger does not repeat the notification until its delay is over): then

@@ -27,7 +27,7 @@ use iso15118_20::acdp;
 use iso15118_20::dc;
 use v2gtp::{FrameError, HEADER_LEN, Parse, PayloadType, parse, write_header};
 
-use crate::ev::Ev;
+use crate::ev::Iso20Vehicle;
 use crate::log::{LogSink, MsgKind, Record};
 use crate::{Timer, TimerCmd, Timers};
 
@@ -49,7 +49,7 @@ mod types;
 pub use config::{Config, SERVICE_ID_AC, SERVICE_ID_AC_BPT, SERVICE_ID_DC, SERVICE_ID_DC_ACDP, SERVICE_ID_DC_ACDP_BPT, SERVICE_ID_DC_BPT};
 pub use types::{AcChargeLoopStatus, AcdpConnection, AcdpPosition, AcdpSystemStatus, Buffers, ChargeLoopStatus, MeterReading, ControlPilot, EndReason, Event, Notice, Resume, State, Step};
 
-pub struct Session<'a, E: Ev, L: LogSink> {
+pub struct Session<'a, E: Iso20Vehicle, L: LogSink> {
     rx: &'a mut [u8],
     rx_len: usize,
     tx: &'a mut [u8],
@@ -150,7 +150,7 @@ fn duty_cycle_for_hlc(pwm: control_pilot::Pwm) -> bool {
     pwm.is_five_percent() || pwm == control_pilot::Pwm::Off
 }
 
-impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
+impl<'a, E: Iso20Vehicle, L: LogSink> Session<'a, E, L> {
     pub fn new(config: Config, ev: E, log: L, buffers: Buffers<'a>) -> Self {
         let ac = config.ac();
         Self {
@@ -408,7 +408,7 @@ impl<'a, E: Ev, L: LogSink> Session<'a, E, L> {
     }
 }
 
-impl<E: Ev, L: LogSink> crate::machine::Machine for Session<'_, E, L> {
+impl<E: Iso20Vehicle, L: LogSink> crate::machine::Machine for Session<'_, E, L> {
     fn handle(&mut self, event: Event) -> Step {
         Session::handle(self, event)
     }
@@ -442,7 +442,7 @@ pub(crate) fn is_ok(code: ResponseCode) -> bool {
     )
 }
 
-impl<E: Ev, L: LogSink> Machine<E, L> {
+impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
     fn is_awaiting(&self, state: State) -> bool {
         matches!(
             state,

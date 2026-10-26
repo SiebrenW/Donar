@@ -10,12 +10,12 @@ use v2gtp::PayloadType;
 
 use super::convert::{physical, rational};
 use super::{Machine, MAX_ENTRIES, Mode, Schedule, EvseLimits, frame};
-use crate::ev::{DcConnector, Ev, MAX_DIGEST_LEN, MAX_SIGNATURE_LEN, MAX_SUB_CERTIFICATES};
+use crate::ev::{DcConnector, Iso2Vehicle, MAX_DIGEST_LEN, MAX_SIGNATURE_LEN, MAX_SUB_CERTIFICATES};
 use crate::log::{LogSink, MsgKind, Record};
 use crate::session::{EndReason, Notice, State, Step};
 use crate::{Timer, TimerCmd, Timers};
 
-impl<E: Ev, L: LogSink> Machine<E, L> {
+impl<E: Iso2Vehicle, L: LogSink> Machine<E, L> {
     pub(super) fn send_supported_app_protocol_req(&mut self, tx: &mut [u8]) -> Step {
         let offer = [self.config.offer];
         let msg = SupportedAppProtocolReq { app_protocol: &offer };

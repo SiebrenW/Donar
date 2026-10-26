@@ -9,11 +9,11 @@ use v2gtp::PayloadType;
 
 use super::{Machine, frame, is_ok};
 use super::types::*;
-use crate::ev::{AcDischargePowerLimits, AcPowerLimits, Ev};
+use crate::ev::{AcDischargePowerLimits, AcPowerLimits, Iso20Vehicle};
 use crate::log::{LogSink, MsgKind, Record};
 use crate::{Timer, TimerCmd, Timers};
 
-impl<E: Ev, L: LogSink> Machine<E, L> {
+impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
     pub(super) fn on_session_setup_res(&mut self, res: SessionSetupRes<'_>, tx: &mut [u8]) -> Step {
         self.log.record(&Record::MsgRx { msg: MsgKind::SessionSetupRes });
         self.log.record(&Record::Response { msg: MsgKind::SessionSetupRes, code: res.response_code });

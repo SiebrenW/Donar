@@ -73,7 +73,7 @@ pub struct Config {
     pub pnc_fallback_to_eim: bool,
     /// Keep the limits of the charge loop within those of the charge parameter discovery
     /// (V2G20-2198, 2199): maximums no higher, minimums no lower. Off, the vehicle sends whatever
-    /// [`crate::ev::Ev::dc_limits`] says, for tests of a charger.
+    /// [`crate::ev::DcEv::dc_limits`] says, for tests of a charger.
     pub enforce_cpd_limits: bool,
     /// Scheduled control mode (ControlMode 1): the charger offers schedules, the vehicle selects one
     /// (the first) and follows it in the charge loop. For the AC services only; the DC charge loop
@@ -169,7 +169,7 @@ impl Config {
         energy_service: SERVICE_ID_DC,
         // ISO 15118-20:2022 Table 207: ControlMode 2 = Dynamic, MobilityNeedsMode 1 = mobility
         // needs provided by the EVCC. `Connector` follows the vehicle's inlet
-        // ([`Ev::dc_connector`]) and is matched separately.
+        // ([`crate::ev::DcPlugEv::dc_connector`]) and is matched separately.
         parameter_filter: &[("ControlMode", 2), ("MobilityNeedsMode", 1)],
         optional_parameters: &[],
         resume: None,

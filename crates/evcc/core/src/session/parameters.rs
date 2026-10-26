@@ -8,10 +8,10 @@ use v2gtp::PayloadType;
 
 use super::{Machine, frame};
 use super::types::*;
-use crate::ev::{Ev, EnergyOffer};
+use crate::ev::{Iso20Vehicle, EnergyOffer};
 use crate::log::{LogSink, MsgKind, Record};
 
-impl<E: Ev, L: LogSink> Machine<E, L> {
+impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
     pub(super) fn on_charge_parameter_discovery_res(&mut self, res: dc::DcChargeParameterDiscoveryRes, tx: &mut [u8]) -> Step {
         if let Some(end) = self.received(MsgKind::DcChargeParameterDiscoveryRes, res.response_code) {
             return end;

@@ -10,7 +10,7 @@ use iso15118_20::dc;
 
 use super::Machine;
 use super::config::rational_to_volts;
-use crate::ev::{AcDischargePowerLimits, AcPowerLimits, DcLimits, Ev, Phases};
+use crate::ev::{AcDischargePowerLimits, AcPowerLimits, DcLimits, Iso20Vehicle, Phases};
 use crate::log::{LogSink, Record};
 
 fn value(r: RationalNumber) -> f32 {
@@ -37,7 +37,7 @@ pub(super) fn phases_with(a: Phases, b: Phases, pick: fn(RationalNumber, Rationa
     Phases { l1: pick(a.l1, b.l1), l2: both(a.l2, b.l2), l3: both(a.l3, b.l3) }
 }
 
-impl<E: Ev, L: LogSink> Machine<E, L> {
+impl<E: Iso20Vehicle, L: LogSink> Machine<E, L> {
     /// Remembers what the charger offered (the charge loop answers are held to it).
     pub(super) fn note_evse_limits(&mut self, mode: &dc::DcCpdResEnergyTransferModeChoice) {
         self.evse_announced = Some(match mode {
