@@ -91,6 +91,7 @@ pub struct Resume {
 }
 
 /// How the shutdown that is under way ends.
+#[cfg(feature = "iso20")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum StopKind {
     /// `SessionStopReq(Terminate)`, the session is over.
@@ -137,8 +138,10 @@ pub enum EndReason {
     /// The TX buffer cannot hold the outgoing message.
     TxBufferTooSmall,
     /// DIN SPEC 70121: the EVSE answered with a failing response code.
+    #[cfg(feature = "din")]
     RejectedDin(din70121::types::ResponseCode),
     /// ISO 15118-2: the EVSE answered with a failing response code.
+    #[cfg(feature = "iso2")]
     RejectedIso2(iso15118_2::types::ResponseCode),
     /// The control pilot said emergency (IEC 61851-23 CC.3.4.3, CC.4.3): it left state C/D without the vehicle's
     /// own change, or the charger turned its oscillator off or changed the duty cycle (V2G-DC-656). Nothing
@@ -152,6 +155,7 @@ pub enum EndReason {
 impl EndReason {
     /// The `EVTerminationCode` of the `SessionStopReq` the vehicle sends when it ends the session for this
     /// non-critical reason of its own (V2G20-2644, V2G-DC-648).
+    #[cfg(feature = "iso20")]
     pub(crate) fn termination_code(self) -> &'static str {
         match self {
             EndReason::NoCompatibleAuthorization => "NoCompatibleAuthorization",

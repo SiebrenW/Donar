@@ -26,6 +26,7 @@ The generated codecs are committed (`crates/codec/*/src/generated/`), so a fresh
 
 ```sh
 cargo xtask lint             # clippy with -D warnings
+cargo xtask features         # the hand-picked feature combinations of evcc-core and evse-core (--target TRIPLE for bare metal)
 cargo xtask setup            # download the schemas, regenerate the codecs (needs curl; --force regenerates); commit what changes
 cargo xtask vectors          # reference vectors with EXIficient (needs a JDK)
 cargo xtask grammars         # diff the derived grammar with EXIficient's
@@ -44,8 +45,8 @@ cargo xtask web [PORT]          # the web UI (evcc-web) in the container, defaul
 
 **Sans-IO cores.** `crates/evcc/core` (vehicle) and `crates/evse/core` (charger) are `no_std`, allocation-free state machines that never touch a socket, clock or thread. A host feeds `Event`s (bytes received, timer fired, vehicle did something) and carries out the returned `Step` (bytes to send, timer commands, `Notice`s for the vehicle to act on). The host owns the rx/tx/arena buffers. Host adapters: `crates/evcc/linux` (sockets, OpenSSL TLS, raw SLAC socket, QCA modem driver, `run`/`run_gated` loops).
 
-- Vehicle: `evcc_core::session` (ISO 15118-20, split into `setup/parameters/charge/shutdown/renegotiation/metering/...`), `iso2`, `din`, `slac`, `sdp`; all session machines implement `machine::Machine`. The vehicle describes itself through the `Ev` trait (`ev.rs`): capabilities (discovery) and present limits (charge loop) are separate methods.
-- Charger: `evse_core::{Session, din::Session, iso2::Session}` behind the traits `Secc`, `DinSecc`, `Iso2Secc` (what to offer, how to answer, faults via `intercept`/`note`). The machines own sequence, session-id checks, failing responses and state; the host owns values. The `SupportedAppProtocol` negotiation of DIN/ISO 15118-2 is the host's (evse-sim does it).
+- Vehicle: `evcc_core::session` (ISO 15118-20, split into `setup/parameters/charge/shutdown/renegotiation/metering/...`), `iso2`, `din`, `slac`, `sdp`; all session machines implement `machine::Machine`. The vehicle describes itself through `Ev` (identity, schedule, contract) and capability traits (`DcEv`, `DcPlugEv`, `AcEv`, `AcPlugEv`, `InvertedPantographEv`); each machine asks for the combination it needs (`Iso20Vehicle`, `Iso2Vehicle`, `DinVehicle`, feature-aware) and reaches the capability methods through `Caps`. Capabilities (discovery) and present limits (charge loop) are separate methods.
+- Charger: `evse_core::{Session, din::Session, iso2::Session}` behind the traits `Secc`, `DinSecc`, `Iso2Secc` (what to offer, how to answer, faults via `intercept`/`note`; by capability: `Secc` with `DcSecc`, `AcSecc`, `InvertedPantographSecc`, `Iso2Secc` with `Iso2DcSecc`, `Iso2AcSecc`). The machines own sequence, session-id checks, failing responses and state; the host owns values. The `SupportedAppProtocol` negotiation of DIN/ISO 15118-2 is the host's (evse-sim does it).
 
 **SLAC and the pilot.** The vehicle SLAC machine (`evcc_core::slac`) starts only on a 5 % pilot (`Event::Pilot` before/after `Start`), ends in `Outcome::BasicCharging` on a nominal duty cycle and aborts on A/E/F while matching; hosts without a pilot set `Config::pilot_gate = false` (`evcc_linux::slac::run` does). The host implements `evcc_linux::slac::ControlPilot` (readings, guard, toggles).
 
@@ -56,6 +57,10 @@ cargo xtask web [PORT]          # the web UI (evcc-web) in the container, defaul
 **Simulators and test harness** (`crates/sims`): `evcc-sim` and `evse-sim` are ordinary commands with TOML settings (the vehicle/charger cores behind sim `Ev`/`Secc` implementations, with fault injection); `sandbox` makes Linux network namespaces; `scenarios` runs a scenario TOML (`crates/sims/scenarios/scenarios/*.toml`, format documented in `scenario.rs`) as two processes in two namespaces, optionally against an external partner (`Kind::Iso15118Python`, `Kind::PySlac`; partner setup in `partners.rs`, venvs at `/opt/iso15118` and `/opt/pyslac` in the container); `web` is the axum UI (one embedded `src/index.html`, compiled into the binary, so rebuild after editing it); the pictures of the simulation page (car and buses) are generated into it between the `scenes:begin`/`scenes:end` markers by `crates/sims/web/art/scenes.py`, do not edit them by hand; `control` is the live-control socket protocol. Every scenario file needs an entry in `tests/scenarios.rs` (a test checks this). Each run captures the cable to `capture.pcap` in its artifacts (`tcpdump`, in the container image) and the vehicle sim discloses its TLS secrets as UDP packets for dSPACE V2Gshark; keep that working when touching the runner or the TLS setup.
 
 **Crypto stays at the edge.** Plug & Charge, certificate profile/OCSP checks and signing live in `evcc-linux`/the sims (OpenSSL); the cores take a `Contract` trait for the vehicle's keys and hand the host the stream a signature covers. Certificate installation/update is deliberately out of scope.
+
+## Features
+
+`evcc-core` and `evse-core` have additive features (protocols `iso20`, `iso2`, `din`; energy `ac`, `dc`; connections `plug`, `inverted-pantograph`; `slac`, `acdp`; `strict`). One machine drives one connector (a plug may do CCS and AC, a pantograph is a connector of its own); `strict` makes the impossible mixes a compile error, the workspace (simulators, tests) builds everything without it. A new feature goes into `crates/xtask/src/features.rs` (a check fails otherwise). Code of a capability that is compiled out is reached through `Caps` / `SeccCaps` / `Iso2SeccCaps`, which answer with neutral values; do not call the capability traits from a machine directly.
 
 ## Continuous integration
 

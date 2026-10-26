@@ -11,7 +11,7 @@ default = ["tls"]
 tls = ["dep:openssl", "dep:openssl-sys", "dep:foreign-types", "dep:x509-parser"]
 
 [dependencies]
-evcc-core = { path = "../core" }
+evcc-core = { path = "../core", features = ["acdp"] }
 openssl = { version = "0.10", optional = true }
 # The CA list of a ClientHello (certificate_authorities) has no safe wrapper in `openssl`.
 openssl-sys = { version = "0.9", optional = true }

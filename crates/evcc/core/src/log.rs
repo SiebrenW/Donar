@@ -142,19 +142,26 @@ pub enum Record<'a> {
     /// What the host is to watch on the control pilot changed.
     PilotGuard { guard: control_pilot::Guard },
     /// A response code of a DIN SPEC 70121 charger.
+    #[cfg(feature = "din")]
     DinResponse { msg: MsgKind, code: din70121::types::ResponseCode },
     /// The charger does not offer the energy transfer the vehicle wants (DIN SPEC 70121).
+    #[cfg(feature = "din")]
     DinNoEnergyService { wanted: din70121::types::EvRequestedEnergyTransfer, offered: din70121::types::EvseSupportedEnergyTransfer },
     /// A response code of an ISO 15118-2 charger.
+    #[cfg(feature = "iso2")]
     Iso2Response { msg: MsgKind, code: iso15118_2::types::ResponseCode },
     /// A value-added service the charger described, with how many parameter sets it has.
+    #[cfg(feature = "iso2")]
     Iso2ServiceDetail { service_id: u16, parameter_sets: usize },
     /// The charger does not offer the energy transfer mode the vehicle wants (ISO 15118-2).
+    #[cfg(feature = "iso2")]
     Iso2NoEnergyMode { wanted: iso15118_2::types::EnergyTransferMode, offered: &'a [iso15118_2::types::EnergyTransferMode] },
     /// The charger offers no payment option the vehicle can use (ISO 15118-2).
+    #[cfg(feature = "iso2")]
     Iso2NoPayment { wanted: iso15118_2::types::PaymentOption, offered: &'a [iso15118_2::types::PaymentOption] },
     /// The charger offers no payment option the vehicle can use: DIN SPEC 70121 has only
     /// `ExternalPayment` (V2G-DC-252).
+    #[cfg(feature = "din")]
     DinNoPayment { offered: &'a [din70121::types::PaymentOption] },
 }
 
@@ -166,7 +173,6 @@ impl Record<'_> {
             | Record::SessionSetUp { .. }
             | Record::SessionResumed { .. }
             | Record::AuthorizationSelected { .. }
-            | Record::Iso2ServiceDetail { .. }
             | Record::ScheduleSelected { .. }
             | Record::MobilityNeedsFromSecc { .. }
             | Record::GoToPause
@@ -174,12 +180,22 @@ impl Record<'_> {
             | Record::Pantograph { .. }
             | Record::MobilityNeedsIgnored { .. }
             | Record::ServiceSelected { .. } => Level::Info,
+            #[cfg(feature = "iso20")]
             Record::Response { code, .. } if !crate::session::is_ok(*code) => Level::Info,
+            #[cfg(feature = "iso2")]
+            Record::Iso2ServiceDetail { .. } => Level::Info,
+            #[cfg(feature = "din")]
             Record::DinResponse { code, .. } if !crate::din::is_ok(*code) => Level::Info,
+            #[cfg(feature = "din")]
             Record::DinResponse { .. } => Level::Debug,
+            #[cfg(feature = "iso2")]
             Record::Iso2Response { code, .. } if !crate::iso2::is_ok(*code) => Level::Info,
+            #[cfg(feature = "iso2")]
             Record::Iso2Response { .. } => Level::Debug,
-            Record::DinNoEnergyService { .. } | Record::DinNoPayment { .. } | Record::Iso2NoEnergyMode { .. } | Record::Iso2NoPayment { .. } => Level::Error,
+            #[cfg(feature = "din")]
+            Record::DinNoEnergyService { .. } | Record::DinNoPayment { .. } => Level::Error,
+            #[cfg(feature = "iso2")]
+            Record::Iso2NoEnergyMode { .. } | Record::Iso2NoPayment { .. } => Level::Error,
             Record::Response { .. } | Record::EvseProcessing { .. } | Record::MsgTx { .. } | Record::MsgRx { .. } => {
                 Level::Debug
             }

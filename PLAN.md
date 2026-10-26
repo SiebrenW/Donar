@@ -121,6 +121,7 @@ The core is a pure `no_std` state machine driven by events (received bytes, time
 - TLS lives outside the core (the `openssl` crate in `evcc-linux`); the core sees a byte stream and a "secured" flag. rustls was ruled out: no provider has `secp521r1`/`x448` key exchange or Ed448, and it lacks the CBC and static-ECDH suites of ISO 15118-2.
 - The vehicle describes itself through the `Ev` trait (static facts and present limits); anything physical or slow (cable check, pre-charge, contactors, ramp-down, stop intent) is an event or notice. The charger is the host's implementation of `Secc`/`DinSecc`/`Iso2Secc`; the machines own sequence, session ids, failing responses and state, the host owns the values.
 - Crypto stays at the edge: the cores take a `Contract` trait and hand the host the stream a signature covers.
+- The vehicle and the charger are split by capability (`Ev`, `DcEv`, `AcEv`, `InvertedPantographEv`, ...; `Secc`, `DcSecc`, ...): one machine drives one connector, so an AC-only vehicle implements no DC and a pantograph vehicle no AC or plug. The cores have additive Cargo features for protocols, energy and connections; `strict` rejects the impossible mixes at compile time; `cargo xtask features` builds a hand-picked list (not the power set). Decided with the user 2026-10-26; the inverted (charger-mounted) pantograph and the roof-mounted (vehicle) one are different variants, only the first is implemented.
 
 ### Memory
 

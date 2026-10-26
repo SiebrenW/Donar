@@ -5,15 +5,35 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# What is compiled in. Features are additive; with `strict` the combinations that cannot exist (one machine drives one connector) are errors.
+default = ["iso20", "iso2", "din", "slac", "ac", "dc"]
+# Protocols: ISO 15118-20 (a plug or the pantograph), ISO 15118-2 (a plug), DIN SPEC 70121 (DC through a plug).
+iso20 = []
+iso2 = ["plug", "dep:iso15118-2"]
+din = ["plug", "dc", "dep:din70121"]
+# Energy: what the vehicle's or the charger's hardware delivers.
+ac = []
+dc = []
+# Connections: a plug (CCS, Mennekes), or the inverted pantograph (the charger's arm onto the roof rails: ACDP of ISO 15118-20). SLAC is the powerline matching of a plug.
+plug = []
+slac = ["plug", "dep:homeplug"]
+inverted-pantograph = []
+acdp = ["iso20", "dc", "inverted-pantograph"]
+# Reject the combinations that cannot exist at compile time (AC with a pantograph, a plug with a pantograph, a protocol without energy).
+strict = []
+
 [dependencies]
 v2gtp = { path = "../../codec/v2gtp" }
-homeplug = { path = "../../codec/homeplug" }
+homeplug = { path = "../../codec/homeplug", optional = true }
 iso15118-20 = { path = "../../codec/iso15118-20" }
-din70121 = { path = "../../codec/din70121" }
-iso15118-2 = { path = "../../codec/iso15118-2" }
+din70121 = { path = "../../codec/din70121", optional = true }
+iso15118-2 = { path = "../../codec/iso15118-2", optional = true }
 app-protocol = { path = "../../codec/app-protocol" }
 exi = { path = "../../codec/exi" }
 control-pilot = { path = "../../pilot" }
 
 [dev-dependencies]
+# the tests exercise everything, including ACDP
+evcc-core = { path = ".", features = ["acdp"] }
 evse-sim = { path = "../../sims/evse-sim" }

@@ -13,7 +13,7 @@ use iso15118_2::types::{self as t, PhysicalValue, UnitSymbol};
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
 use crate::secc::{Action, Ended, Progress};
-use crate::session::SEQUENCE_TIMEOUT_MS;
+use crate::SEQUENCE_TIMEOUT_MS;
 use crate::{Event, Step, Timer, TimerCmd};
 
 pub use iso15118_2::types::ResponseCode;
@@ -208,9 +208,104 @@ pub trait Iso2AcSecc: Iso2Secc {
     fn ac_loop(&mut self, request: &ChargingStatusReq) -> AcLoopAnswer;
 }
 
-/// What the ISO 15118-2 machine needs of a charger: DC and AC.
-pub trait Iso2Evse: Iso2DcSecc + Iso2AcSecc {}
-impl<T: Iso2DcSecc + Iso2AcSecc> Iso2Evse for T {}
+#[cfg(feature = "dc")]
+pub trait Iso2DcPart: Iso2DcSecc {}
+#[cfg(feature = "dc")]
+impl<T: Iso2DcSecc> Iso2DcPart for T {}
+#[cfg(not(feature = "dc"))]
+pub trait Iso2DcPart {}
+#[cfg(not(feature = "dc"))]
+impl<T> Iso2DcPart for T {}
+
+#[cfg(feature = "ac")]
+pub trait Iso2AcPart: Iso2AcSecc {}
+#[cfg(feature = "ac")]
+impl<T: Iso2AcSecc> Iso2AcPart for T {}
+#[cfg(not(feature = "ac"))]
+pub trait Iso2AcPart {}
+#[cfg(not(feature = "ac"))]
+impl<T> Iso2AcPart for T {}
+
+/// What the ISO 15118-2 machine needs of a charger: DC and AC, as compiled in.
+pub trait Iso2Evse: Iso2Secc + Iso2DcPart + Iso2AcPart {}
+impl<T: Iso2Secc + Iso2DcPart + Iso2AcPart> Iso2Evse for T {}
+
+/// The charger as the machine sees it: the methods of [`Iso2Secc`] through `Deref`, the capability methods as methods of its own,
+/// which answer with a refusal when the capability is not compiled in.
+pub struct Iso2SeccCaps<S>(pub S);
+
+impl<S> core::ops::Deref for Iso2SeccCaps<S> {
+    type Target = S;
+    fn deref(&self) -> &S {
+        &self.0
+    }
+}
+
+impl<S> core::ops::DerefMut for Iso2SeccCaps<S> {
+    fn deref_mut(&mut self) -> &mut S {
+        &mut self.0
+    }
+}
+
+#[cfg(feature = "dc")]
+impl<S: Iso2DcSecc> Iso2SeccCaps<S> {
+    pub fn cable_check(&mut self) -> Progress<ResponseCode> {
+        self.0.cable_check()
+    }
+    pub fn pre_charge(&mut self, target: PhysicalValue) -> PhysicalValue {
+        self.0.pre_charge(target)
+    }
+    pub fn dc_loop(&mut self, request: &CurrentDemandReq, announced_power: Option<PhysicalValue>) -> DcLoopAnswer {
+        self.0.dc_loop(request, announced_power)
+    }
+    pub fn welding_detection(&mut self) -> (ResponseCode, PhysicalValue) {
+        self.0.welding_detection()
+    }
+}
+
+#[cfg(not(feature = "dc"))]
+impl<S> Iso2SeccCaps<S> {
+    pub fn cable_check(&mut self) -> Progress<ResponseCode> {
+        Progress::Done(ResponseCode::Failed)
+    }
+    pub fn pre_charge(&mut self, target: PhysicalValue) -> PhysicalValue {
+        target
+    }
+    pub fn dc_loop(&mut self, _request: &CurrentDemandReq, _announced_power: Option<PhysicalValue>) -> DcLoopAnswer {
+        DcLoopAnswer {
+            response_code: ResponseCode::Failed,
+            shutdown: true,
+            notification: t::EvseNotification::None,
+            present_voltage: pv(0.0, UnitSymbol::V),
+            present_current: pv(0.0, UnitSymbol::A),
+            current_limit_achieved: false,
+            voltage_limit_achieved: false,
+            power_limit_achieved: false,
+            maximum_voltage: None,
+            maximum_current: None,
+            maximum_power: None,
+            meter_info: None,
+            receipt_required: None,
+        }
+    }
+    pub fn welding_detection(&mut self) -> (ResponseCode, PhysicalValue) {
+        (ResponseCode::Failed, pv(0.0, UnitSymbol::V))
+    }
+}
+
+#[cfg(feature = "ac")]
+impl<S: Iso2AcSecc> Iso2SeccCaps<S> {
+    pub fn ac_loop(&mut self, request: &ChargingStatusReq) -> AcLoopAnswer {
+        self.0.ac_loop(request)
+    }
+}
+
+#[cfg(not(feature = "ac"))]
+impl<S> Iso2SeccCaps<S> {
+    pub fn ac_loop(&mut self, _request: &ChargingStatusReq) -> AcLoopAnswer {
+        AcLoopAnswer { response_code: ResponseCode::Failed, notification: t::EvseNotification::None, max_current: None, meter_info: None, receipt_required: None }
+    }
+}
 
 pub struct Session<S: Iso2Evse> {
     rx_len: usize,
@@ -218,7 +313,7 @@ pub struct Session<S: Iso2Evse> {
 }
 
 struct Machine<S> {
-    secc: S,
+    secc: Iso2SeccCaps<S>,
     state: State,
     /// What the control pilot means to the session (the host reports it with `Event::Pilot`).
     pilot: control_pilot::EvseWatch,
@@ -274,7 +369,7 @@ impl Id {
 
 impl<S: Iso2Evse> Session<S> {
     pub fn new(secc: S) -> Self {
-        Self { rx_len: 0, m: Machine { secc, state: State::AwaitSessionSetupReq, pilot: control_pilot::EvseWatch::new(), last_guard: control_pilot::Guard::disarmed(control_pilot::Side::Charger), session_id: [0; 8], ac: false, renegotiating: false, announced_power: None, p_max_w: 0.0 } }
+        Self { rx_len: 0, m: Machine { secc: Iso2SeccCaps(secc), state: State::AwaitSessionSetupReq, pilot: control_pilot::EvseWatch::new(), last_guard: control_pilot::Guard::disarmed(control_pilot::Side::Charger), session_id: [0; 8], ac: false, renegotiating: false, announced_power: None, p_max_w: 0.0 } }
     }
 
     pub fn state(&self) -> State {
@@ -282,11 +377,11 @@ impl<S: Iso2Evse> Session<S> {
     }
 
     pub fn secc(&self) -> &S {
-        &self.m.secc
+        &self.m.secc.0
     }
 
     pub fn secc_mut(&mut self) -> &mut S {
-        &mut self.m.secc
+        &mut self.m.secc.0
     }
 
     /// Free space of `rx` to read the next bytes from the stream into.

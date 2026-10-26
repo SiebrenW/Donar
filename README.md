@@ -42,6 +42,8 @@ Also in the trait: `schedule_request` (energy needs and departure time), `ac_pre
 
 Power on AC is per line (`Phases`: L1, optional L2 and L3). A single-phase car on a three-phase charger and a symmetric three-phase car are handled as V2G20-1815 to 1822 say.
 
+**Features: what is compiled in.** `evcc-core` and `evse-core` have the same additive features: protocols `iso20`, `iso2`, `din`; energy `ac`, `dc`; connections `plug` (what `iso2`, `din` and `slac` imply) and `inverted-pantograph` (what `acdp` implies); `slac` (powerline matching), `acdp` (ISO 15118-20 with the charger-mounted pantograph, implies `iso20`, `dc`) and `strict`. The default is `iso20`, `iso2`, `din`, `slac`, `ac`, `dc`. A build without a feature does not bundle its machine (a protocol, SLAC, the codec behind it) and does not ask you for the traits of a capability it does not have: a DIN charger needs only its `DinSecc`, an AC-only vehicle needs no `DcEv`. A machine drives one connector, so a build for a product sets `strict`, which turns what cannot exist into a compile error (AC with a pantograph, a plug with a pantograph, a protocol without energy); the simulators and the tests leave it off and build everything at once, a machine per connector. `cargo xtask features` builds the combinations people use (CI runs it, for the bare-metal target too); a new feature has to be in one of them.
+
 ### 2. Pick the protocol and its configuration
 
 | Protocol | Machine | Configuration |

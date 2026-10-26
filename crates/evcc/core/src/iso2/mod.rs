@@ -22,7 +22,7 @@ use exi::{Arena, DecodeError};
 use iso15118_20::common_types::RationalNumber;
 use v2gtp::{HEADER_LEN, Parse, PayloadType, parse, write_header};
 
-use crate::ev::{DcLimits, Iso2Vehicle};
+use crate::ev::{Caps, DcLimits, Iso2Vehicle};
 use crate::log::{LogSink, MsgKind, Record};
 use crate::session::{Buffers, EndReason, Event, State, Step};
 use crate::{Timer, TimerCmd, Timers};
@@ -65,7 +65,7 @@ pub struct Session<'a, E: Iso2Vehicle, L: LogSink> {
 
 struct Machine<E, L> {
     config: Config,
-    ev: E,
+    ev: Caps<E>,
     log: L,
     state: State,
     /// What the control pilot means to the session (the host reports it with `Event::Pilot`).
@@ -130,7 +130,7 @@ impl<'a, E: Iso2Vehicle, L: LogSink> Session<'a, E, L> {
             arena: Arena::new(buffers.arena),
             m: Machine {
                 config,
-                ev,
+                ev: Caps(ev),
                 log,
                 state: State::Idle,
                 pilot: control_pilot::EvWatch::new(matches!(config.mode, Mode::AcSinglePhase | Mode::AcThreePhase)),

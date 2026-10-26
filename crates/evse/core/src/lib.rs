@@ -19,14 +19,34 @@
 //! 4. When the armed timer fires, send [`Event::TimerExpired`].
 #![no_std]
 
+#[cfg(feature = "din")]
 pub mod din;
+#[cfg(feature = "iso2")]
 pub mod iso2;
 pub mod secc;
+#[cfg(feature = "iso20")]
 pub mod session;
+#[cfg(feature = "slac")]
 pub mod slac;
 
+#[cfg(feature = "iso20")]
 pub use secc::{Action, DcLoopAnswer, AcLoopAnswer, MobilityNeeds, Progress, Secc};
+#[cfg(feature = "iso20")]
 pub use session::{Buffers, Session};
+
+#[cfg(all(feature = "strict", not(any(feature = "iso20", feature = "iso2", feature = "din"))))]
+compile_error!("evse-core: enable a protocol: `iso20`, `iso2`, `din` (or `acdp`)");
+#[cfg(all(feature = "strict", not(any(feature = "ac", feature = "dc"))))]
+compile_error!("evse-core: enable `ac` and/or `dc`: a connector delivers energy");
+#[cfg(all(feature = "strict", feature = "inverted-pantograph", feature = "ac"))]
+compile_error!("evse-core: the inverted pantograph (`acdp`) has no AC: do not enable `ac` with it");
+#[cfg(all(feature = "strict", feature = "inverted-pantograph", feature = "plug"))]
+compile_error!("evse-core: a pantograph and a plug are different connectors, and a machine drives one connector: build one machine per connector");
+#[cfg(all(feature = "strict", feature = "iso20", not(feature = "plug"), not(feature = "inverted-pantograph")))]
+compile_error!("evse-core: `iso20` needs a connection: `plug` or `acdp`");
+
+/// The timeout of `V2G_SECC_Sequence_Timeout` (Table 215), for every protocol.
+pub const SEQUENCE_TIMEOUT_MS: u32 = 60_000;
 
 /// The one timer of the machine: `V2G_SECC_Sequence_Timeout` (Table 215), the time the charger waits
 /// for the next request.
