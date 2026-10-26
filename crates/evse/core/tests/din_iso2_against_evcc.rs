@@ -9,7 +9,7 @@ use evcc_core::machine::Machine;
 use evcc_core::session::{Buffers, EndReason, Event, Notice};
 use evcc_core::{Timer, TimerCmd};
 use evse_core::din::{self, DinSecc};
-use evse_core::iso2::{self, Iso2Secc};
+use evse_core::iso2::{self, Iso2Secc, Iso2DcSecc, Iso2AcSecc};
 use iso15118_20::common_types::RationalNumber;
 
 fn rn(exponent: i8, value: i16) -> RationalNumber {
@@ -252,10 +252,6 @@ struct Iso2Charger {
 }
 
 impl Iso2Secc for Iso2Charger {
-    fn cable_check(&mut self) -> evse_core::Progress<iso2::ResponseCode> {
-        self.cable_checks += 1;
-        evse_core::Progress::Done(iso2::ResponseCode::Ok)
-    }
     fn session_ended(&mut self, how: evse_core::secc::Ended) {
         self.how = Some(how);
     }
@@ -287,6 +283,13 @@ impl Iso2Secc for Iso2Charger {
         };
         evse_core::Progress::Done((iso2::ResponseCode::Ok, iso2::Offer { parameter, p_max: pv(if ac { 22_080.0 } else { 150_000.0 }, UnitSymbol::W) }))
     }
+}
+
+impl Iso2DcSecc for Iso2Charger {
+    fn cable_check(&mut self) -> evse_core::Progress<iso2::ResponseCode> {
+        self.cable_checks += 1;
+        evse_core::Progress::Done(iso2::ResponseCode::Ok)
+    }
     fn dc_loop(&mut self, request: &iso15118_2::body::CurrentDemandReq, _announced: Option<iso15118_2::types::PhysicalValue>) -> iso2::DcLoopAnswer {
         self.loops += 1;
         iso2::DcLoopAnswer {
@@ -305,6 +308,9 @@ impl Iso2Secc for Iso2Charger {
             receipt_required: None,
         }
     }
+}
+
+impl Iso2AcSecc for Iso2Charger {
     fn ac_loop(&mut self, _request: &iso15118_2::body::ChargingStatusReq) -> iso2::AcLoopAnswer {
         self.loops += 1;
         iso2::AcLoopAnswer { response_code: iso2::ResponseCode::Ok, notification: iso15118_2::types::EvseNotification::None, max_current: None, meter_info: None, receipt_required: None }

@@ -4,7 +4,7 @@
 use evcc_core::ev::{Iso20Vehicle, DcConnector, DcLimits, AcEv, AcPlugEv, DcEv, DcPlugEv, Ev, InvertedPantographEv, ScheduleRequest};
 use evcc_core::log::NoLog;
 use evcc_core::session::{Buffers as EvBuffers, Config, EndReason, Event as EvEvent, Notice, Session as EvSession};
-use evse_core::secc::{AcLoopAnswer, AcdpPositioning, AcdpPositioningRequest, DcLoopAnswer, Progress, Secc};
+use evse_core::secc::{AcLoopAnswer, AcdpPositioning, AcdpPositioningRequest, DcLoopAnswer, Progress, Secc, DcSecc, AcSecc, InvertedPantographSecc};
 use evse_core::{Buffers, Event, Session, State};
 use iso15118_20::ac;
 use iso15118_20::common::{Authorization, Parameter, ParameterChoice, ParameterSet, PowerSchedule, PowerScheduleEntry, PowerScheduleEntryList, ScheduleTuple, ChargingSchedule, Service};
@@ -208,37 +208,6 @@ impl Secc for TestCharger {
     fn supports_protocol(&self, namespace: &str, major: u32) -> bool {
         major == 1 && (matches!(namespace, "urn:iso:std:iso:15118:-20:DC" | "urn:iso:std:iso:15118:-20:AC") || (!self.no_acdp && namespace == "urn:iso:std:iso:15118:-20:ACDP"))
     }
-    fn acdp_system_status(&mut self, _vehicle: &iso15118_20::acdp::EvTechnicalStatus) -> evse_core::secc::AcdpSystemStatus {
-        self.status_requests += 1;
-        evse_core::secc::AcdpSystemStatus::HEALTHY
-    }
-    fn acdp_connect(&mut self, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> evse_core::secc::AcdpConnection {
-        use iso15118_20::acdp::{ElectricalChargingDeviceStatus as E, MechanicalChargingDeviceStatus as M};
-        self.pantograph.push(("connect", electrical));
-        // The first request finds the pantograph moving, the second down.
-        let down = self.pantograph.iter().filter(|(k, _)| *k == "connect").count() >= 2;
-        evse_core::secc::AcdpConnection { finished: down, electrical: if down { E::StateB } else { E::StateA }, mechanical: if down { M::EndPosition } else { M::Moving } }
-    }
-    fn acdp_disconnect(&mut self, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> evse_core::secc::AcdpConnection {
-        use iso15118_20::acdp::{ElectricalChargingDeviceStatus as E, MechanicalChargingDeviceStatus as M};
-        self.pantograph.push(("disconnect", electrical));
-        let home = self.pantograph.iter().filter(|(k, _)| *k == "disconnect").count() >= 2;
-        evse_core::secc::AcdpConnection { finished: home, electrical: E::StateA, mechanical: if home { M::Home } else { M::Moving } }
-    }
-    fn acdp_positioning(&mut self, request: AcdpPositioningRequest) -> AcdpPositioning {
-        self.positioning.push(request);
-        let n = self.positioning.len();
-        AcdpPositioning {
-            association: self.lose_association_at != Some(n),
-            positioning_support: request.positioning_support,
-            // The bus creeps towards the pantograph.
-            x_deviation_mm: 400 - 100 * n as i16,
-            y_deviation_mm: 30,
-            window_x_mm: 150,
-            window_y_mm: 100,
-            in_charge_position: n >= 3,
-        }
-    }
     fn now_micros(&self) -> u64 {
         1_700_000_000_000_000
     }
@@ -271,6 +240,64 @@ impl Secc for TestCharger {
         }
         Progress::Done(ResponseCode::Ok)
     }
+    fn service_selected(&mut self, selection: &iso15118_20::common::ServiceSelectionReq<'_>) {
+        self.by_secc = selection.selected_energy_transfer_service.service_id == 2 && selection.selected_energy_transfer_service.parameter_set_id == 2;
+    }
+    fn schedule_requested(&mut self, request: &iso15118_20::common::ScheduleExchangeReq<'_>) -> evse_core::MobilityNeeds {
+        if let iso15118_20::common::SeReqControlModeChoice::Dynamic(m) = &request.se_req_control_mode {
+            self.v2x_schedule = m.ev_maximum_v2x_energy_request.zip(m.ev_minimum_v2x_energy_request);
+        }
+        if let iso15118_20::common::SeReqControlModeChoice::Scheduled(m) = &request.se_req_control_mode {
+            self.offer = m.ev_energy_offer.as_ref().map(|o| {
+                let stacks = o.ev_absolute_price_schedule.ev_price_rule_stacks.ev_price_rule_stack;
+                (o.ev_power_schedule.ev_power_schedule_entries.ev_power_schedule_entry.len(), stacks.len(), stacks[0].ev_price_rule[0].energy_fee)
+            });
+        }
+        if self.by_secc {
+            evse_core::MobilityNeeds { departure_time: Some(7200), minimum_soc: Some(20), target_soc: Some(90) }
+        } else {
+            evse_core::MobilityNeeds::default()
+        }
+    }
+    fn schedule_tuples(&self) -> &[ScheduleTuple<'_>] {
+        &TUPLES
+    }
+    fn no_power(&self) -> bool {
+        self.no_power
+    }
+    fn power_delivery(&mut self, request: &iso15118_20::common::PowerDeliveryReq<'_>) -> ResponseCode {
+        self.delivering = request.charge_progress == iso15118_20::common::ChargeProgress::Start;
+        ResponseCode::Ok
+    }
+    fn meter_info(&self, wanted: bool) -> Option<MeterInfo<'_>> {
+        wanted.then(|| MeterInfo {
+            meter_id: &self.meter_id,
+            charged_energy_reading_wh: 1234 + u64::from(self.loops),
+            bpt_discharged_energy_reading_wh: None,
+            capacitive_energy_reading_va_rh: None,
+            bpt_inductive_energy_reading_va_rh: None,
+            meter_signature: None,
+            meter_status: None,
+            meter_timestamp: None,
+        })
+    }
+    fn confirm_metering(&mut self, _request: &iso15118_20::common::MeteringConfirmationReq<'_>, signed: evse_core::secc::Signed<'_, '_>) -> ResponseCode {
+        // The signature is there and covers a stream.
+        assert!(signed.header.signature.is_some() && !signed.fragment.is_empty());
+        self.confirmations += 1;
+        ResponseCode::Ok
+    }
+    fn note(&mut self, text: core::fmt::Arguments<'_>) {
+        if std::env::var_os("EVSE_TRACE").is_some() {
+            eprintln!("[evse] {text}");
+        }
+    }
+    fn session_ended(&mut self, how: evse_core::secc::Ended) {
+        self.ended = Some(how);
+    }
+}
+
+impl DcSecc for TestCharger {
     fn dc_charge_parameters(&mut self, bpt: bool, _request: &dc::DcChargeParameterDiscoveryReq<'_>) -> Result<dc::DcCpdResEnergyTransferModeChoice, ResponseCode> {
         let base = dc::DcCpdResEnergyTransferMode {
             evse_maximum_charge_power: rn(3, 150),
@@ -299,79 +326,10 @@ impl Secc for TestCharger {
             dc::DcCpdResEnergyTransferModeChoice::Base(base)
         })
     }
-    fn ac_charge_parameters(&mut self, bpt: bool, _request: &ac::AcChargeParameterDiscoveryReq<'_>) -> Result<ac::AcCpdResEnergyTransferModeChoice, ResponseCode> {
-        let base = ac::AcCpdResEnergyTransferMode {
-            evse_maximum_charge_power: rn(3, 4),
-            evse_maximum_charge_power_l2: Some(rn(3, 4)),
-            evse_maximum_charge_power_l3: Some(rn(3, 4)),
-            evse_minimum_charge_power: rn(0, 1380),
-            evse_minimum_charge_power_l2: Some(rn(0, 1380)),
-            evse_minimum_charge_power_l3: Some(rn(0, 1380)),
-            evse_nominal_frequency: rn(0, 50),
-            maximum_power_asymmetry: None,
-            evse_power_ramp_limitation: None,
-            evse_present_active_power: None,
-            evse_present_active_power_l2: None,
-            evse_present_active_power_l3: None,
-        };
-        Ok(if bpt {
-            ac::AcCpdResEnergyTransferModeChoice::Bpt(ac::BptAcCpdResEnergyTransferMode {
-                evse_maximum_charge_power: base.evse_maximum_charge_power,
-                evse_maximum_charge_power_l2: base.evse_maximum_charge_power_l2,
-                evse_maximum_charge_power_l3: base.evse_maximum_charge_power_l3,
-                evse_minimum_charge_power: base.evse_minimum_charge_power,
-                evse_minimum_charge_power_l2: base.evse_minimum_charge_power_l2,
-                evse_minimum_charge_power_l3: base.evse_minimum_charge_power_l3,
-                evse_nominal_frequency: base.evse_nominal_frequency,
-                maximum_power_asymmetry: None,
-                evse_power_ramp_limitation: None,
-                evse_present_active_power: None,
-                evse_present_active_power_l2: None,
-                evse_present_active_power_l3: None,
-                evse_maximum_discharge_power: rn(3, 4),
-                evse_maximum_discharge_power_l2: Some(rn(3, 4)),
-                evse_maximum_discharge_power_l3: Some(rn(3, 4)),
-                evse_minimum_discharge_power: rn(0, 500),
-                evse_minimum_discharge_power_l2: Some(rn(0, 500)),
-                evse_minimum_discharge_power_l3: Some(rn(0, 500)),
-            })
-        } else {
-            ac::AcCpdResEnergyTransferModeChoice::Base(base)
-        })
-    }
-    fn service_selected(&mut self, selection: &iso15118_20::common::ServiceSelectionReq<'_>) {
-        self.by_secc = selection.selected_energy_transfer_service.service_id == 2 && selection.selected_energy_transfer_service.parameter_set_id == 2;
-    }
-    fn schedule_requested(&mut self, request: &iso15118_20::common::ScheduleExchangeReq<'_>) -> evse_core::MobilityNeeds {
-        if let iso15118_20::common::SeReqControlModeChoice::Dynamic(m) = &request.se_req_control_mode {
-            self.v2x_schedule = m.ev_maximum_v2x_energy_request.zip(m.ev_minimum_v2x_energy_request);
-        }
-        if let iso15118_20::common::SeReqControlModeChoice::Scheduled(m) = &request.se_req_control_mode {
-            self.offer = m.ev_energy_offer.as_ref().map(|o| {
-                let stacks = o.ev_absolute_price_schedule.ev_price_rule_stacks.ev_price_rule_stack;
-                (o.ev_power_schedule.ev_power_schedule_entries.ev_power_schedule_entry.len(), stacks.len(), stacks[0].ev_price_rule[0].energy_fee)
-            });
-        }
-        if self.by_secc {
-            evse_core::MobilityNeeds { departure_time: Some(7200), minimum_soc: Some(20), target_soc: Some(90) }
-        } else {
-            evse_core::MobilityNeeds::default()
-        }
-    }
-    fn schedule_tuples(&self) -> &[ScheduleTuple<'_>] {
-        &TUPLES
-    }
-    fn no_power(&self) -> bool {
-        self.no_power
-    }
     fn cable_check(&mut self) -> Progress<ResponseCode> {
         self.cable_checks += 1;
         // One round of Ongoing, to see the polling work.
         if self.cable_checks < 2 { Progress::Ongoing } else { Progress::Done(ResponseCode::Ok) }
-    }
-    fn power_delivery(&mut self, request: &iso15118_20::common::PowerDeliveryReq<'_>) -> ResponseCode {
-        self.delivering = request.charge_progress == iso15118_20::common::ChargeProgress::Start;
-        ResponseCode::Ok
     }
     fn dc_loop(&mut self, request: &dc::DcChargeLoopReq<'_>, bpt: bool) -> Option<DcLoopAnswer> {
         self.loops += 1;
@@ -418,6 +376,49 @@ impl Secc for TestCharger {
             status: (self.loops == 2).then_some(EvseStatus { notification_max_delay: 10, evse_notification: EvseNotification::MeteringConfirmation }),
         })
     }
+}
+
+impl AcSecc for TestCharger {
+    fn ac_charge_parameters(&mut self, bpt: bool, _request: &ac::AcChargeParameterDiscoveryReq<'_>) -> Result<ac::AcCpdResEnergyTransferModeChoice, ResponseCode> {
+        let base = ac::AcCpdResEnergyTransferMode {
+            evse_maximum_charge_power: rn(3, 4),
+            evse_maximum_charge_power_l2: Some(rn(3, 4)),
+            evse_maximum_charge_power_l3: Some(rn(3, 4)),
+            evse_minimum_charge_power: rn(0, 1380),
+            evse_minimum_charge_power_l2: Some(rn(0, 1380)),
+            evse_minimum_charge_power_l3: Some(rn(0, 1380)),
+            evse_nominal_frequency: rn(0, 50),
+            maximum_power_asymmetry: None,
+            evse_power_ramp_limitation: None,
+            evse_present_active_power: None,
+            evse_present_active_power_l2: None,
+            evse_present_active_power_l3: None,
+        };
+        Ok(if bpt {
+            ac::AcCpdResEnergyTransferModeChoice::Bpt(ac::BptAcCpdResEnergyTransferMode {
+                evse_maximum_charge_power: base.evse_maximum_charge_power,
+                evse_maximum_charge_power_l2: base.evse_maximum_charge_power_l2,
+                evse_maximum_charge_power_l3: base.evse_maximum_charge_power_l3,
+                evse_minimum_charge_power: base.evse_minimum_charge_power,
+                evse_minimum_charge_power_l2: base.evse_minimum_charge_power_l2,
+                evse_minimum_charge_power_l3: base.evse_minimum_charge_power_l3,
+                evse_nominal_frequency: base.evse_nominal_frequency,
+                maximum_power_asymmetry: None,
+                evse_power_ramp_limitation: None,
+                evse_present_active_power: None,
+                evse_present_active_power_l2: None,
+                evse_present_active_power_l3: None,
+                evse_maximum_discharge_power: rn(3, 4),
+                evse_maximum_discharge_power_l2: Some(rn(3, 4)),
+                evse_maximum_discharge_power_l3: Some(rn(3, 4)),
+                evse_minimum_discharge_power: rn(0, 500),
+                evse_minimum_discharge_power_l2: Some(rn(0, 500)),
+                evse_minimum_discharge_power_l3: Some(rn(0, 500)),
+            })
+        } else {
+            ac::AcCpdResEnergyTransferModeChoice::Base(base)
+        })
+    }
     fn ac_loop(&mut self, request: &ac::AcChargeLoopReq<'_>, _bpt: bool) -> Option<AcLoopAnswer> {
         self.loops += 1;
         let power = rn(3, 4);
@@ -452,31 +453,39 @@ impl Secc for TestCharger {
         };
         Some(AcLoopAnswer { response_code: ResponseCode::Ok, target_frequency: None, control_mode: mode, status: None })
     }
-    fn meter_info(&self, wanted: bool) -> Option<MeterInfo<'_>> {
-        wanted.then(|| MeterInfo {
-            meter_id: &self.meter_id,
-            charged_energy_reading_wh: 1234 + u64::from(self.loops),
-            bpt_discharged_energy_reading_wh: None,
-            capacitive_energy_reading_va_rh: None,
-            bpt_inductive_energy_reading_va_rh: None,
-            meter_signature: None,
-            meter_status: None,
-            meter_timestamp: None,
-        })
+}
+
+impl InvertedPantographSecc for TestCharger {
+    fn acdp_system_status(&mut self, _vehicle: &iso15118_20::acdp::EvTechnicalStatus) -> evse_core::secc::AcdpSystemStatus {
+        self.status_requests += 1;
+        evse_core::secc::AcdpSystemStatus::HEALTHY
     }
-    fn confirm_metering(&mut self, _request: &iso15118_20::common::MeteringConfirmationReq<'_>, signed: evse_core::secc::Signed<'_, '_>) -> ResponseCode {
-        // The signature is there and covers a stream.
-        assert!(signed.header.signature.is_some() && !signed.fragment.is_empty());
-        self.confirmations += 1;
-        ResponseCode::Ok
+    fn acdp_connect(&mut self, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> evse_core::secc::AcdpConnection {
+        use iso15118_20::acdp::{ElectricalChargingDeviceStatus as E, MechanicalChargingDeviceStatus as M};
+        self.pantograph.push(("connect", electrical));
+        // The first request finds the pantograph moving, the second down.
+        let down = self.pantograph.iter().filter(|(k, _)| *k == "connect").count() >= 2;
+        evse_core::secc::AcdpConnection { finished: down, electrical: if down { E::StateB } else { E::StateA }, mechanical: if down { M::EndPosition } else { M::Moving } }
     }
-    fn note(&mut self, text: core::fmt::Arguments<'_>) {
-        if std::env::var_os("EVSE_TRACE").is_some() {
-            eprintln!("[evse] {text}");
+    fn acdp_disconnect(&mut self, electrical: iso15118_20::acdp::ElectricalChargingDeviceStatus) -> evse_core::secc::AcdpConnection {
+        use iso15118_20::acdp::{ElectricalChargingDeviceStatus as E, MechanicalChargingDeviceStatus as M};
+        self.pantograph.push(("disconnect", electrical));
+        let home = self.pantograph.iter().filter(|(k, _)| *k == "disconnect").count() >= 2;
+        evse_core::secc::AcdpConnection { finished: home, electrical: E::StateA, mechanical: if home { M::Home } else { M::Moving } }
+    }
+    fn acdp_positioning(&mut self, request: AcdpPositioningRequest) -> AcdpPositioning {
+        self.positioning.push(request);
+        let n = self.positioning.len();
+        AcdpPositioning {
+            association: self.lose_association_at != Some(n),
+            positioning_support: request.positioning_support,
+            // The bus creeps towards the pantograph.
+            x_deviation_mm: 400 - 100 * n as i16,
+            y_deviation_mm: 30,
+            window_x_mm: 150,
+            window_y_mm: 100,
+            in_charge_position: n >= 3,
         }
-    }
-    fn session_ended(&mut self, how: evse_core::secc::Ended) {
-        self.ended = Some(how);
     }
 }
 

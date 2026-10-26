@@ -16,7 +16,7 @@ use iso15118_20::common_types::{MessageHeader, Processing, RationalNumber, Respo
 use iso15118_20::dc;
 use v2gtp::{FrameError, HEADER_LEN, Parse, PayloadType, parse, write_header};
 
-use crate::secc::{AcdpPositioningRequest, Action, Authorize, Ended, Progress, Request, Secc, Signed};
+use crate::secc::{Iso20Evse, AcdpPositioningRequest, Action, Authorize, Ended, Progress, Request, Signed};
 use crate::{Event, State, Step, Timer, TimerCmd};
 
 /// Memory the host provides; nothing is allocated here.
@@ -68,7 +68,7 @@ fn is_failed(code: ResponseCode) -> bool {
     code.xml_name().starts_with("FAILED")
 }
 
-pub struct Session<S: Secc> {
+pub struct Session<S: Iso20Evse> {
     /// Bytes of an incomplete frame the host has put into `Buffers::rx`.
     rx_len: usize,
     m: Machine<S>,
@@ -108,7 +108,7 @@ struct Reply {
     close: bool,
 }
 
-impl<S: Secc> Session<S> {
+impl<S: Iso20Evse> Session<S> {
     pub fn new(secc: S) -> Self {
         Self {
             rx_len: 0,
@@ -269,7 +269,7 @@ fn reply(framed: Result<usize, ()>, close: bool) -> Reply {
     }
 }
 
-impl<S: Secc> Machine<S> {
+impl<S: Iso20Evse> Machine<S> {
     fn stamp(&mut self) -> u64 {
         let t = self.secc.now_micros().max(self.last_stamp + 1);
         self.last_stamp = t;
@@ -435,7 +435,7 @@ fn parameter(set: &common::ParameterSet<'_>, name: &str) -> Option<i32> {
 
 const ZERO: RationalNumber = RationalNumber { exponent: 0, value: 0 };
 
-impl<S: Secc> Machine<S> {
+impl<S: Iso20Evse> Machine<S> {
     /// `ServiceDetailRes` etc. need the charger's offer; a request out of turn gets
     /// `FAILED_SequenceError` of the type it asks for (V2G20-459), and the connection ends.
     fn out_of_turn(&mut self, request: &Request<'_>, out: &mut [u8]) -> Reply {
@@ -630,7 +630,7 @@ impl<S: Secc> Machine<S> {
     }
 }
 
-impl<S: Secc> Machine<S> {
+impl<S: Iso20Evse> Machine<S> {
     fn ac(&self) -> bool {
         is_ac_service(self.service)
     }
