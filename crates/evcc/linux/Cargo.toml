@@ -15,7 +15,7 @@ evcc-core = { path = "../core", features = ["acdp"] }
 openssl = { version = "0.10", optional = true }
 # The CA list of a ClientHello (certificate_authorities) has no safe wrapper in `openssl`.
 openssl-sys = { version = "0.9", optional = true }
-foreign-types = { version = "0.3", optional = true }
+foreign-types = { version = "0.5", optional = true }
 x509-parser = { version = "0.18", optional = true }
 libc = "0.2"
 v2gtp = { path = "../../codec/v2gtp" }
